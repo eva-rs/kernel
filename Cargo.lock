@@ -980,7 +980,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "eva-provider-anthropic"
+name = "eva-provider-mock"
+version = "0.1.0"
+dependencies = [
+ "eva",
+ "eva-core",
+ "eva-protocol",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "eva-provider-openai"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -1001,27 +1014,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "eva-provider-mock"
-version = "0.1.0"
-dependencies = [
- "eva",
- "eva-core",
- "eva-protocol",
- "futures",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "eva-providers"
 version = "0.1.0"
 dependencies = [
  "eva",
  "eva-core",
  "eva-protocol",
- "eva-provider-anthropic",
  "eva-provider-mock",
+ "eva-provider-openai",
  "serde",
 ]
 

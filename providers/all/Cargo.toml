@@ -5,8 +5,8 @@ edition.workspace = true
 description = "Provider config (tag kind) and AnyProvider dispatch over compiled-in provider crates."
 
 [features]
-default = ["anthropic", "mock"]
-anthropic = ["dep:eva-provider-anthropic"]
+default = ["openai", "mock"]
+openai = ["dep:eva-provider-openai"]
 mock = ["dep:eva-provider-mock"]
 
 [dependencies]
@@ -14,7 +14,7 @@ eva-protocol.workspace = true
 eva-core.workspace = true
 eva.workspace = true
 serde.workspace = true
-eva-provider-anthropic = { workspace = true, optional = true }
+eva-provider-openai = { workspace = true, optional = true }
 eva-provider-mock = { workspace = true, optional = true }
 
 [lints]

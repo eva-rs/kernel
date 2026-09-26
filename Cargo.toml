@@ -6,7 +6,7 @@ members = [
   "rpc",
   "sdk",
   "providers/mock",
-  "providers/anthropic",
+  "providers/openai",
   "providers/all",
   "services/kernel",
 ]
@@ -24,7 +24,7 @@ eva-core = { path = "core" }
 eva-rpc = { path = "rpc" }
 eva-sdk = { path = "sdk" }
 eva-provider-mock = { path = "providers/mock" }
-eva-provider-anthropic = { path = "providers/anthropic" }
+eva-provider-openai = { path = "providers/openai" }
 eva-providers = { path = "providers/all" }
 
 eyre = "0.6"

@@ -1,8 +1,8 @@
 [package]
-name = "eva-provider-anthropic"
+name = "eva-provider-openai"
 version.workspace = true
 edition.workspace = true
-description = "Anthropic Messages API behind the Provider trait."
+description = "OpenAI-compatible Chat Completions (OpenRouter first) behind the Provider trait."
 
 [dependencies]
 eva-protocol.workspace = true
