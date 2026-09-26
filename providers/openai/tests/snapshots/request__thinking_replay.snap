@@ -1,0 +1,61 @@
+---
+source: providers/openai/tests/request.rs
+expression: messages
+---
+[
+  {
+    "content": [
+      {
+        "text": "[persona]\nYou are Eva.",
+        "type": "text"
+      },
+      {
+        "text": "[chat]\nParticipants: master.",
+        "type": "text"
+      }
+    ],
+    "role": "system"
+  },
+  {
+    "content": "read it",
+    "role": "user"
+  },
+  {
+    "content": null,
+    "reasoning_details": [
+      {
+        "format": "anthropic-claude-v1",
+        "index": 0,
+        "signature": "EqQBCkYIBxgCKkDsig==",
+        "text": "Need the path.",
+        "type": "reasoning.text"
+      },
+      {
+        "data": "gAAAAABo-opaque",
+        "format": "anthropic-claude-v1",
+        "index": 1,
+        "type": "reasoning.encrypted"
+      }
+    ],
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"path\":\"a\"}",
+          "name": "fs_read"
+        },
+        "id": "toolu_1",
+        "type": "function"
+      }
+    ]
+  },
+  {
+    "content": "ok",
+    "role": "tool",
+    "tool_call_id": "toolu_1"
+  },
+  {
+    "content": "go on",
+    "role": "user"
+  }
+]

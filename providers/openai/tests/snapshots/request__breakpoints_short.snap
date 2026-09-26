@@ -1,0 +1,54 @@
+---
+source: providers/openai/tests/request.rs
+expression: "body(&conversation(SONNET, CacheMode::Short), SONNET)[\"messages\"]"
+---
+[
+  {
+    "content": [
+      {
+        "text": "[persona]\nYou are Eva.",
+        "type": "text"
+      },
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "[chat]\nParticipants: master.",
+        "type": "text"
+      }
+    ],
+    "role": "system"
+  },
+  {
+    "content": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "first",
+        "type": "text"
+      }
+    ],
+    "role": "user"
+  },
+  {
+    "content": "answer",
+    "role": "assistant"
+  },
+  {
+    "content": [
+      {
+        "text": "second",
+        "type": "text"
+      },
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "[kernel] reminder",
+        "type": "text"
+      }
+    ],
+    "role": "user"
+  }
+]

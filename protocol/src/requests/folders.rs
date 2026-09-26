@@ -27,6 +27,8 @@ pub mod create {
         #[display("{_0}")]
         NameTaken(#[from] errors::folders::NameTaken),
     }
+
+    code!(Err => [NameTaken]);
 }
 
 pub mod update {
@@ -65,6 +67,8 @@ pub mod update {
         #[display("{_0}")]
         NameTaken(#[from] errors::folders::NameTaken),
     }
+
+    code!(Err => [NotFound, Builtin, NameTaken]);
 }
 
 pub mod delete {
@@ -88,6 +92,8 @@ pub mod delete {
         #[display("{_0}")]
         Builtin(#[from] errors::folders::Builtin),
     }
+
+    code!(Err => [NotFound, Builtin]);
 }
 
 pub mod list {
@@ -109,4 +115,6 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }

@@ -50,6 +50,8 @@ pub mod tools_usage {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod spend {
@@ -75,6 +77,8 @@ pub mod spend {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod spend_series {
@@ -98,6 +102,8 @@ pub mod spend_series {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod chat_spend {
@@ -122,6 +128,8 @@ pub mod chat_spend {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod health {
@@ -143,4 +151,6 @@ pub mod health {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }

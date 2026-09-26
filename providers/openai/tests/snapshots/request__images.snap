@@ -1,0 +1,90 @@
+---
+source: providers/openai/tests/request.rs
+expression: body
+---
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "[persona]\nYou are Eva.",
+          "type": "text"
+        },
+        {
+          "text": "[chat]\nParticipants: master.",
+          "type": "text"
+        }
+      ],
+      "role": "system"
+    },
+    {
+      "content": [
+        {
+          "text": "what is this?",
+          "type": "text"
+        },
+        {
+          "image_url": {
+            "url": "data:image/png;base64,iVBORw0KGgo="
+          },
+          "type": "image_url"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "A cat. Here is another:",
+          "type": "text"
+        },
+        {
+          "image_url": {
+            "url": "data:image/png;base64,iVBORw0KGgo="
+          },
+          "type": "image_url"
+        }
+      ],
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{}",
+            "name": "screenshot"
+          },
+          "id": "c1",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "content": "[t1]\nscreen",
+      "role": "tool",
+      "tool_call_id": "c1"
+    },
+    {
+      "content": [
+        {
+          "image_url": {
+            "url": "data:image/jpeg;base64,/9j/"
+          },
+          "type": "image_url"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "modalities": [
+    "image",
+    "text"
+  ],
+  "model": "google/gemini-2.5-flash-image",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "usage": {
+    "include": true
+  }
+}

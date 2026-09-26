@@ -1,0 +1,59 @@
+---
+source: providers/openai/tests/request.rs
+expression: "body(&req, MINI)[\"messages\"]"
+---
+[
+  {
+    "content": [
+      {
+        "text": "[persona]\nYou are Eva.",
+        "type": "text"
+      },
+      {
+        "text": "[chat]\nParticipants: master.",
+        "type": "text"
+      }
+    ],
+    "role": "system"
+  },
+  {
+    "content": "read both files",
+    "role": "user"
+  },
+  {
+    "content": "Reading.",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function": {
+          "arguments": "{\"path\":\"a.txt\"}",
+          "name": "fs_read"
+        },
+        "id": "call_1",
+        "type": "function"
+      },
+      {
+        "function": {
+          "arguments": "{\"path\": \"b.t",
+          "name": "fs_read"
+        },
+        "id": "call_2",
+        "type": "function"
+      }
+    ]
+  },
+  {
+    "content": "[t1]\nalpha",
+    "role": "tool",
+    "tool_call_id": "call_1"
+  },
+  {
+    "content": "error: [t2]\ninvalid input",
+    "role": "tool",
+    "tool_call_id": "call_2"
+  },
+  {
+    "content": "[kernel] note updated",
+    "role": "user"
+  }
+]

@@ -83,6 +83,8 @@ pub mod ingest {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod create {
@@ -111,6 +113,8 @@ pub mod create {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod get {
@@ -131,6 +135,8 @@ pub mod get {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod list {
@@ -159,6 +165,8 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod update {
@@ -204,6 +212,8 @@ pub mod update {
         #[display("{_0}")]
         AgentTrust(#[from] errors::chats::AgentTrust),
     }
+
+    code!(Err => [NotFound, KindMonotonic, AgentTrust]);
 }
 
 pub mod r#move {
@@ -233,6 +243,8 @@ pub mod r#move {
         #[display("{_0}")]
         CrossSurface(#[from] errors::chats::CrossSurface),
     }
+
+    code!(Err => [NotFound, TrustChange, CrossSurface]);
 }
 
 pub mod delete {
@@ -256,6 +268,8 @@ pub mod delete {
         #[display("{_0}")]
         Undeletable(#[from] errors::chats::Undeletable),
     }
+
+    code!(Err => [NotFound, Undeletable]);
 }
 
 pub mod restore {
@@ -278,6 +292,8 @@ pub mod restore {
         #[display("{_0}")]
         NotDeleted(#[from] errors::chats::NotDeleted),
     }
+
+    code!(Err => [NotFound, NotDeleted]);
 }
 
 pub mod search {
@@ -304,6 +320,8 @@ pub mod search {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod history_read {
@@ -331,6 +349,8 @@ pub mod history_read {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod compact {
@@ -352,6 +372,8 @@ pub mod compact {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod notify {
@@ -373,4 +395,6 @@ pub mod notify {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }

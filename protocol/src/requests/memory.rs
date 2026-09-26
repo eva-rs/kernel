@@ -35,6 +35,8 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod get {
@@ -57,6 +59,8 @@ pub mod get {
         #[display("{_0}")]
         NotFound(#[from] errors::memory::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod history {
@@ -79,6 +83,8 @@ pub mod history {
         #[display("{_0}")]
         NotFound(#[from] errors::memory::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod restore {
@@ -103,4 +109,6 @@ pub mod restore {
         #[display("{_0}")]
         Superseded(#[from] errors::memory::Superseded),
     }
+
+    code!(Err => [NotFound, NotArchived, Superseded]);
 }

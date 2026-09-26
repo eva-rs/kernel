@@ -30,6 +30,8 @@ pub mod runs {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod phase_runs {
@@ -51,4 +53,6 @@ pub mod phase_runs {
         #[display("{_0}")]
         RunNotFound(#[from] errors::sleep::RunNotFound),
     }
+
+    code!(Err => [RunNotFound]);
 }

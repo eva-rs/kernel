@@ -28,3 +28,12 @@ fn table() {
     assert_eq!(op("blobs", "get"), OpKind::Stream);
     assert_eq!(op("hands_grants", "revoke"), OpKind::Mutating);
 }
+
+/// Glob-импорт прелюдии открывает методы неймспейсов у `Session`.
+#[allow(dead_code)]
+fn prelude_reaches_namespaces<S: eva_core::IsSession>(session: &mut eva_core::Session<S>) {
+    use eva_core::prelude::*;
+
+    let _ = session.surfaces().get();
+    let _ = session.kv().list();
+}

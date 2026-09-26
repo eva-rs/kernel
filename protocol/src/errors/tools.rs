@@ -4,3 +4,5 @@ use eva::data;
 pub struct PathNotFound {
     pub path: String,
 }
+
+code!(PathNotFound => NotFound);

@@ -1034,6 +1034,7 @@ dependencies = [
  "eva",
  "eva-core",
  "eva-protocol",
+ "fastrace",
  "futures",
  "log",
  "pin-project-lite",

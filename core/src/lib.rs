@@ -16,6 +16,7 @@
 //! поэтому у кода в модуле и у кода внутри ядра форма вызова одна.
 
 pub mod caller;
+pub mod prelude;
 pub mod provider;
 pub mod service;
 

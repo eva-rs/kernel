@@ -25,6 +25,8 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod revoke {
@@ -43,4 +45,6 @@ pub mod revoke {
         #[display("{_0}")]
         NotFound(#[from] errors::hands_grants::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }

@@ -1,10 +1,14 @@
-//! Туры: ссылки на актора, проекция контекста тура и лента items.
+//! Туры: ссылки на актора, проекции контекста тура и лента items.
+//!
+//! Лента (`TurnItem` и всё внутри) принимается терпимо: незнакомый вариант —
+//! `Unknown`, соседние items разбираются дальше (`crate::tolerant`).
 
 use eva::data;
 use serde_json::Value;
 
 use crate::types::{
-    BlobId, ChatId, EventId, ModelId, PendingId, PersonId, SegmentId, TurnId, tool::ToolContent,
+    BlobId, ChatId, EventId, ModelId, PendingId, PersonId, RunId, SegmentId, SurfaceId, TurnId,
+    tool::ToolContent,
 };
 
 /// Отправитель на поверхности; surface берётся из чата или аргумента операции, не из ссылки.
@@ -58,6 +62,57 @@ impl TurnView {
     }
 }
 
+/// Контекст тура на проводе (`tools.call`, хуки): флаги доверия считает ядро.
+#[data]
+pub struct TurnCtx {
+    pub turn_id: TurnId,
+    pub chat: ChatId,
+    pub actor: Actor,
+    pub master_turn: bool,
+    pub trusted_chat: bool,
+    /// `¬master_turn ∨ ¬trusted_chat`.
+    pub public: bool,
+    pub surface: SurfaceId,
+    /// Якорь поверхности из `chats.ingest`/`turns.start`, ядру непрозрачен.
+    pub anchor: Option<Value>,
+    /// Запуск крона.
+    pub run_id: Option<RunId>,
+}
+
+/// Актор тура для логов и маркеров; гейты читают только `master_turn × trusted_chat`.
+#[data]
+pub struct Actor {
+    /// `None` — тур без отправителя.
+    pub person_id: Option<PersonId>,
+    pub kind: ActorKind,
+    pub name: Option<String>,
+    pub handle: Option<String>,
+}
+
+impl Actor {
+    /// Отправителя нет — никогда не хозяин.
+    pub const fn unknown() -> Self {
+        Self {
+            person_id: None,
+            kind: ActorKind::Unknown,
+            name: None,
+            handle: None,
+        }
+    }
+}
+
+#[data(copy, ord, display(name))]
+#[serde(remote = "ActorKind")]
+pub enum ActorKind {
+    Master,
+    Whitelisted,
+    /// Сюда же — вид новее этого пира: незнакомый не хозяин.
+    #[serde(other)]
+    Unknown,
+}
+
+tolerant!(ActorKind);
+
 /// Элемент `turns.attach`.
 #[data]
 pub struct TurnItem {
@@ -73,6 +128,7 @@ pub struct TurnItem {
 }
 
 #[data]
+#[serde(remote = "FeedEvent")]
 pub enum FeedEvent {
     /// Оптимистичен: вызов начат.
     ItemStarted {
@@ -100,7 +156,12 @@ pub enum FeedEvent {
         turn: TurnId,
         message: String,
     },
+    /// Событие новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(FeedEvent);
 
 #[data]
 pub struct StepUsage {
@@ -125,14 +186,21 @@ pub struct Item {
 }
 
 #[data(copy, ord)]
+#[serde(remote = "ItemStatus")]
 pub enum ItemStatus {
     Running,
     Completed,
     Failed,
     Aborted,
+    /// Статус новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
 
+tolerant!(ItemStatus);
+
 #[data]
+#[serde(remote = "ItemBody")]
 pub enum ItemBody {
     UserMessage {
         text: String,
@@ -178,9 +246,15 @@ pub enum ItemBody {
     Plan {
         tasks: Vec<PlanTask>,
     },
+    /// Item новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
 
+tolerant!(ItemBody);
+
 #[data]
+#[serde(remote = "ItemDelta")]
 pub enum ItemDelta {
     /// `AgentMessage`/`Thinking`.
     Text {
@@ -193,7 +267,12 @@ pub enum ItemDelta {
     Plan {
         tasks: Vec<PlanTask>,
     },
+    /// Дельта новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(ItemDelta);
 
 #[data]
 pub struct ToolCallResult {
@@ -202,13 +281,20 @@ pub struct ToolCallResult {
 }
 
 #[data(copy, ord)]
+#[serde(remote = "PendingKind")]
 pub enum PendingKind {
     Ask,
     Permission,
+    /// Вид новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(PendingKind);
 
 /// Кнопка pending-запроса.
 #[data(copy, ord)]
+#[serde(remote = "Decision")]
 pub enum Decision {
     Pick,
     TextInstead,
@@ -216,9 +302,15 @@ pub enum Decision {
     AllowSession,
     AllowAlways,
     Deny,
+    /// Кнопка новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
 
+tolerant!(Decision);
+
 #[data(copy, ord)]
+#[serde(remote = "PendingOutcome")]
 pub enum PendingOutcome {
     Answered,
     TextInstead,
@@ -226,7 +318,12 @@ pub enum PendingOutcome {
     Denied,
     Expired,
     Cancelled,
+    /// Исход новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(PendingOutcome);
 
 #[data]
 pub struct PlanTask {
@@ -238,12 +335,18 @@ pub struct PlanTask {
 }
 
 #[data(copy, ord)]
+#[serde(remote = "TaskStatus")]
 pub enum TaskStatus {
     Pending,
     InProgress,
     Completed,
     Abandoned,
+    /// Статус новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(TaskStatus);
 
 /// Ответ на pending: форма зависит от его вида.
 #[data]

@@ -6,3 +6,5 @@ use crate::types::RunId;
 pub struct RunNotFound {
     pub run: RunId,
 }
+
+code!(RunNotFound => NotFound);

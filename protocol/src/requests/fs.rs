@@ -2,7 +2,7 @@
 
 use eva::{data, time::Timestamp};
 
-use crate::errors;
+use crate::{errors, types::Bytes};
 
 #[data(copy, ord)]
 pub enum EntryKind {
@@ -28,7 +28,7 @@ pub mod read {
 
     #[data]
     pub struct Ok {
-        pub data: Vec<u8>,
+        pub data: Bytes,
     }
 
     #[data(error)]
@@ -38,6 +38,8 @@ pub mod read {
         #[display("{_0}")]
         IsDir(#[from] errors::fs::IsDir),
     }
+
+    code!(Err => [NotFound, IsDir]);
 }
 
 pub mod write {
@@ -46,7 +48,7 @@ pub mod write {
     #[data]
     pub struct Args {
         pub path: String,
-        pub data: Vec<u8>,
+        pub data: Bytes,
         /// Создать недостающие каталоги.
         #[serde(default)]
         pub create_dirs: bool,
@@ -64,6 +66,8 @@ pub mod write {
         #[display("{_0}")]
         IsDir(#[from] errors::fs::IsDir),
     }
+
+    code!(Err => [NotFound, IsDir]);
 }
 
 pub mod list {
@@ -89,6 +93,8 @@ pub mod list {
         #[display("{_0}")]
         NotDir(#[from] errors::fs::NotDir),
     }
+
+    code!(Err => [NotFound, NotDir]);
 }
 
 pub mod stat {
@@ -109,6 +115,8 @@ pub mod stat {
         #[display("{_0}")]
         NotFound(#[from] errors::fs::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod remove {
@@ -130,4 +138,6 @@ pub mod remove {
         #[display("{_0}")]
         NotFound(#[from] errors::fs::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }

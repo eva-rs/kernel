@@ -50,7 +50,7 @@ rustls-pemfile = "2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "json", "stream", "socks"] }
 eventsource-stream = "0.2"
 base64 = "0.22"
-rusqlite = { version = "0.40", default-features = false, features = ["bundled", "functions", "serde_json"] }
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "functions", "serde_json", "limits"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 blake3 = "1"
 

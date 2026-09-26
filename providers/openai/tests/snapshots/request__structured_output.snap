@@ -1,0 +1,32 @@
+---
+source: providers/openai/tests/request.rs
+expression: "body(&req, MINI)[\"response_format\"]"
+---
+{
+  "json_schema": {
+    "name": "output",
+    "schema": {
+      "properties": {
+        "ops": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ops"
+      ],
+      "type": "object"
+    },
+    "strict": true
+  },
+  "type": "json_schema"
+}

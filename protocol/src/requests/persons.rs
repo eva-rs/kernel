@@ -26,6 +26,8 @@ pub mod resolve {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod list {
@@ -48,6 +50,8 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod rename {
@@ -71,6 +75,8 @@ pub mod rename {
         #[display("{_0}")]
         System(#[from] errors::persons::System),
     }
+
+    code!(Err => [NotFound, System]);
 }
 
 pub mod merge {
@@ -101,6 +107,8 @@ pub mod merge {
         #[display("{_0}")]
         MasterMerge(#[from] errors::persons::MasterMerge),
     }
+
+    code!(Err => [NotFound, System, SelfMerge, MasterMerge]);
 }
 
 pub mod whitelist {
@@ -126,4 +134,6 @@ pub mod whitelist {
         #[display("{_0}")]
         MasterWhitelist(#[from] errors::persons::MasterWhitelist),
     }
+
+    code!(Err => [NotFound, System, MasterWhitelist]);
 }

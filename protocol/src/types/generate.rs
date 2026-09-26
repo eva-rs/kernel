@@ -7,7 +7,11 @@ use eva::{
 };
 use serde_json::Value;
 
-use crate::types::{Effort, ModelId, Thinking};
+use crate::{
+    errors::HasCode,
+    types::{Bytes, Effort, ModelId, Thinking},
+    wire::ErrorCode,
+};
 
 #[data]
 pub struct GenerateRequest {
@@ -95,7 +99,7 @@ pub enum Block {
     },
     Image {
         media_type: String,
-        data: Vec<u8>,
+        data: Bytes,
     },
     ToolUse {
         id: String,
@@ -110,12 +114,12 @@ pub enum Block {
     },
     /// Непрозрачен: реплеится байт-в-байт в своём assistant-сообщении.
     Thinking {
-        signature: Vec<u8>,
+        signature: Bytes,
         model: ModelId,
         text: Option<String>,
     },
     RedactedThinking {
-        data: Vec<u8>,
+        data: Bytes,
         model: ModelId,
     },
 }
@@ -123,7 +127,7 @@ pub enum Block {
 #[data]
 pub enum ResultBlock {
     Text { text: String },
-    Image { media_type: String, data: Vec<u8> },
+    Image { media_type: String, data: Bytes },
 }
 
 /// Позиция breakpoint'а в нормализованном запросе; провайдер переводит в свои индексы.
@@ -165,7 +169,11 @@ pub enum Purpose {
 }
 
 /// Элемент потока `generate`.
+///
+/// Приём от модуля-провайдера терпим к новым вариантам (`crate::tolerant`);
+/// запрос `GenerateRequest` — нет: провайдер обязан понять его целиком.
 #[data]
+#[serde(remote = "GenItem")]
 pub enum GenItem {
     TextDelta {
         text: String,
@@ -176,11 +184,11 @@ pub enum GenItem {
     },
     /// Закрывает текущий thinking.
     ThinkingBlock {
-        signature: Vec<u8>,
+        signature: Bytes,
         model: ModelId,
     },
     RedactedThinking {
-        data: Vec<u8>,
+        data: Bytes,
         model: ModelId,
     },
     /// JSON аргументов склеен провайдером: частичного ядро не видит.
@@ -191,12 +199,17 @@ pub enum GenItem {
     },
     Image {
         media_type: String,
-        data: Vec<u8>,
+        data: Bytes,
     },
     Usage(Usage),
     /// Последний элемент перед концом потока.
     Stop(Stop),
+    /// Вариант новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(GenItem);
 
 #[data]
 #[derive(Default)]
@@ -238,13 +251,18 @@ pub struct Stop {
 
 /// `refusal` — не ошибка, а исход шага.
 #[data(copy, ord, display(name))]
+#[serde(remote = "StopReason")]
 pub enum StopReason {
     EndTurn,
     ToolUse,
     MaxTokens,
     Refusal,
+    /// Сюда же — причина новее этого пира.
+    #[serde(other)]
     Other,
 }
+
+tolerant!(StopReason);
 
 #[data(error)]
 pub struct ProviderError {
@@ -262,7 +280,27 @@ impl std::fmt::Display for ProviderError {
     }
 }
 
+/// Код для модуля: `auth` — беда конфига ядра, модулю это «провайдер недоступен».
+impl HasCode for ProviderError {
+    fn code(&self) -> ErrorCode {
+        use ProviderErrorKind as K;
+
+        match self.kind {
+            K::Transient | K::Auth => ErrorCode::Unavailable,
+            K::NotFound => ErrorCode::NotFound,
+            K::Quota => ErrorCode::Quota,
+            K::Overflow | K::ContentFilter | K::Invalid => ErrorCode::InvalidParams,
+            K::Other => ErrorCode::Internal,
+        }
+    }
+
+    fn retry_after(&self) -> Option<HumanDuration> {
+        self.retry_after
+    }
+}
+
 #[data(copy, ord, display(name))]
+#[serde(remote = "ProviderErrorKind")]
 pub enum ProviderErrorKind {
     Transient,
     Auth,
@@ -272,8 +310,12 @@ pub enum ProviderErrorKind {
     Overflow,
     ContentFilter,
     Invalid,
+    /// Сюда же — вид новее этого пира.
+    #[serde(other)]
     Other,
 }
+
+tolerant!(ProviderErrorKind);
 
 #[data]
 pub struct EmbedRequest {

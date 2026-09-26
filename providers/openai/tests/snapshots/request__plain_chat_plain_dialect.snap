@@ -1,0 +1,22 @@
+---
+source: providers/openai/tests/request.rs
+expression: "render(&req, &local, Dialect::Plain).unwrap()"
+---
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": "[persona]\nYou are Eva.\n\n[chat]\nParticipants: master.",
+      "role": "system"
+    },
+    {
+      "content": "hello",
+      "role": "user"
+    }
+  ],
+  "model": "qwen3",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}

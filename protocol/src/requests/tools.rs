@@ -41,4 +41,6 @@ pub mod catalog {
         #[display("{_0}")]
         PathNotFound(#[from] errors::tools::PathNotFound),
     }
+
+    code!(Err => [PathNotFound]);
 }

@@ -6,3 +6,5 @@ pub struct Sql {
     pub statement: u32,
     pub message: String,
 }
+
+code!(Sql => InvalidParams);

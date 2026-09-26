@@ -38,6 +38,8 @@ pub mod create {
         #[display("{_0}")]
         BadRules(#[from] errors::surfaces::BadRules),
     }
+
+    code!(Err => [Taken, BadRules]);
 }
 
 pub mod get {
@@ -58,6 +60,8 @@ pub mod get {
         #[display("{_0}")]
         NotFound(#[from] errors::surfaces::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod list {
@@ -78,6 +82,8 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod update {
@@ -120,4 +126,6 @@ pub mod update {
         #[display("{_0}")]
         BadRules(#[from] errors::surfaces::BadRules),
     }
+
+    code!(Err => [NotFound, Builtin, BadRules]);
 }

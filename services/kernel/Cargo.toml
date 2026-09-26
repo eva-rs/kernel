@@ -27,7 +27,7 @@ bytes.workspace = true
 async-stream.workspace = true
 log.workspace = true
 fastrace.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 rusqlite.workspace = true
 uuid.workspace = true
 blake3.workspace = true

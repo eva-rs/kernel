@@ -44,6 +44,8 @@ pub mod start {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod attach {
@@ -63,6 +65,8 @@ pub mod attach {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod append_silent {
@@ -86,6 +90,8 @@ pub mod append_silent {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod delivered {
@@ -111,6 +117,8 @@ pub mod delivered {
         #[display("{_0}")]
         AlreadyDelivered(#[from] errors::chats::AlreadyDelivered),
     }
+
+    code!(Err => [NotFound, MessageNotFound, AlreadyDelivered]);
 }
 
 pub mod cancel {
@@ -129,6 +137,8 @@ pub mod cancel {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod respond {
@@ -152,4 +162,6 @@ pub mod respond {
         #[display("{_0}")]
         AlreadyResolved(#[from] errors::turns::AlreadyResolved),
     }
+
+    code!(Err => [PendingNotFound, AlreadyResolved]);
 }

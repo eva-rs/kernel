@@ -16,12 +16,19 @@ pub struct Run {
     pub report: Option<String>,
 }
 
+/// Едет и в событии `sleep.phase`, поэтому терпит фазу новее пира (`crate::tolerant`).
 #[data(copy, ord)]
+#[serde(remote = "Phase")]
 pub enum Phase {
     Memory,
     Groups,
     Warm,
+    /// Фаза новее этого пира.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(Phase);
 
 #[data]
 pub struct PhaseRun {

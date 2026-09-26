@@ -1,5 +1,6 @@
 //! Сущности протокола. Идентификаторы — `ids`, домены — по файлу на домен.
 
+pub mod bytes;
 pub mod effort;
 pub mod ids;
 pub mod thinking;
@@ -23,6 +24,7 @@ pub mod surface;
 pub mod tool;
 pub mod turn;
 
+pub use bytes::Bytes;
 pub use effort::Effort;
 pub use ids::*;
 pub use thinking::Thinking;

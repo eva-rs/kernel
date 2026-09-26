@@ -3,21 +3,64 @@
 //! Правило одно: **serde-форма равна форме хранения**, а `Display` даёт
 //! форму, которую видит модель. У целочисленных id это `c42` при числе 42 в
 //! базе и на проводе; у строковых форма хранения и есть человеческая
-//! (`p7`, `telegram`). Иначе клиенту пришлось бы парсить префиксы, а
+//! (`p7`, `local`). Иначе клиенту пришлось бы парсить префиксы, а
 //! префикс в промпте экономит токены на каждом упоминании (legacy: uuid в
 //! маркерах раздувал контекст).
 
-use eva::data;
+use std::{borrow::Cow, fmt, marker::PhantomData, str::FromStr};
+
+use eva::{
+    _priv::schemars::{JsonSchema, Schema, SchemaGenerator, json_schema},
+    data,
+};
+use serde::de::{self, Visitor};
 
 /// Целочисленный id: на проводе число, модели — `<pfx><N>`.
+///
+/// На входе принимает и `42`, и `"42"`, и `"<pfx>42"` (`11 §7`): модель
+/// пишет то, что видит в промпте.
 macro_rules! int_id {
     ($(#[$meta:meta])* $name:ident($repr:ty) = $pfx:literal;) => {
         $(#[$meta])*
-        #[data(copy, ord)]
+        #[data(copy, ord, not(Deserialize, schemars))]
         #[derive(Hash)]
         #[repr(transparent)]
         #[serde(transparent)]
         pub struct $name(pub $repr);
+
+        impl<'de> ::serde::Deserialize<'de> for $name {
+            fn deserialize<D: ::serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> ::core::result::Result<Self, D::Error> {
+                deserializer
+                    .deserialize_any(IntIdVisitor::<$repr>::new(stringify!($name), $pfx))
+                    .map(Self)
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                Cow::Borrowed(stringify!($name))
+            }
+
+            fn schema_id() -> Cow<'static, str> {
+                Cow::Borrowed(concat!(module_path!(), "::", stringify!($name)))
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({
+                    "description": concat!(
+                        "Integer id: a number on output; input also accepts \"42\" and \"",
+                        $pfx,
+                        "42\"",
+                    ),
+                    "anyOf": [
+                        {"type": "integer", "format": "int64"},
+                        {"type": "string", "pattern": concat!("^(", $pfx, ")?[+-]?[0-9]+$")},
+                    ],
+                })
+            }
+        }
 
         impl $name {
             pub const fn get(self) -> $repr {
@@ -40,6 +83,53 @@ macro_rules! int_id {
             }
         }
     };
+}
+
+/// Число или строка `[<pfx>]<N>`.
+struct IntIdVisitor<T> {
+    name: &'static str,
+    prefix: &'static str,
+    repr: PhantomData<T>,
+}
+
+impl<T> IntIdVisitor<T> {
+    const fn new(name: &'static str, prefix: &'static str) -> Self {
+        Self {
+            name,
+            prefix,
+            repr: PhantomData,
+        }
+    }
+}
+
+impl<T> Visitor<'_> for IntIdVisitor<T>
+where
+    T: TryFrom<i64> + TryFrom<u64> + FromStr,
+{
+    type Value = T;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: an integer, \"42\" or \"{}42\"",
+            self.name, self.prefix
+        )
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<T, E> {
+        T::try_from(v).map_err(|_| E::invalid_value(de::Unexpected::Signed(v), &self))
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<T, E> {
+        T::try_from(v).map_err(|_| E::invalid_value(de::Unexpected::Unsigned(v), &self))
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<T, E> {
+        v.strip_prefix(self.prefix)
+            .unwrap_or(v)
+            .parse()
+            .map_err(|_| E::invalid_value(de::Unexpected::Str(v), &self))
+    }
 }
 
 /// Строковый id: форма хранения и человеческая совпадают.
@@ -173,6 +263,11 @@ str_id! {
 str_id! {
     /// Джоба крона: uuid v7.
     CronJobId;
+}
+
+str_id! {
+    /// Сессия модуля: uuid v7; `hello.resume` предъявляет её после реконнекта.
+    SessionId;
 }
 
 /// Сообщение адресуется событием лога: `events.id` уникален глобально, в отличие от `seq` чата.

@@ -5,7 +5,7 @@ use eva::data;
 use crate::{
     errors,
     types::{
-        BlobId, ChatId,
+        BlobId, Bytes, ChatId,
         blob::{Kind, Meta},
     },
 };
@@ -41,6 +41,8 @@ pub mod put {
         #[display("{_0}")]
         HashMismatch(#[from] errors::blobs::HashMismatch),
     }
+
+    code!(Err => [BadName, SizeMismatch, HashMismatch]);
 }
 
 pub mod get {
@@ -62,7 +64,7 @@ pub mod get {
             media_type: String,
             size: u64,
         },
-        Chunk(Vec<u8>),
+        Chunk(Bytes),
     }
 
     #[data(error)]
@@ -70,6 +72,8 @@ pub mod get {
         #[display("{_0}")]
         NotFound(#[from] errors::blobs::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }
 
 pub mod stat {
@@ -80,15 +84,14 @@ pub mod stat {
         pub id: BlobId,
     }
 
-    #[data]
-    pub struct Ok {
-        #[serde(flatten)]
-        pub meta: Meta,
-    }
+    /// Не `#[serde(flatten)]`: плоская карта идёт через буфер serde, где `Timestamp` из msgpack не разбирается.
+    pub type Ok = Meta;
 
     #[data(error)]
     pub enum Err {
         #[display("{_0}")]
         NotFound(#[from] errors::blobs::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }

@@ -1,13 +1,17 @@
 //! Декларации тулов и их видимость.
+//!
+//! Декларации и результаты тулов пир принимает терпимо: незнакомый вариант —
+//! `Unknown`, а не разрыв (`crate::tolerant`).
 
 use eva::{data, time::HumanDuration};
 use serde_json::Value;
 
-use crate::types::{BlobId, ToolId};
+use crate::types::{BlobId, Bytes, ToolId};
 
 /// Требование тула к контексту тура; предикаты задают главы-владельцы.
 #[data(copy, ord, display(name))]
 #[derive(Hash)]
+#[serde(remote = "Need")]
 pub enum Need {
     Hands,
     Lead,
@@ -19,16 +23,26 @@ pub enum Need {
     IndexNotes,
     Sleep,
     Embedder,
+    /// Требование новее ядра: не выполнимо, тул `Forbidden`.
+    #[serde(other)]
+    Unknown,
 }
+
+tolerant!(Need);
 
 /// Форма результата: `windowed` ядро режет хвост, `uncapped` тул режет сам.
 #[data(copy, ord)]
 #[derive(Default)]
+#[serde(remote = "ResultForm")]
 pub enum ResultForm {
-    #[default]
-    Windowed,
     Uncapped,
+    /// Сюда же — форма новее ядра: резать хвост безопаснее.
+    #[default]
+    #[serde(other)]
+    Windowed,
 }
+
+tolerant!(ResultForm);
 
 #[data]
 pub struct ToolDecl {
@@ -99,8 +113,27 @@ pub struct CatalogEntry {
 
 /// Кусок результата тула; картинка доезжает до модели картинкой.
 #[data]
+#[serde(remote = "ToolContent")]
 pub enum ToolContent {
-    Text { text: String },
-    Image { media_type: String, data: Vec<u8> },
-    Blob { id: BlobId },
+    Text {
+        text: String,
+    },
+    Image {
+        media_type: String,
+        data: Bytes,
+    },
+    Blob {
+        id: BlobId,
+    },
+    /// Вариант новее этого пира.
+    #[serde(other)]
+    Unknown,
+}
+
+tolerant!(ToolContent);
+
+impl ToolContent {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
 }

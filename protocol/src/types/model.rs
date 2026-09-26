@@ -70,6 +70,7 @@ pub struct EmbedDecl {
 /// Строка `models.list`: декларация плюс имя провайдера из `llm.providers`.
 #[data]
 pub struct ModelEntry {
+    /// Под `flatten` не класть `Timestamp`: буфер serde не читает его из msgpack.
     #[serde(flatten)]
     pub decl: ModelDecl,
     pub provider: String,

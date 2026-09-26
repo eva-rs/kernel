@@ -31,4 +31,6 @@ pub mod list {
         #[display("{_0}")]
         NotFound(#[from] errors::chats::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }

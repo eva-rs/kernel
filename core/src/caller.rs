@@ -3,7 +3,7 @@
 
 use eva::data;
 
-use eva_protocol::types::ModuleId;
+use eva_protocol::types::{ModuleId, module::TokenKind};
 
 /// Вызывающий сессию.
 ///
@@ -21,6 +21,23 @@ pub enum Caller {
 }
 
 impl Caller {
+    /// Caller сессии модуля: единственный бит прав — `kind` его токена.
+    pub const fn from_token(kind: TokenKind, module: ModuleId) -> Self {
+        match kind {
+            TokenKind::Client => Self::Client { module },
+            TokenKind::Service => Self::Service { module },
+        }
+    }
+
+    /// Бит токена для `welcome.kind`; у ядра токена нет.
+    pub const fn token_kind(&self) -> Option<TokenKind> {
+        match self {
+            Self::Kernel => None,
+            Self::Client { .. } => Some(TokenKind::Client),
+            Self::Service { .. } => Some(TokenKind::Service),
+        }
+    }
+
     /// Действует от лица хозяина — ядро или его клиент.
     pub const fn is_owner(&self) -> bool {
         matches!(self, Self::Kernel | Self::Client { .. })

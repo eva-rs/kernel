@@ -17,7 +17,7 @@ pub struct Chat {
     pub kind: Kind,
     /// Своё или выведенное моделью из первой реплики.
     pub title: Option<String>,
-    /// От поверхности; при показе побеждает `title`.
+    /// От поверхности; при показе побеждает: `external_title ?? title ?? c<N>`.
     pub external_title: Option<String>,
     /// Внешний адрес чата у поверхности.
     pub alias: Option<Alias>,

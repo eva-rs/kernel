@@ -24,6 +24,8 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod token_issue {
@@ -48,6 +50,8 @@ pub mod token_issue {
         #[display("{_0}")]
         Reserved(#[from] errors::modules::Reserved),
     }
+
+    code!(Err => [Reserved]);
 }
 
 pub mod token_revoke {
@@ -66,4 +70,6 @@ pub mod token_revoke {
         #[display("{_0}")]
         NotFound(#[from] errors::modules::NotFound),
     }
+
+    code!(Err => [NotFound]);
 }

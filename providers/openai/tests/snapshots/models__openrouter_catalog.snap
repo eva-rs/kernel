@@ -1,0 +1,226 @@
+---
+source: providers/openai/tests/models.rs
+expression: decls
+---
+[
+  {
+    "name": "anthropic/claude-sonnet-4.5",
+    "context_window": 1000000,
+    "max_output": 64000,
+    "caps": {
+      "vision": true,
+      "image_out": false,
+      "thinking": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "structured_output": true,
+      "system_in_messages": false,
+      "tool_changes": false,
+      "clear_at": false,
+      "effort_in_messages": false,
+      "context_editing": false,
+      "server_compaction": false,
+      "thinking_binding": true,
+      "cache_breakpoints": 4,
+      "cache_keep_alive": false,
+      "cache_min_prefix": 1024
+    },
+    "price": {
+      "input": 3.0,
+      "output": 15.0,
+      "cache_read": 0.3,
+      "cache_write_short": 3.75,
+      "cache_write_long": 6.0
+    },
+    "embed": null
+  },
+  {
+    "name": "deepseek/deepseek-r1",
+    "context_window": 163840,
+    "max_output": 163840,
+    "caps": {
+      "vision": false,
+      "image_out": false,
+      "thinking": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "structured_output": false,
+      "system_in_messages": false,
+      "tool_changes": false,
+      "clear_at": false,
+      "effort_in_messages": false,
+      "context_editing": false,
+      "server_compaction": false,
+      "thinking_binding": false,
+      "cache_breakpoints": 0,
+      "cache_keep_alive": false,
+      "cache_min_prefix": 0
+    },
+    "price": {
+      "input": 0.4,
+      "output": 2.0,
+      "cache_read": 0.4,
+      "cache_write_short": 0.4,
+      "cache_write_long": 0.4
+    },
+    "embed": null
+  },
+  {
+    "name": "google/gemini-2.5-flash-image",
+    "context_window": 32768,
+    "max_output": 8192,
+    "caps": {
+      "vision": true,
+      "image_out": true,
+      "thinking": false,
+      "effort_levels": [],
+      "structured_output": true,
+      "system_in_messages": false,
+      "tool_changes": false,
+      "clear_at": false,
+      "effort_in_messages": false,
+      "context_editing": false,
+      "server_compaction": false,
+      "thinking_binding": false,
+      "cache_breakpoints": 4,
+      "cache_keep_alive": false,
+      "cache_min_prefix": 1024
+    },
+    "price": {
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.3,
+      "cache_write_short": 0.3,
+      "cache_write_long": 0.3
+    },
+    "embed": null
+  },
+  {
+    "name": "google/gemini-2.5-pro",
+    "context_window": 1048576,
+    "max_output": 65536,
+    "caps": {
+      "vision": true,
+      "image_out": false,
+      "thinking": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "structured_output": true,
+      "system_in_messages": false,
+      "tool_changes": false,
+      "clear_at": false,
+      "effort_in_messages": false,
+      "context_editing": false,
+      "server_compaction": false,
+      "thinking_binding": false,
+      "cache_breakpoints": 4,
+      "cache_keep_alive": false,
+      "cache_min_prefix": 1024
+    },
+    "price": {
+      "input": 1.25,
+      "output": 10.0,
+      "cache_read": 0.31,
+      "cache_write_short": 1.625,
+      "cache_write_long": 1.625
+    },
+    "embed": null
+  },
+  {
+    "name": "meta-llama/llama-3.3-70b-instruct",
+    "context_window": 131072,
+    "max_output": 16384,
+    "caps": {
+      "vision": false,
+      "image_out": false,
+      "thinking": false,
+      "effort_levels": [],
+      "structured_output": false,
+      "system_in_messages": false,
+      "tool_changes": false,
+      "clear_at": false,
+      "effort_in_messages": false,
+      "context_editing": false,
+      "server_compaction": false,
+      "thinking_binding": false,
+      "cache_breakpoints": 0,
+      "cache_keep_alive": false,
+      "cache_min_prefix": 0
+    },
+    "price": {
+      "input": 0.13,
+      "output": 0.38,
+      "cache_read": 0.13,
+      "cache_write_short": 0.13,
+      "cache_write_long": 0.13
+    },
+    "embed": null
+  },
+  {
+    "name": "openai/gpt-5-mini",
+    "context_window": 400000,
+    "max_output": 128000,
+    "caps": {
+      "vision": true,
+      "image_out": false,
+      "thinking": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "structured_output": true,
+      "system_in_messages": false,
+      "tool_changes": false,
+      "clear_at": false,
+      "effort_in_messages": false,
+      "context_editing": false,
+      "server_compaction": false,
+      "thinking_binding": false,
+      "cache_breakpoints": 0,
+      "cache_keep_alive": false,
+      "cache_min_prefix": 1024
+    },
+    "price": {
+      "input": 0.25,
+      "output": 2.0,
+      "cache_read": 0.025,
+      "cache_write_short": 0.25,
+      "cache_write_long": 0.25
+    },
+    "embed": null
+  },
+  {
+    "name": "openrouter/auto",
+    "context_window": 2000000,
+    "max_output": 2000000,
+    "caps": {
+      "vision": false,
+      "image_out": false,
+      "thinking": false,
+      "effort_levels": [],
+      "structured_output": false,
+      "system_in_messages": false,
+      "tool_changes": false,
+      "clear_at": false,
+      "effort_in_messages": false,
+      "context_editing": false,
+      "server_compaction": false,
+      "thinking_binding": false,
+      "cache_breakpoints": 0,
+      "cache_keep_alive": false,
+      "cache_min_prefix": 0
+    },
+    "price": null,
+    "embed": null
+  }
+]

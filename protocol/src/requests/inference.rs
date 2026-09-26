@@ -42,4 +42,6 @@ pub mod complete {
         #[display("{_0}")]
         Provider(#[from] errors::inference::Provider),
     }
+
+    code!(Err => [Provider]);
 }

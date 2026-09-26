@@ -1,0 +1,40 @@
+---
+source: providers/openai/tests/request.rs
+expression: "automatic[\"messages\"]"
+---
+[
+  {
+    "content": [
+      {
+        "text": "[persona]\nYou are Eva.",
+        "type": "text"
+      },
+      {
+        "text": "[chat]\nParticipants: master.",
+        "type": "text"
+      }
+    ],
+    "role": "system"
+  },
+  {
+    "content": "first",
+    "role": "user"
+  },
+  {
+    "content": "answer",
+    "role": "assistant"
+  },
+  {
+    "content": [
+      {
+        "text": "second",
+        "type": "text"
+      },
+      {
+        "text": "[kernel] reminder",
+        "type": "text"
+      }
+    ],
+    "role": "user"
+  }
+]

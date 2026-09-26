@@ -31,6 +31,8 @@ pub mod exec {
         #[display("{_0}")]
         Sql(#[from] errors::sqlite::Sql),
     }
+
+    code!(Err => [Sql]);
 }
 
 pub mod query {
@@ -53,6 +55,8 @@ pub mod query {
         #[display("{_0}")]
         Sql(#[from] errors::sqlite::Sql),
     }
+
+    code!(Err => [Sql]);
 }
 
 pub mod tx {
@@ -75,4 +79,6 @@ pub mod tx {
         #[display("{_0}")]
         Sql(#[from] errors::sqlite::Sql),
     }
+
+    code!(Err => [Sql]);
 }

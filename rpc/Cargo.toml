@@ -16,6 +16,7 @@ bytes.workspace = true
 pin-project-lite.workspace = true
 async-stream.workspace = true
 log.workspace = true
+fastrace.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tokio-tungstenite.workspace = true

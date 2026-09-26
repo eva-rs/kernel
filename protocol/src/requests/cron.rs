@@ -24,6 +24,8 @@ pub mod list {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }
 
 pub mod runs {
@@ -47,4 +49,6 @@ pub mod runs {
 
     #[data(error, display("_"))]
     pub enum Err {}
+
+    code!(Err => []);
 }

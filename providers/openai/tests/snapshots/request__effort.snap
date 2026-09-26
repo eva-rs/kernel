@@ -1,0 +1,48 @@
+---
+source: providers/openai/tests/request.rs
+expression: "json!({\n    \"max_unlisted\":\n    reasoning(Some(Effort::Max), None, &model(SONNET), Dialect::Openrouter),\n    \"max_listed\":\n    reasoning(Some(Effort::Max), None, &listed, Dialect::Openrouter),\n    \"low_adaptive\":\n    reasoning(Some(Effort::Low), Some(Thinking::Adaptive), &model(SONNET),\n    Dialect::Openrouter), \"adaptive_without_effort\":\n    reasoning(None, Some(Thinking::Adaptive), &model(SONNET),\n    Dialect::Openrouter), \"off_wins\":\n    reasoning(Some(Effort::High), Some(Thinking::Off), &model(SONNET),\n    Dialect::Openrouter), \"no_reasoning_model\":\n    reasoning(Some(Effort::High), Some(Thinking::Off),\n    &model(\"meta-llama/llama-3.3-70b-instruct\"), Dialect::Openrouter),\n    \"plain_max_listed\":\n    reasoning(Some(Effort::Max), None, &listed, Dialect::Plain), \"plain_off\":\n    reasoning(Some(Effort::High), Some(Thinking::Off), &listed,\n    Dialect::Plain),\n})"
+---
+{
+  "adaptive_without_effort": {
+    "reasoning": {
+      "enabled": true
+    },
+    "reasoning_effort": null
+  },
+  "low_adaptive": {
+    "reasoning": {
+      "effort": "low"
+    },
+    "reasoning_effort": null
+  },
+  "max_listed": {
+    "reasoning": {
+      "effort": "xhigh"
+    },
+    "reasoning_effort": null
+  },
+  "max_unlisted": {
+    "reasoning": {
+      "effort": "high"
+    },
+    "reasoning_effort": null
+  },
+  "no_reasoning_model": {
+    "reasoning": null,
+    "reasoning_effort": null
+  },
+  "off_wins": {
+    "reasoning": {
+      "enabled": false
+    },
+    "reasoning_effort": null
+  },
+  "plain_max_listed": {
+    "reasoning": null,
+    "reasoning_effort": "xhigh"
+  },
+  "plain_off": {
+    "reasoning": null,
+    "reasoning_effort": null
+  }
+}

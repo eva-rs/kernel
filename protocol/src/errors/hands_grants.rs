@@ -6,3 +6,5 @@ use crate::types::HandsGrantId;
 pub struct NotFound {
     pub id: HandsGrantId,
 }
+
+code!(NotFound => NotFound);
