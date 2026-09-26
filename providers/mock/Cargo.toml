@@ -1,0 +1,17 @@
+[package]
+name = "eva-provider-mock"
+version.workspace = true
+edition.workspace = true
+description = "Scripted inference provider for tests: replays GenItems and records requests."
+
+[dependencies]
+eva-protocol.workspace = true
+eva-core.workspace = true
+eva.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tokio = { workspace = true }
+
+[lints]
+workspace = true

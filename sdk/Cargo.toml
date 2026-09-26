@@ -1,0 +1,23 @@
+[package]
+name = "eva-sdk"
+version.workspace = true
+edition.workspace = true
+description = "Eva SDK: write kernel modules — surfaces, tools, events, hooks — over the library API."
+
+[dependencies]
+eva-protocol.workspace = true
+eva-core.workspace = true
+eva-rpc.workspace = true
+eva = { workspace = true, features = ["cli", "tokio"] }
+serde.workspace = true
+serde_json.workspace = true
+eyre.workspace = true
+futures.workspace = true
+log.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
