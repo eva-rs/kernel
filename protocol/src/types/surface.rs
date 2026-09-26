@@ -2,7 +2,7 @@
 
 use eva::{data, time::Timestamp};
 
-use crate::types::{ModuleId, SurfaceId};
+use crate::types::{Effort, ModelId, ModuleId, SurfaceId, Thinking};
 
 #[data]
 pub struct Surface {
@@ -14,6 +14,11 @@ pub struct Surface {
     pub rules: Option<String>,
     /// Явный trust уровня surface; `None` — наследуется вниз как `false`.
     pub trusted: Option<bool>,
+    pub model: Option<ModelId>,
+    pub effort: Option<Effort>,
+    pub thinking: Option<Thinking>,
+    /// Доля окна модели, после которой сегмент компактится.
+    pub compact_at: Option<f32>,
     pub builtin: Option<Builtin>,
     pub created_at: Timestamp,
 }

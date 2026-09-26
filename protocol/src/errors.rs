@@ -8,8 +8,20 @@ use eva::data;
 
 pub mod ext;
 
+pub mod blobs;
 pub mod chats;
+pub mod folders;
+pub mod fs;
+pub mod hands_grants;
+pub mod inference;
+pub mod memory;
+pub mod modules;
+pub mod persons;
+pub mod sleep;
+pub mod sqlite;
 pub mod surfaces;
+pub mod tools;
+pub mod turns;
 
 pub type Result<O, E> = ::core::result::Result<O, Generic<E>>;
 pub type AuxResult<O> = ::core::result::Result<O, Aux>;

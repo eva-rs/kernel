@@ -154,3 +154,26 @@ impl PersonId {
         Self(String::from("p0"))
     }
 }
+
+int_id! {
+    /// Постоянный грант рук (`hands_grants`).
+    HandsGrantId(i64) = "g";
+}
+
+str_id! {
+    /// Запуск крона или ночи сна: uuid v7.
+    RunId;
+}
+
+str_id! {
+    /// Pending-запрос `ask`/`permission`: uuid v7.
+    PendingId;
+}
+
+str_id! {
+    /// Джоба крона: uuid v7.
+    CronJobId;
+}
+
+/// Сообщение адресуется событием лога: `events.id` уникален глобально, в отличие от `seq` чата.
+pub type MessageId = EventId;

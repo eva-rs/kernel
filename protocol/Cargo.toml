@@ -7,9 +7,8 @@ description = "Eva protocol: operation arguments, results, errors and wire types
 [dependencies]
 eva.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+serde_with.workspace = true
 
 [lints]
 workspace = true

@@ -8,7 +8,7 @@
 //! let surfaces::get::Ok { surface } = session
 //!     .surfaces()
 //!     .get()
-//!     .call(surfaces::get::Args { surface: "telegram".into() })
+//!     .call(surfaces::get::Args { surface: "local".into() })
 //!     .await?;
 //! ```
 //!
@@ -16,8 +16,13 @@
 //! поэтому у кода в модуле и у кода внутри ядра форма вызова одна.
 
 pub mod caller;
+pub mod provider;
 pub mod service;
 
 pub use caller::Caller;
 pub use eva_protocol as protocol;
-pub use service::{CallStep, IsSession, Session, SessionMaker};
+pub use provider::{GenSink, Provider};
+pub use service::{
+    ByteStream, CallStep, IsSession, Items, NAMESPACES, Op, OpKind, Session, SessionMaker,
+    StreamStep, UploadStep,
+};
