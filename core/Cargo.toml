@@ -1,0 +1,12 @@
+[package]
+name = "eva-core"
+version.workspace = true
+edition.workspace = true
+description = "Eva core: the library API — Session, namespaces, Caller, Provider."
+
+[dependencies]
+eva-protocol.workspace = true
+eva.workspace = true
+
+[lints]
+workspace = true

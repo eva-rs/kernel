@@ -1,0 +1,15 @@
+[package]
+name = "eva-protocol"
+version.workspace = true
+edition.workspace = true
+description = "Eva protocol: operation arguments, results, errors and wire types. No I/O."
+
+[dependencies]
+eva.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

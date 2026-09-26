@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = [
+  "protocol",
+  "core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+eva = { git = "https://git.desu.church/VienDesu/eva.git" }
+eva-protocol = { path = "protocol" }
+eva-core = { path = "core" }
+
+eyre = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = { version = "0.4", features = ["kv"] }
+fastrace = "0.7"
+tokio = "1"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
