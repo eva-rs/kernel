@@ -1,0 +1,53 @@
+# eva-core
+
+Библиотечное API Евы: `Session` с неймспейсом на домен и шагом на операцию, `Caller` — кто зовёт, и трейт `Provider` для инференса. Ядро реализует эти трейты над своей БД, `eva-rpc` — поверх сети, поэтому код модуля и код внутри ядра вызывают операции одинаково.
+
+## Место в слоях
+
+Зависит только от `eva-protocol`, фреймворка [eva](https://git.desu.church/VienDesu/eva) и трейтов `futures`. Без рантайма, транспорта, SQL и конкретных провайдеров: не зависит от `eva-rpc`, `eva-sdk`, `providers/*` и `eva-kernel` — они зависят от него.
+
+## Точки входа
+
+| Путь | Что |
+|---|---|
+| `Session<S>` | неймспейсы (`session.surfaces()`, `.chats()`, …) плюс `caller()` |
+| `SessionMaker` | выдаёт `Session` для `Caller`: ядро, RPC-клиент, тестовый мок |
+| `CallStep` / `StreamStep` / `UploadStep` | шаг операции: `call(args)`, `open(args)` → `Items`, `call(args, body)` |
+| `service::<ns>::<Ns>` | трейт неймспейса; рядом `OPS` — операции и их `OpKind` |
+| `NAMESPACES` | все операции: RPC-метод — `<namespace>.<op>` |
+| `OpKind` | `Read`, `Mutating` (окно идемпотентности), `Stream`, `Upload` |
+| `Caller` | `Kernel`, `Client { module }`, `Service { module }`; `from_token(kind, module)` |
+| `Provider`, `GenSink` | трейт провайдера (`decl`, `models`, `generate`, `embed`, `count_tokens`) и приёмник потока `GenItem` |
+| `prelude` | шаги и все трейты неймспейсов одним `use` |
+
+Неймспейсы: `surfaces`, `folders`, `chats`, `turns`, `persons`, `memory`, `notes`, `tools`, `models`, `cron`, `sleep`, `agents`, `stats`, `modules`, `hands_grants`, `blobs`, `inference`, `fs`, `sqlite`, `kv`.
+
+`Caller` — единственная ось авторизации библиотеки. `Client` действует от лица хозяина; `Service` работает только с surface, которые создал сам. Проверяет права реализация (`eva-kernel`), не транспорт.
+
+## Пример
+
+```rust
+use eva_core::prelude::*;
+use eva_protocol::requests::surfaces;
+
+let mut session = kernel.make_session(Caller::Kernel).await?;
+let surfaces::get::Ok { surface } = session
+    .surfaces()
+    .get()
+    .call(surfaces::get::Args { surface: "local".into() })
+    .await?;
+```
+
+Тот же вызов работает на `Session<RpcSession>` из `eva-rpc` и на `eva_sdk::Kernel`.
+
+## Тесты
+
+```sh
+nix develop -c cargo test -p eva-core
+```
+
+`tests/namespaces.rs` сверяет `NAMESPACES` с эталонной таблицей операций и форм шага: мутация, помеченная `Read`, после реконнекта исполнилась бы дважды.
+
+## Документация
+
+[Библиотечное API](../docs/src/api.md), [Архитектура](../docs/src/architecture.md).

@@ -32,6 +32,10 @@ pub struct Config {
     /// Кадр больше — соединение закрывается с `invalid_params`.
     #[schemars(with = "String")]
     pub max_frame: ByteSize,
+    /// Потолок кадра `hello`, урезается до `max_frame`; больше — отказ
+    /// `invalid_params`, на который модуль не переподключается.
+    #[schemars(with = "String")]
+    pub max_hello: ByteSize,
     /// Потолок чанка `blobs.put`.
     #[schemars(with = "String")]
     pub blob_chunk: ByteSize,
@@ -53,6 +57,7 @@ impl Default for Config {
             max_inflight: SessionLimit::POS64,
             max_streams: SessionLimit::POS256,
             max_frame: ByteSize::mib(16),
+            max_hello: ByteSize::mib(4),
             blob_chunk: ByteSize::mib(1),
             idempotency_window: secs(600),
             proto_min_major: None,
@@ -60,9 +65,24 @@ impl Default for Config {
     }
 }
 
+/// Конверт кадра `response`/`stream_item` поверх данных: ключи map, `id`, bin-префиксы.
+pub const ENVELOPE: u64 = 256;
+
 impl Config {
+    /// Данных в одном ответе или элементе потока: `max_frame` за вычетом конверта.
+    pub fn max_payload(&self) -> u64 {
+        self.max_frame.as_u64().saturating_sub(ENVELOPE)
+    }
+
     pub fn max_frame(&self) -> usize {
         usize::try_from(self.max_frame.as_u64()).unwrap_or(usize::MAX)
+    }
+
+    /// Кадр `hello` целиком: `max_hello`, урезанный до `max_frame`.
+    pub fn max_hello(&self) -> usize {
+        usize::try_from(self.max_hello.as_u64())
+            .unwrap_or(usize::MAX)
+            .min(self.max_frame())
     }
 
     pub fn blob_chunk(&self) -> usize {

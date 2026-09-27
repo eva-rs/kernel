@@ -15,7 +15,7 @@ use eva_protocol::{
         Limit, Patch, chats,
         folders::{create, delete, list, update},
     },
-    types::{Effort, FolderId, ModelId, SurfaceId, Thinking, folder::Folder},
+    types::{ChatId, Effort, FolderId, ModelId, SurfaceId, Thinking, folder::Folder},
 };
 
 async fn create(session: &mut TestSession, surface: &str, name: &str) -> Folder {
@@ -413,7 +413,7 @@ async fn database_failure_is_aux_db() {
     let mut client = h.client_session().await;
     h.db_fail.store(true, Ordering::Relaxed);
     let res = client.folders().list().call(list::Args::default()).await;
-    assert_eq!(outcome(&res), Outcome::Other, "{res:?}");
+    assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
     let res = client
         .folders()
         .create()
@@ -422,5 +422,116 @@ async fn database_failure_is_aux_db() {
             name: String::from("x"),
         })
         .await;
-    assert_eq!(outcome(&res), Outcome::Other, "{res:?}");
+    assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
+}
+
+async fn chat_in(session: &mut TestSession, folder: FolderId, trusted: Option<bool>) -> ChatId {
+    let chat = session
+        .chats()
+        .create()
+        .call(chats::create::Args {
+            surface: SurfaceId::from("local"),
+            folder: Some(folder),
+            external_id: None,
+            external_kind: None,
+            kind: None,
+            title: None,
+            project: None,
+            workdir: None,
+            workdir_on: None,
+        })
+        .await
+        .expect("chat in folder")
+        .chat
+        .id;
+    if trusted.is_some() {
+        session
+            .chats()
+            .update()
+            .call(chats::update::Args {
+                chat,
+                update: chats::update::Update {
+                    trusted: Patch::Change(trusted),
+                    ..Default::default()
+                },
+            })
+            .await
+            .expect("explicit chat trust");
+    }
+    chat
+}
+
+async fn set_trust(session: &mut TestSession, folder: FolderId, trusted: Option<bool>) -> Folder {
+    session
+        .folders()
+        .update()
+        .call(update_args(
+            folder,
+            update::Update {
+                trusted: Patch::Change(trusted),
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("folder trust")
+        .folder
+}
+
+/// Удаление папки переносит её чаты в `Unsorted`: сменивший trust чат
+/// начинает новый сегмент, как после `chats.move` (`05 §2.3`).
+#[tokio::test]
+async fn delete_across_a_trust_boundary_resets_the_segment() {
+    let h = common::start().await;
+    let mut client = h.client_session().await;
+    let public = create(&mut client, "local", "public").await.id;
+    set_trust(&mut client, public, Some(false)).await;
+
+    let inherited = chat_in(&mut client, public, None).await;
+    let explicit = chat_in(&mut client, public, Some(false)).await;
+    let idle = chat_in(&mut client, public, None).await;
+    h.open_segment(inherited).await;
+    h.open_segment(explicit).await;
+
+    let delete::Ok { moved } = client
+        .folders()
+        .delete()
+        .call(delete::Args { folder: public })
+        .await
+        .expect("delete");
+    assert_eq!(moved, 3);
+    assert!(
+        h.reset_pending(inherited).await,
+        "untrusted → trusted Unsorted"
+    );
+    assert!(!h.reset_pending(explicit).await, "own trust did not change");
+    assert!(!h.reset_pending(idle).await, "no open segment to reset");
+    assert_eq!(
+        h.counter("chats.trust_moves").await,
+        2,
+        "both inheriting chats changed trust"
+    );
+}
+
+/// Правка `trusted` папки меняет trust наследующих чатов — тот же сброс.
+#[tokio::test]
+async fn folder_trust_change_resets_inheriting_chats() {
+    let h = common::start().await;
+    let mut client = h.client_session().await;
+    let team = create(&mut client, "local", "team").await.id;
+    let inherited = chat_in(&mut client, team, None).await;
+    let explicit = chat_in(&mut client, team, Some(true)).await;
+    h.open_segment(inherited).await;
+    h.open_segment(explicit).await;
+
+    set_trust(&mut client, team, Some(true)).await;
+    assert!(
+        !h.reset_pending(inherited).await,
+        "local is trusted already: nothing crossed"
+    );
+
+    let folder = set_trust(&mut client, team, Some(false)).await;
+    assert_eq!(folder.trusted, Some(false));
+    assert!(h.reset_pending(inherited).await);
+    assert!(!h.reset_pending(explicit).await, "own trust wins");
+    assert_eq!(h.counter("chats.trust_moves").await, 0, "no chat was moved");
 }

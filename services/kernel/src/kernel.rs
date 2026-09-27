@@ -1,7 +1,7 @@
 //! `Kernel<C>: SessionMaker` (`11 §5`): старт — БД, миграции, сид, реестры;
 //! слушателей нет, их поднимает подсистема `modules`.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use eva::perfect_derive;
 use eyre::WrapErr as _;
@@ -12,12 +12,13 @@ use eva_protocol::errors::Aux;
 use crate::{
     components::{Components, Real},
     config::Config,
-    db::{Db as _, DbResult, Queries as _, Sqlite, migrate, seed},
+    db::{Db as _, DbResult, Queries as _, Sqlite, migrate, seed, stats::DayZone, surfaces},
     hands::{self, Endpoints},
     providers::KernelProvider,
     session::Session,
     shared::Shared,
     state::State,
+    subsystems::modules::tokens::ConfigTokens,
     world::Demiurge as _,
 };
 
@@ -40,9 +41,7 @@ impl Parts<Real> {
         )
         .await
         .wrap_err("failed to open the database")?;
-        let providers = KernelProvider::from_config(&cfg.llm)
-            .await
-            .wrap_err("failed to build llm.providers")?;
+        let providers = KernelProvider::from_config(&cfg.llm).await?;
 
         Ok(Self {
             demiurge: crate::world::God,
@@ -74,6 +73,9 @@ impl<C: Components> Kernel<C> {
             providers,
             hands,
         } = parts;
+        let zone = DayZone::from_tz(cfg.system.tz.as_deref())?;
+        let tokens = ConfigTokens::load(&cfg.modules.tokens)?;
+        check_masters(&cfg)?;
         let now = demiurge.now();
 
         let applied = db
@@ -92,6 +94,9 @@ impl<C: Components> Kernel<C> {
         for pending in &seeded.pending {
             log::warn!(surface:% = pending.surface; "master identity waits for its surface");
         }
+        for foreign in &seeded.foreign {
+            log::warn!(surface:% = foreign.surface, module:? = foreign.module; "master identity skipped: its surface belongs to another module");
+        }
         if !seeded.unmerged.is_empty() {
             log::warn!(persons:? = seeded.unmerged; "master identities belong to several persons: merge them");
         }
@@ -109,11 +114,6 @@ impl<C: Components> Kernel<C> {
             log::info!(offline, forgotten; "module states reset after restart");
         }
 
-        let providers = providers
-            .into_iter()
-            .map(|(name, provider)| (name, Arc::new(provider)))
-            .collect();
-
         let hands = Endpoints::connect(hands).await;
         if let Some(default) = &cfg.hands.default_endpoint
             && hands.get(default).is_none()
@@ -121,7 +121,14 @@ impl<C: Components> Kernel<C> {
             log::warn!(endpoint = default.as_str(); "hands.default_endpoint is not configured");
         }
 
-        let shared = Shared::new(cfg, db, demiurge, providers, hands);
+        match crate::handling::blobs::sweep(&cfg.blob_dir()).await {
+            Ok(0) => {}
+            Ok(removed) => log::info!(removed; "stale blob uploads removed"),
+            Err(e) => log::warn!(error:% = e; "failed to sweep stale blob uploads"),
+        }
+
+        let shared = Shared::new(cfg, zone, db, demiurge, providers, hands, tokens);
+        shared.settle_providers();
         let default_model = &shared.cfg().llm.default_model;
         if shared.models().get(default_model).is_none() {
             log::warn!(model:% = default_model; "default model is not in the registry yet");
@@ -136,10 +143,36 @@ impl<C: Components> Kernel<C> {
     }
 }
 
+/// Адрес хозяина на surface, который может создать любой сервис, отдаёт ему
+/// master-туры: без привязки к модулю — предупреждение.
+fn check_masters(cfg: &Config) -> eyre::Result<()> {
+    for pair in &cfg.chats.persons.master {
+        let builtin = [surfaces::LOCAL, surfaces::SYSTEM].contains(&pair.surface.as_str());
+        match (&pair.module, builtin) {
+            (Some(module), true) => eyre::bail!(
+                "chats.persons.master: builtin surface {} has no module, yet it is bound to {module}",
+                pair.surface
+            ),
+            (None, false) => {
+                log::warn!(surface:% = pair.surface; "chats.persons.master surface is claimable by any service: bind it to a module");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl<C: Components> SessionMaker for Kernel<C> {
     type Session = Session<C>;
 
     async fn make_session(&self, caller: Caller) -> Result<service::Session<Session<C>>, Aux> {
+        // Пир закрытой сессии мог прочесть запрос до закрытия: отзыв сильнее.
+        if let Some(reason) = caller.module().and_then(|m| self.shared.live().closed(m)) {
+            return Err(Aux::Unavailable(format!(
+                "module session is closed: {}",
+                reason.message
+            )));
+        }
         let shared = self.shared.clone();
         let world = shared.make_world();
         let state = State::new(shared, world, caller.clone());

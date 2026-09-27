@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -62,6 +63,50 @@ pub enum Outbound {
 
 pub(crate) type Tx = Pin<Box<dyn Sink<Outbound, Error = TransportError> + Send>>;
 pub(crate) type Rx = Pin<Box<dyn Stream<Item = Result<bytes::Bytes, TransportError>> + Send>>;
+
+pin_project_lite::pin_project! {
+    /// Перевод ошибок синка, переживающий повторный опрос: `sink_map_err`
+    /// из futures после первой ошибки паникует, а close-кадр отказа пишется
+    /// и после неё.
+    pub(crate) struct MapErr<S, E> {
+        #[pin]
+        sink: S,
+        map: fn(E) -> TransportError,
+    }
+}
+
+impl<S, E> MapErr<S, E> {
+    pub(crate) fn new(sink: S, map: fn(E) -> TransportError) -> Self {
+        Self { sink, map }
+    }
+}
+
+impl<S, E, Item> Sink<Item> for MapErr<S, E>
+where
+    S: Sink<Item, Error = E>,
+{
+    type Error = TransportError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+        this.sink.poll_ready(cx).map_err(*this.map)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
+        let this = self.project();
+        this.sink.start_send(item).map_err(*this.map)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+        this.sink.poll_flush(cx).map_err(*this.map)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let this = self.project();
+        this.sink.poll_close(cx).map_err(*this.map)
+    }
+}
 
 /// Установленное соединение: кадры в обе стороны, до handshake протокола.
 pub struct Conn {

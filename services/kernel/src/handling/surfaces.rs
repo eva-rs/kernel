@@ -14,10 +14,8 @@ use eva_protocol::{
 use crate::{
     components::Components,
     convert,
-    db::{
-        Db as _, Queries as _,
-        surfaces::{LOCAL, SurfaceRow},
-    },
+    db::{Db as _, Queries as _, surfaces::SurfaceRow},
+    handling::text,
     markers,
     state::{Policy, State},
 };
@@ -37,17 +35,21 @@ fn check_name(name: &str) -> AuxResult<()> {
     let ok = !name.trim().is_empty() && !name.chars().any(char::is_control);
     ok.true_or(Aux::Invalid(
         "surface name must be a non-empty single line".into(),
-    ))
+    ))?;
+    text::chars("surface name", name, text::NAME_MAX)
 }
 
 /// Строка `rules` с маркером реестра I13 → `BadRules` (`06 §3`).
 fn check_rules<E: From<errors::surfaces::BadRules>>(rules: Option<&str>) -> Response<(), E> {
-    match rules.map(markers::check_rules) {
-        Some(Err(line)) => Err(errors::surfaces::BadRules { line }.spec()),
-        _ => Ok(()),
-    }
+    let Some(rules) = rules else {
+        return Ok(());
+    };
+    text::bytes("surface rules", rules, text::RULES_MAX)?;
+    markers::check_rules(rules).map_err(|line| errors::surfaces::BadRules { line }.spec())
 }
 
+/// `create {id, name, rules?}` (`11 §4`): свой `id` — существующая строка без
+/// изменений, чужой — `Taken`; ядро запоминает создателя в `surface.module`.
 #[eva::endpoint]
 #[fastrace::trace]
 pub async fn Create<C: Components>(
@@ -58,57 +60,27 @@ pub async fn Create<C: Components>(
         shared,
         world,
         caller,
-        db_conn,
         ..
     } = state;
-    let module = Policy::new(caller).surfaces().create(&args)?.clone();
-    let create::Args {
-        id,
-        name,
-        rules,
-        ask,
-        builtin,
-    } = args;
+    let module = Policy::new(caller)
+        .surfaces()
+        .create(&args, &shared.cfg().chats.persons.master)?
+        .clone();
+    let create::Args { id, name, rules } = args;
 
     check_id(&id)?;
-    let local = id.as_str() == LOCAL;
-    (builtin == local).true_or(Aux::Invalid(
-        "builtin: true registers surface local and only it".into(),
-    ))?;
-
-    if builtin {
-        (name.is_none() && rules.is_none()).true_or(Aux::Invalid(
-            "builtin registration takes no name or rules; change them with surfaces.update".into(),
-        ))?;
-        let db = db_conn.acquire(shared).await?;
-        let row = db
-            .run(move |c| c.surfaces().get(&id))
-            .await?
-            .ok_or_else(|| Aux::internal("builtin surface local is not seeded"))?;
-        shared.serving().serve(&row.id, &module, ask);
-        log::info!(surface:% = row.id, module:% = module, ask; "module serves builtin surface");
-        return Ok(create::Ok {
-            surface: convert::surface::from_db(row),
-        });
-    }
-
-    let name = name.ok_or_else(|| Aux::Invalid("name is required".into()))?;
     check_name(&name)?;
     check_rules(rules.as_deref())?;
 
     let now = world.now();
     let persons = shared.cfg().chats.persons.clone();
     let owner = module.clone();
-    let row = shared
+    let (row, created) = shared
         .db()
-        .write(move |tx| -> Response<SurfaceRow, create::Err> {
+        .write(move |tx| -> Response<(SurfaceRow, bool), create::Err> {
             match tx.surfaces().get(&id)? {
-                // Повторная регистрация своего surface: текст канала — модуля.
-                Some(row) if row.module.as_ref() == Some(&owner) => {
-                    let row = SurfaceRow { name, rules, ..row };
-                    tx.surfaces().save(&row)?;
-                    Ok(row)
-                }
+                // Модуль зовёт `create` на каждом старте: имя и правила меняет только `update`.
+                Some(row) if row.module.as_ref() == Some(&owner) => Ok((row, false)),
                 Some(row) => Err(errors::surfaces::Taken {
                     surface: row.id,
                     owner: row.module,
@@ -135,15 +107,15 @@ pub async fn Create<C: Components>(
                     tx.folders().insert_builtin(&row.id, false)?;
                     tx.persons()
                         .seed_masters(&persons.master, &persons.master_name, now)?;
-                    Ok(row)
+                    Ok((row, true))
                 }
             }
         })
         .await?;
 
-    shared.serving().serve(&row.id, &module, ask);
-    log::info!(surface:% = row.id, module:% = module, ask; "surface registered");
-
+    if created {
+        log::info!(surface:% = row.id, module:% = module; "surface created");
+    }
     Ok(create::Ok {
         surface: convert::surface::from_db(row),
     })
@@ -213,44 +185,41 @@ pub async fn Update<C: Components>(
 ) -> Response<update::Ok, update::Err> {
     let State { shared, caller, .. } = state;
     let update::Args { surface, update } = args;
-    let ask = update.ask.clone();
 
     let who = caller.clone();
-    let row = shared
+    let (row, reset) = shared
         .db()
-        .write(move |tx| -> Response<SurfaceRow, update::Err> {
+        .write(move |tx| -> Response<(SurfaceRow, usize), update::Err> {
             let row = tx
                 .surfaces()
                 .get(&surface)?
                 .ok_or_else(|| errors::surfaces::NotFound { surface }.spec())?;
             let policy = Policy::new(&who);
             policy.surfaces().own(&row.surface_ref())?;
+            let before = row.trusted.unwrap_or(false);
             let row = apply(policy, row, update)?;
             tx.surfaces().save(&row)?;
-            Ok(row)
+
+            // Наследники trust surface сменили аудиторию: hot-блок открытого
+            // сегмента собран под прежний trust (`05 §2.3`, `§2.4`).
+            let mut reset = 0;
+            if row.trusted.unwrap_or(false) != before {
+                for chat in tx.surfaces().inheriting_chats(&row.id)? {
+                    reset += usize::from(tx.chats().mark_reset(chat)?);
+                }
+            }
+            Ok((row, reset))
         })
         .await?;
 
-    if let Some(module) = caller.module() {
-        let serving = shared.serving();
-        let creator = row.module.as_ref() == Some(module);
-        // Создатель обслуживает свой surface в любой живой сессии: после
-        // реконнекта SDK шлёт `update`, а не `create`.
-        match ask {
-            Patch::Change(ask) if creator => serving.serve(&row.id, module, ask),
-            Patch::Keep if creator => serving.enlist(&row.id, module),
-            Patch::Change(ask) => _ = serving.set_ask(&row.id, module, ask),
-            Patch::Keep => {}
-        }
-    }
-    log::info!(surface:% = row.id, caller = caller.label(); "surface updated");
+    log::info!(surface:% = row.id, reset, caller = caller.label(); "surface updated");
 
     Ok(update::Ok {
         surface: convert::surface::from_db(row),
     })
 }
 
-/// Правка поверх загруженной строки; `ask` — состояние сессии, не строки.
+/// Правка поверх загруженной строки.
 fn apply(
     policy: Policy<'_>,
     mut row: SurfaceRow,
@@ -259,7 +228,6 @@ fn apply(
     let update::Update {
         name,
         rules,
-        ask: _,
         trusted,
         model,
         effort,

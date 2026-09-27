@@ -6,12 +6,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use eva::time::Timestamp;
+use eva::{time::Timestamp, utils::SecretString};
 use eva_protocol::{
     errors::{self, Generic},
     requests::surfaces::{create, get, update},
     types::{
-        ChatId, SessionId, SurfaceId, ToolId, TurnId,
+        ChatId, ModuleId, SessionId, SurfaceId, ToolId, TurnId,
         module::TokenKind,
         surface::Surface,
         turn::{Actor, TurnCtx},
@@ -27,9 +27,18 @@ use eva_rpc::{
     Call, Config, Conn, IdSeq, Kind, ModuleClient, Peer, Service, codec, transport::Outbound,
 };
 
+/// Id модуля, который поддельное ядро нашло по токену.
+pub const MODULE: &str = "x-bridge";
+
+/// Токен в форме конфига.
+pub fn token(value: &str) -> SecretString {
+    SecretString::Plaintext(value.to_owned())
+}
+
 pub fn welcome(session: &str, tool_ids: &[(&str, i64)]) -> Welcome {
     Welcome {
         session_id: SessionId::from(session),
+        module: ModuleId::from(MODULE),
         kernel_version: "0.0.0-test".to_owned(),
         proto_version: ProtoVersion::CURRENT,
         kind: TokenKind::Service,
@@ -40,6 +49,15 @@ pub fn welcome(session: &str, tool_ids: &[(&str, i64)]) -> Welcome {
             .collect(),
         models_accepted: Vec::new(),
         warnings: Vec::new(),
+        resumed: false,
+    }
+}
+
+/// `welcome` сессии, продолжившей окно идемпотентности прошлой.
+pub fn resumed(session: &str) -> Welcome {
+    Welcome {
+        resumed: true,
+        ..welcome(session, &[])
     }
 }
 
@@ -71,8 +89,8 @@ impl Session {
     }
 }
 
-/// Отвечает на `hello` и поднимает пир ядра над `surfaces`.
-pub async fn accept(mut conn: Conn, welcome: Welcome, surfaces: Surfaces) -> Session {
+/// Отвечает на `hello` и поднимает пир ядра над `service`.
+pub async fn accept<S: Service>(mut conn: Conn, welcome: Welcome, service: S) -> Session {
     let raw = conn
         .recv()
         .await
@@ -92,7 +110,7 @@ pub async fn accept(mut conn: Conn, welcome: Welcome, surfaces: Surfaces) -> Ses
         .await
         .expect("send welcome");
 
-    let peer = Peer::spawn(conn, Config::default(), IdSeq::server(), surfaces);
+    let peer = Peer::spawn(conn, Config::default(), IdSeq::server(), service);
     Session {
         hello,
         hello_id: request.id,
@@ -105,6 +123,8 @@ pub async fn accept(mut conn: Conn, welcome: Welcome, surfaces: Surfaces) -> Ses
 pub struct Surfaces {
     pub rows: Arc<Mutex<BTreeMap<SurfaceId, Surface>>>,
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// `(request.id, method)` в порядке прихода.
+    pub requests: Arc<Mutex<Vec<(u64, String)>>>,
     pub creates: Arc<Mutex<Vec<create::Args>>>,
     pub updates: Arc<Mutex<Vec<update::Args>>>,
 }
@@ -114,7 +134,7 @@ impl Surfaces {
         self.calls.lock().unwrap().clone()
     }
 
-    fn row(id: SurfaceId, name: String, rules: Option<String>) -> Surface {
+    pub fn row(id: SurfaceId, name: String, rules: Option<String>) -> Surface {
         Surface {
             id,
             name,
@@ -146,6 +166,10 @@ impl Service for Surfaces {
 
     async fn unary(&self, call: Call) -> Result<Payload, RpcError> {
         self.calls.lock().unwrap().push(call.method.clone());
+        self.requests
+            .lock()
+            .unwrap()
+            .push((call.id, call.method.clone()));
         let mut rows = self.rows.lock().unwrap();
         match call.method.as_str() {
             "surfaces.get" => {
@@ -163,11 +187,7 @@ impl Service for Surfaces {
             "surfaces.create" => {
                 let args: create::Args = codec::decode(&call.params).map_err(codec::bad_params)?;
                 self.creates.lock().unwrap().push(args.clone());
-                let surface = Self::row(
-                    args.id.clone(),
-                    args.name.unwrap_or_else(|| args.id.to_string()),
-                    args.rules,
-                );
+                let surface = Self::row(args.id.clone(), args.name, args.rules);
                 rows.insert(args.id, surface.clone());
                 Ok(codec::encode(&create::Ok { surface }).unwrap())
             }

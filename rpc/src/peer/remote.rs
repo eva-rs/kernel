@@ -65,7 +65,7 @@ impl RemoteStream {
     /// Ждёт первый кадр: элемент, heartbeat открытия или конец.
     pub(super) async fn first(&mut self) -> Result<(), RpcError> {
         match self.rx.recv().await {
-            Some(Event::Item(item)) => {
+            Some(Event::Item(item, _)) => {
                 self.peeked = Some(item);
                 Ok(())
             }
@@ -107,7 +107,7 @@ impl Stream for RemoteStream {
 
         loop {
             match this.rx.poll_recv(cx) {
-                Poll::Ready(Some(Event::Item(item))) => {
+                Poll::Ready(Some(Event::Item(item, _))) => {
                     this.reset_idle();
                     return Poll::Ready(Some(Ok(item)));
                 }

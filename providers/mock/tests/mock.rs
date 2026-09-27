@@ -405,3 +405,33 @@ fn config_defaults_and_explicit_empty_models() {
     assert!(config.models.is_empty(), "an empty list is empty (I8)");
     assert_eq!(config.on_exhausted, Exhausted::Fail);
 }
+
+/// Без отложенного каталога дочитывать нечего; с ним `settle` ждёт `list`,
+/// и модели каталога встают рядом с моделями конфига.
+#[tokio::test]
+async fn settle_installs_a_late_listing() {
+    assert!(!MockProvider::default().settle().await, "nothing to settle");
+
+    let mock = MockProvider::default().awaiting_listing();
+    let settling = tokio::spawn({
+        let mock = mock.clone();
+        async move { mock.settle().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!settling.is_finished(), "settle waits for the listing");
+    assert_eq!(mock.models().len(), 2);
+
+    let late = eva_protocol::types::model::ModelDecl {
+        name: ModelId::from("late"),
+        ..mock.models()[0].clone()
+    };
+    mock.list(vec![late]);
+    assert!(settling.await.expect("settle task"), "the registry changed");
+    let names: Vec<String> = mock
+        .models()
+        .into_iter()
+        .map(|m| m.name.as_str().to_owned())
+        .collect();
+    assert_eq!(names, [CHAT_MODEL, EMBED_MODEL, "late"]);
+    assert!(!mock.settle().await, "settled once");
+}

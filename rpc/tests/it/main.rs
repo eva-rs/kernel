@@ -1,6 +1,8 @@
 mod config;
+mod errors;
 mod harness;
 mod kernel;
+mod limits;
 mod loopback;
 mod methods;
 mod protocol;

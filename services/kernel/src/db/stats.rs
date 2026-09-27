@@ -5,7 +5,10 @@ use eva::{
     data,
     time::{Date, Timestamp},
 };
-use rusqlite::{Connection, OptionalExtension as _, Row, named_params, types::Value};
+use jiff::tz::TimeZone;
+use rusqlite::{
+    Connection, OptionalExtension as _, Row, functions::FunctionFlags, named_params, types::Value,
+};
 
 use eva_protocol::types::{
     ChatId, FolderId, ModelId, ModuleId, SurfaceId, ToolId, TurnId,
@@ -27,6 +30,8 @@ pub enum Metric {
     ModulesConnected,
     ModulesDisconnected,
     ModulesReconnects,
+    ModulesRpcErrors,
+    ModulesForbidden,
     PersonsCreated,
     ChatsTrustMoves,
     InferenceErrors,
@@ -39,24 +44,12 @@ impl Metric {
             Self::ModulesConnected => "modules.connected",
             Self::ModulesDisconnected => "modules.disconnected",
             Self::ModulesReconnects => "modules.reconnects",
+            Self::ModulesRpcErrors => "modules.rpc_errors",
+            Self::ModulesForbidden => "modules.forbidden",
             Self::PersonsCreated => "persons.created",
             Self::ChatsTrustMoves => "chats.trust_moves",
             Self::InferenceErrors => "inference.errors",
             Self::SpendUnpriced => "spend.unpriced",
-        }
-    }
-}
-
-impl DayZone {
-    /// Зона суток из `system.tz`: без tz-базы ядро знает только хост и UTC.
-    pub fn from_tz(tz: Option<&str>) -> Self {
-        match tz {
-            Some("UTC" | "Etc/UTC") => Self::Utc,
-            None => Self::Host,
-            Some(tz) => {
-                log::warn!(tz; "system.tz is not supported without a timezone database, using the host zone");
-                Self::Host
-            }
         }
     }
 }
@@ -132,22 +125,93 @@ impl Period {
     }
 }
 
-/// Сутки строки `spend` в зоне суток статистики (`09 §1`).
-#[data(copy)]
+/// Сутки счётчиков и строк `spend` в `system.tz` (`09 §1`).
+#[data]
 pub enum DayZone {
     /// Зона хоста — `system.tz = None`.
     Host,
     Utc,
+    /// Постоянное смещение от UTC в секундах, `system.tz = "±HH:MM"`.
+    Fixed(i32),
+    /// Каноническое имя IANA из встроенной базы зон: сутки режет `eva_day` с учётом DST.
+    Zone(String),
 }
 
+/// `system.tz`, по которой ядро не умеет резать сутки.
+#[data(
+    error,
+    display(
+        "system.tz {_0:?} is not supported: use UTC, a fixed offset ±HH:MM or an IANA zone name"
+    )
+)]
+pub struct UnsupportedTz(pub String);
+
 impl DayZone {
-    fn sql(self, ts: &str) -> String {
+    /// Предел смещения ISO 8601.
+    const MAX_OFFSET: i32 = 18 * 3600;
+
+    /// Зона суток из `system.tz`: `UTC`, `Etc/UTC`, `±HH:MM` или имя IANA.
+    pub fn from_tz(tz: Option<&str>) -> Result<Self, UnsupportedTz> {
+        match tz {
+            None => Ok(Self::Host),
+            Some("UTC" | "Etc/UTC") => Ok(Self::Utc),
+            Some(tz) => match Self::offset(tz) {
+                Some(secs) => Ok(Self::Fixed(secs)),
+                None => TimeZone::get(tz)
+                    .ok()
+                    .and_then(|zone| zone.iana_name().map(str::to_owned))
+                    .map(Self::Zone)
+                    .ok_or_else(|| UnsupportedTz(tz.to_owned())),
+            },
+        }
+    }
+
+    /// `±HH:MM` → секунды к востоку от UTC.
+    fn offset(tz: &str) -> Option<i32> {
+        let (sign, rest) = match tz.as_bytes().first()? {
+            b'+' => (1, &tz[1..]),
+            b'-' => (-1, &tz[1..]),
+            _ => return None,
+        };
+        let (hours, mins) = rest.split_once(':')?;
+        let digits = |s: &str| {
+            (s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| s.parse::<i32>().ok())
+                .flatten()
+        };
+        let (hours, mins) = (digits(hours)?, digits(mins)?);
+        let secs = hours * 3600 + mins * 60;
+        (mins < 60 && secs <= Self::MAX_OFFSET).then_some(sign * secs)
+    }
+
+    fn sql(&self, ts: &str) -> String {
         match self {
             Self::Host => format!("date({ts} / 1000000000, 'unixepoch', 'localtime')"),
             Self::Utc => format!("date({ts} / 1000000000, 'unixepoch')"),
+            Self::Fixed(secs) => format!("date({ts} / 1000000000 + ({secs}), 'unixepoch')"),
+            // Имя пришло из базы зон, кавычек в нём нет; экранирование — страховка.
+            Self::Zone(name) => format!("eva_day({ts}, '{}')", name.replace('\'', "''")),
         }
     }
 }
+
+/// `eva_day(ts, zone)` — дата `YYYY-MM-DD` наносекунд `ts` в зоне IANA: `localtime`
+/// SQLite знает только зону хоста. Зона разбирается раз на стейтмент (aux-данные).
+pub fn install_day(conn: &Connection) -> DbResult<()> {
+    let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+    conn.create_scalar_function("eva_day", 2, flags, |ctx| {
+        let zone = ctx.get_or_create_aux(1, |name| -> Result<TimeZone, BoxError> {
+            Ok(TimeZone::get(name.as_str()?)?)
+        })?;
+        let ts: i64 = ctx.get(0)?;
+        let at = jiff::Timestamp::from_nanosecond(i128::from(ts))
+            .map_err(|e| rusqlite::Error::UserFunctionError(e.into()))?;
+        Ok(at.to_zoned(TimeZone::clone(&zone)).date().to_string())
+    })?;
+    Ok(())
+}
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[data]
 pub struct ToolUsage {
@@ -252,7 +316,7 @@ pub struct Stats<'c>(pub &'c Connection);
 
 impl Stats<'_> {
     /// +1 к `metric{key}` за сутки `at` в зоне `zone`; `key = ""` — без разреза.
-    pub fn bump(&self, metric: Metric, key: &str, at: Timestamp, zone: DayZone) -> DbResult<()> {
+    pub fn bump(&self, metric: Metric, key: &str, at: Timestamp, zone: &DayZone) -> DbResult<()> {
         self.0.execute(
             &format!(
                 "INSERT INTO health_stats (day, metric, key, count) VALUES ({}, ?2, ?3, 1)
@@ -324,7 +388,7 @@ impl Stats<'_> {
     }
 
     /// Строки `spend` разреза и периода: общий `WHERE` запросов ниже.
-    fn spend_where(scope: &ScopeFilter, zone: DayZone) -> String {
+    fn spend_where(scope: &ScopeFilter, zone: &DayZone) -> String {
         format!(
             "s.ts >= :lo AND s.ts < :hi AND {} BETWEEN :from AND :to AND {}",
             zone.sql("s.ts"),
@@ -349,7 +413,7 @@ impl Stats<'_> {
         scope: &ScopeFilter,
         period: Period,
         group_by: GroupBy,
-        zone: DayZone,
+        zone: &DayZone,
     ) -> DbResult<Vec<SpendGroup>> {
         let sql = format!(
             "SELECT {key} AS key, s.currency,
@@ -386,7 +450,7 @@ impl Stats<'_> {
         &self,
         scope: &ScopeFilter,
         period: Period,
-        zone: DayZone,
+        zone: &DayZone,
     ) -> DbResult<CacheTotals> {
         let filter = Self::spend_where(scope, zone);
         let params = Self::spend_params(scope, period);
@@ -461,7 +525,7 @@ impl Stats<'_> {
         scope: &ScopeFilter,
         period: Period,
         group_by: GroupBy,
-        zone: DayZone,
+        zone: &DayZone,
     ) -> DbResult<Vec<SeriesRow>> {
         let sql = format!(
             "SELECT {day} AS day, {key} AS key, SUM(s.cost) AS cost,
@@ -651,7 +715,7 @@ impl Stats<'_> {
 }
 
 /// Выражение группы `GroupBy` над `spend s`.
-fn group_key(group_by: GroupBy, zone: DayZone) -> String {
+fn group_key(group_by: GroupBy, zone: &DayZone) -> String {
     match group_by {
         GroupBy::Model => String::from("s.model"),
         GroupBy::Source => String::from("s.source"),
@@ -723,4 +787,36 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn day_zone_accepts_utc_offsets_and_iana_names() {
+        assert_eq!(DayZone::from_tz(None), Ok(DayZone::Host));
+        assert_eq!(DayZone::from_tz(Some("Etc/UTC")), Ok(DayZone::Utc));
+        assert_eq!(DayZone::from_tz(Some("+03:00")), Ok(DayZone::Fixed(10_800)));
+        assert_eq!(
+            DayZone::from_tz(Some("-05:30")),
+            Ok(DayZone::Fixed(-19_800))
+        );
+        assert_eq!(
+            DayZone::from_tz(Some("europe/moscow")),
+            Ok(DayZone::Zone(String::from("Europe/Moscow")))
+        );
+        for bad in [
+            "Mars/Olympus",
+            "Europe/Moscow'; DROP TABLE spend; --",
+            "+3:00",
+            "+03:60",
+            "+19:00",
+            "03:00",
+            "+03",
+            "",
+        ] {
+            assert!(DayZone::from_tz(Some(bad)).is_err(), "{bad:?}");
+        }
+    }
 }

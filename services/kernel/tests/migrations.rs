@@ -178,10 +178,11 @@ async fn kernel_refuses_to_start_on_unknown_migration() {
         .await
         .expect("open");
     migrate(&db, MIGRATIONS).await.expect("migrate");
-    db.write(|tx| -> DbResult<()> {
+    let future = MIGRATIONS.len() as i64 + 1;
+    db.write(move |tx| -> DbResult<()> {
         tx.execute(
-            "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (2, 'from_the_future', x'00', 1)",
-            [],
+            "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?1, 'from_the_future', x'00', 1)",
+            [future],
         )?;
         Ok(())
     })
@@ -278,4 +279,41 @@ async fn readers_cannot_write() {
         })
         .await;
     assert!(res.is_err(), "reader connection is query_only");
+}
+
+/// `0002` заводит счётчик KV и по строкам, записанным до него.
+#[tokio::test]
+async fn module_kv_usage_backfills_existing_rows() {
+    let db = memory().await;
+    let init: &'static [Migration] = MIGRATIONS.get(..1).expect("init migration");
+    migrate(&db, init).await.expect("init");
+    db.write(|tx| -> DbResult<()> {
+        tx.execute_batch(
+            "INSERT INTO module_kv (module, key, value, updated_at) VALUES
+               ('svc', 'a', x'0102', 1), ('svc', 'ключ', x'', 1), ('other', 'b', x'00', 1)",
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("rows before 0002");
+    assert_eq!(migrate(&db, MIGRATIONS).await.expect("migrate"), 1);
+
+    let usage: Vec<(String, i64)> = query(&db, |c| {
+        let mut stmt = c.prepare("SELECT module, bytes FROM module_kv_usage ORDER BY module")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    })
+    .await;
+    assert_eq!(
+        usage,
+        [
+            (String::from("other"), 1 + 1 + 64),
+            (
+                String::from("svc"),
+                (1 + 2 + 64) + ("ключ".len() as i64 + 64)
+            ),
+        ]
+    );
 }

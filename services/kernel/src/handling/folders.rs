@@ -14,7 +14,9 @@ use crate::{
     db::{
         Db as _, Queries as _,
         folders::{FolderRow, UNSORTED},
+        stats::Metric,
     },
+    handling::text,
     state::{Policy, State},
 };
 
@@ -22,7 +24,8 @@ fn check_name(name: &str) -> AuxResult<()> {
     let ok = !name.trim().is_empty() && !name.chars().any(char::is_control);
     ok.true_or(Aux::Invalid(
         "folder name must be a non-empty single line".into(),
-    ))
+    ))?;
+    text::chars("folder name", name, text::NAME_MAX)
 }
 
 pub(crate) fn check_compact_at(compact_at: Option<f32>) -> AuxResult<()> {
@@ -75,9 +78,9 @@ pub async fn Update<C: Components>(
     Policy::new(caller).owner()?;
     let update::Args { folder, update } = args;
 
-    let row = shared
+    let (row, crossed) = shared
         .db()
-        .write(move |tx| -> Response<FolderRow, update::Err> {
+        .write(move |tx| -> Response<(FolderRow, usize), update::Err> {
             let mut row = tx
                 .folders()
                 .get(folder)?
@@ -107,9 +110,13 @@ pub async fn Update<C: Components>(
                 }
                 row.name = name;
             }
-            if let Patch::Change(trusted) = trusted {
-                row.trusted = trusted;
-            }
+            let before = match trusted {
+                Patch::Change(trusted) if trusted != row.trusted => {
+                    row.trusted = trusted;
+                    tx.chats().inherited_trust(folder)?
+                }
+                _ => Vec::new(),
+            };
             if let Patch::Change(model) = model {
                 row.model = model;
             }
@@ -125,11 +132,12 @@ pub async fn Update<C: Components>(
             }
 
             tx.folders().save(&row)?;
-            Ok(row)
+            let crossed = tx.chats().reset_crossed(&before)?;
+            Ok((row, crossed.len()))
         })
         .await?;
 
-    log::info!(folder:% = row.id, caller = caller.label(); "folder updated");
+    log::info!(folder:% = row.id, crossed, caller = caller.label(); "folder updated");
     Ok(update::Ok {
         folder: convert::folder::from_db(row),
     })
@@ -141,13 +149,19 @@ pub async fn Delete<C: Components>(
     state: &mut State<C>,
     args: delete::Args,
 ) -> Response<delete::Ok, delete::Err> {
-    let State { shared, caller, .. } = state;
+    let State {
+        shared,
+        world,
+        caller,
+        ..
+    } = state;
     Policy::new(caller).owner()?;
     let delete::Args { folder } = args;
 
-    let moved = shared
+    let (now, zone) = (world.now(), shared.day_zone());
+    let (moved, crossed) = shared
         .db()
-        .write(move |tx| -> Response<u64, delete::Err> {
+        .write(move |tx| -> Response<(u64, usize), delete::Err> {
             let row = tx
                 .folders()
                 .get(folder)?
@@ -161,13 +175,19 @@ pub async fn Delete<C: Components>(
                 .ok_or_else(|| {
                     Aux::internal(format!("surface {} has no Unsorted", row.surface.id))
                 })?;
+            let before = tx.chats().inherited_trust(folder)?;
             let moved = tx.folders().move_chats(folder, unsorted.id)?;
             tx.folders().delete(folder)?;
-            Ok(moved)
+            // Перенос в Unsorted — тот же `chats.move`, только без `confirm`.
+            let crossed = tx.chats().reset_crossed(&before)?;
+            for _ in &crossed {
+                tx.stats().bump(Metric::ChatsTrustMoves, "", now, &zone)?;
+            }
+            Ok((moved, crossed.len()))
         })
         .await?;
 
-    log::info!(folder:% = folder, moved, caller = caller.label(); "folder deleted");
+    log::info!(folder:% = folder, moved, crossed, caller = caller.label(); "folder deleted");
     Ok(delete::Ok { moved })
 }
 

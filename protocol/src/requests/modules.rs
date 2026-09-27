@@ -45,13 +45,11 @@ pub mod token_issue {
         pub token: String,
     }
 
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        Reserved(#[from] errors::modules::Reserved),
-    }
+    /// Зарезервированное или невалидное имя — `Aux::Invalid`.
+    #[data(error, display("_"))]
+    pub enum Err {}
 
-    code!(Err => [Reserved]);
+    code!(Err => []);
 }
 
 pub mod token_revoke {

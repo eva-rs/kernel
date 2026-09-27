@@ -29,8 +29,9 @@ pub enum ProviderConfig {
     Mock(mock::Config),
 }
 
-/// Провайдер не собрался; `provider` — имя из `llm.providers`.
-#[data(error, display("provider {provider}: {reason}"))]
+/// Провайдер не собрался; `provider` — имя из `llm.providers`, ошибка ключа
+/// записи читается путём: `llm.providers.<name>: api_key: …`.
+#[data(error, display("llm.providers.{provider}: {reason}"))]
 pub struct BuildError {
     pub provider: String,
     pub reason: String,
@@ -59,6 +60,19 @@ pub enum AnyProvider {
     Openai(Box<openai::OpenAiProvider>),
     #[cfg(feature = "mock")]
     Mock(mock::MockProvider),
+}
+
+impl AnyProvider {
+    /// Дочитывает каталог моделей, недоступный при [`build`]; `true` — `models()`
+    /// сменился и реестр моделей пора пересобрать.
+    pub async fn settle(&self) -> bool {
+        match *self {
+            #[cfg(feature = "openai")]
+            Self::Openai(ref p) => p.settle().await,
+            #[cfg(feature = "mock")]
+            Self::Mock(ref p) => p.settle().await,
+        }
+    }
 }
 
 impl Provider for AnyProvider {

@@ -42,6 +42,21 @@ impl KernelProvider {
     }
 }
 
+/// Каталог моделей, недоступный при сборке провайдера, дочитывается фоном.
+pub trait Settle: Send + Sync {
+    /// `true` — `models()` сменился и часть реестра пора пересобрать.
+    fn settle(&self) -> impl Future<Output = bool> + Send;
+}
+
+impl Settle for KernelProvider {
+    async fn settle(&self) -> bool {
+        match self {
+            Self::Builtin(p) => p.settle().await,
+            Self::Module(_) => false,
+        }
+    }
+}
+
 impl From<AnyProvider> for KernelProvider {
     fn from(provider: AnyProvider) -> Self {
         Self::Builtin(provider)

@@ -1,5 +1,5 @@
 //! Таблицы `modules`, `module_tokens` (`06 §2`, `§8`, `10 §2.6`) и строка
-//! `spend` инференса, заказанного модулем (`09 §2`).
+//! `spend` инференса вне тура (`09 §2`).
 
 use eva::{data, time::Timestamp};
 use rusqlite::{Connection, OptionalExtension as _, Row, named_params};
@@ -41,12 +41,13 @@ pub struct TokenRow {
     pub issued_at: Timestamp,
 }
 
-/// Строка `spend` с `source = module`, `op = other` (`09 §2`).
+/// Строка `spend` инференса вне тура, `op = other` (`09 §2`).
 #[data]
 pub struct ModuleSpend {
     pub ts: Timestamp,
     pub model: ModelId,
-    pub module: ModuleId,
+    /// `None` — инференс заказало ядро: `source = system`.
+    pub module: Option<ModuleId>,
     pub input: u64,
     pub cache_read: u64,
     /// Запись любого TTL.
@@ -221,12 +222,12 @@ impl Modules<'_> {
             "INSERT INTO spend (ts, model, source, op, module, input, cache_read, cache_write,
                                 cache_write_long, output, reasoning, context_edits_applied,
                                 cost, currency, cost_source)
-             VALUES (:ts, :model, 'module', 'other', :module, :input, :cache_read, :cache_write,
+             VALUES (:ts, :model, CASE WHEN :module IS NULL THEN 'system' ELSE 'module' END, 'other', :module, :input, :cache_read, :cache_write,
                      :cache_write_long, :output, :reasoning, :edits, :cost, :currency, :cost_source)",
             named_params! {
                 ":ts": Ts(row.ts),
                 ":model": row.model.as_str(),
-                ":module": row.module.as_str(),
+                ":module": row.module.as_ref().map(ModuleId::as_str),
                 ":input": saturate(row.input),
                 ":cache_read": saturate(row.cache_read),
                 ":cache_write": saturate(row.cache_write),

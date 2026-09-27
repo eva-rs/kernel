@@ -127,8 +127,8 @@ pub async fn Spend<C: Components>(
     let db = db_conn.acquire(shared).await?;
     let (rows, cache) = db
         .run(move |c| -> Result<_, DbError> {
-            let rows = c.stats().spend(&filter, period, group_by, zone)?;
-            let cache = c.stats().cache(&filter, period, zone)?;
+            let rows = c.stats().spend(&filter, period, group_by, &zone)?;
+            let cache = c.stats().cache(&filter, period, &zone)?;
             Ok((rows, cache))
         })
         .await?;
@@ -165,7 +165,7 @@ pub async fn SpendSeries<C: Components>(
 
     let db = db_conn.acquire(shared).await?;
     let rows = db
-        .run(move |c| c.stats().series(&filter, period, group_by, zone))
+        .run(move |c| c.stats().series(&filter, period, group_by, &zone))
         .await?;
 
     Ok(spend_series::Ok {

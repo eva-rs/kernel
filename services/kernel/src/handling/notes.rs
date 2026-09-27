@@ -11,11 +11,9 @@ use crate::{
     components::Components,
     convert,
     db::{Queries as _, notes::NoteRow},
+    handling::inference::estimate_bytes,
     state::{Policy, State},
 };
-
-/// `context.ratio_default` (`01 §9`): модель ещё не калибрована.
-const RATIO_DEFAULT: f64 = 4.0;
 
 #[eva::endpoint]
 #[fastrace::trace]
@@ -51,7 +49,7 @@ pub async fn List<C: Components>(
                 .unwrap_or(default_model);
             let notes = c.notes().list(chat)?;
             let mode = c.notes().mode(chat)?;
-            let ratio = c.notes().ratio(&model)?;
+            let ratio = c.turns().ratio(&model)?;
             Ok((model, notes, mode, ratio))
         })
         .await?;
@@ -61,7 +59,7 @@ pub async fn List<C: Components>(
         let share = u64::from(m.decl.context_window) * percent / 100;
         u32::try_from(share).map_or(ceiling, |s| s.min(ceiling))
     });
-    let tokens = estimate(&render_inline(&notes), ratio.unwrap_or(RATIO_DEFAULT));
+    let tokens = estimate_bytes(render_inline(&notes).len(), ratio);
 
     Ok(list::Ok {
         notes: notes.into_iter().map(convert::note::from_db).collect(),
@@ -81,14 +79,4 @@ fn render_inline(notes: &[NoteRow]) -> String {
         .map(|n| format!("## {} | {}\n{}", n.name, n.description, n.body))
         .collect();
     format!("[notes]\n{}", blocks.join("\n\n"))
-}
-
-/// `est(Text) = bytes / ratio` (`01 §9`), вверх.
-fn estimate(text: &str, ratio: f64) -> u32 {
-    let tokens = (text.len() as f64 / ratio.clamp(1.0, 10.0)).ceil();
-    if tokens >= f64::from(u32::MAX) {
-        u32::MAX
-    } else {
-        tokens as u32
-    }
 }

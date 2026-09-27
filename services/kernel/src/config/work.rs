@@ -13,6 +13,9 @@ pub struct WorkConfig {
     /// Дисковый лимит одного blob'а, не порог контекста.
     #[schemars(with = "String")]
     pub blob_max: ByteSize,
+    /// Живые blob'ы чатов одного владельца surface, каждый не легче 4 KiB; surface без модуля делят одну квоту.
+    #[schemars(with = "String")]
+    pub blob_quota: ByteSize,
 }
 
 impl Default for WorkConfig {
@@ -21,6 +24,7 @@ impl Default for WorkConfig {
             blob_dir: None,
             blob_keep: HumanDuration(Duration::from_secs(30 * 24 * 60 * 60)),
             blob_max: ByteSize::mib(64),
+            blob_quota: ByteSize::gib(4),
         }
     }
 }

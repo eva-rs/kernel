@@ -1,12 +1,16 @@
 //! Хендлеры `fs.*` (`06 §5`, I12): файлы модуля в
 //! `<state_dir>/modules/<module>/fs`. Путь — только относительный и внутри
-//! корня: `..`, абсолютный путь и симлинк наружу → `Aux::Forbidden`.
+//! корня: `..`, абсолютный путь и симлинк наружу → `Aux::Forbidden`. Квоты
+//! `modules.fs_quota` (байты) и `modules.fs_max_entries` проверяются под
+//! замком записи модуля.
 
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     fs, io,
     num::NonZeroU64,
     path::{Component, Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex, PoisonError, Weak},
     time::SystemTime,
 };
 
@@ -67,6 +71,28 @@ impl From<io::Error> for Fail {
 
 type FsResult<T> = Result<T, Fail>;
 
+#[derive(Default)]
+struct Usage {
+    bytes: u64,
+    entries: u64,
+}
+
+/// Замок записи на каталог модуля: без него параллельные записи прошли бы
+/// одну и ту же проверку квоты.
+fn write_lock(dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    type Locks = HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>;
+    static LOCKS: LazyLock<Mutex<Locks>> = LazyLock::new(Mutex::default);
+
+    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(lock) = locks.get(dir).and_then(Weak::upgrade) {
+        return lock;
+    }
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::default();
+    locks.insert(dir.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
 /// Корень `fs` модуля, канонический: с ним сравниваются цели симлинков.
 struct Jail {
     root: PathBuf,
@@ -121,22 +147,31 @@ impl Jail {
         }
     }
 
-    /// Занято файлами под корнем; симлинки не разыменовываются.
-    fn usage(&self) -> FsResult<u64> {
-        let mut total = 0_u64;
+    /// Занято под корнем; симлинки не разыменовываются.
+    fn usage(&self) -> FsResult<Usage> {
+        let mut usage = Usage::default();
         let mut stack = vec![self.root.clone()];
         while let Some(dir) = stack.pop() {
             for entry in fs::read_dir(&dir)? {
                 let entry = entry?;
                 let meta = entry.path().symlink_metadata()?;
+                usage.entries = usage.entries.saturating_add(1);
                 if meta.is_dir() {
                     stack.push(entry.path());
                 } else {
-                    total = total.saturating_add(meta.len());
+                    usage.bytes = usage.bytes.saturating_add(meta.len());
                 }
             }
         }
-        Ok(total)
+        Ok(usage)
+    }
+
+    /// Каталоги над `path`, которые создаст `create_dirs`.
+    fn missing_dirs(&self, path: &Path) -> u64 {
+        path.ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(&self.root) && fs::symlink_metadata(dir).is_err())
+            .count() as u64
     }
 
     fn entry(&self, name: String, path: &Path) -> FsResult<Entry> {
@@ -202,7 +237,7 @@ pub async fn Read<C: Components>(
 ) -> Response<read::Ok, read::Err> {
     let dir = jail_dir(state)?;
     let read::Args { path } = args;
-    let max = state.shared.cfg().modules.transport.max_frame.as_u64();
+    let max = state.shared.cfg().modules.max_payload();
 
     let rel = path.clone();
     let res = blocking(move || {
@@ -213,7 +248,7 @@ pub async fn Read<C: Components>(
             return Err(Fail::IsDir);
         }
         (meta.len() <= max).true_or(Aux::Quota(format!(
-            "file is {} bytes, a frame carries at most {max}",
+            "file is {} bytes, a response carries at most {max}",
             meta.len()
         )))?;
         Ok(fs::read(&full)?)
@@ -240,10 +275,14 @@ pub async fn Write<C: Components>(
         data,
         create_dirs,
     } = args;
-    let quota = state.shared.cfg().modules.fs_quota.as_u64();
+    let modules = &state.shared.cfg().modules;
+    let (quota, max_entries) = (modules.fs_quota.as_u64(), u64::from(modules.fs_max_entries));
+    let held = write_lock(&dir).lock_owned().await;
 
     let rel = path.clone();
     let res = blocking(move || {
+        // Замок уходит в поток: отменённый вызов не отпустит его посреди записи.
+        let _held = held;
         let jail = Jail::open(&dir)?;
         if parse(&rel)?.is_empty() {
             return Err(Fail::IsDir);
@@ -251,26 +290,37 @@ pub async fn Write<C: Components>(
         let full = jail.resolve(&rel, true)?;
         let old = match fs::metadata(&full) {
             Ok(meta) if meta.is_dir() => return Err(Fail::IsDir),
-            Ok(meta) => meta.len(),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+            Ok(meta) => Some(meta.len()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
+        };
+        let parent_missing = match full.parent().map(fs::metadata) {
+            None => false,
+            Some(Ok(meta)) if meta.is_dir() => false,
+            Some(Ok(_)) => return Err(Fail::NotDir),
+            Some(Err(e)) if e.kind() == io::ErrorKind::NotFound && create_dirs => true,
+            Some(Err(e)) => return Err(e.into()),
         };
 
         let size = data.len() as u64;
-        let used = jail.usage()?.saturating_sub(old);
+        let usage = jail.usage()?;
+        let used = usage.bytes.saturating_sub(old.unwrap_or(0));
         (used.saturating_add(size) <= quota).true_or(Aux::Quota(format!(
             "module fs quota is {quota} bytes, {used} are used"
         )))?;
+        let fresh = u64::from(old.is_none())
+            + if parent_missing {
+                jail.missing_dirs(&full)
+            } else {
+                0
+            };
+        (usage.entries.saturating_add(fresh) <= max_entries).true_or(Aux::Quota(format!(
+            "module fs holds {} of modules.fs_max_entries {max_entries} entries",
+            usage.entries
+        )))?;
 
-        if let Some(parent) = full.parent() {
-            match fs::metadata(parent) {
-                Ok(meta) if meta.is_dir() => {}
-                Ok(_) => return Err(Fail::NotDir),
-                Err(e) if e.kind() == io::ErrorKind::NotFound && create_dirs => {
-                    fs::create_dir_all(parent)?;
-                }
-                Err(e) => return Err(e.into()),
-            }
+        if parent_missing && let Some(parent) = full.parent() {
+            fs::create_dir_all(parent)?;
         }
         fs::write(&full, &data)?;
         Ok(size)

@@ -8,10 +8,3 @@ pub struct NotFound {
 }
 
 code!(NotFound => NotFound);
-
-#[data(error, display("module name {module} is reserved"))]
-pub struct Reserved {
-    pub module: ModuleId,
-}
-
-code!(Reserved => InvalidParams);

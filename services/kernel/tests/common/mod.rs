@@ -3,8 +3,6 @@
 //! песочнице, отказы БД и рук по флагу; `Harness::listen` поднимает UDS
 //! поверх того же ядра. Каждый файл `tests/*.rs` берёт отсюда нужное.
 //!
-//! Изменения API: `Test::Provider` — `KernelProvider` с `MockProvider`
-//! внутри; `Harness::provider` (клон мока) вместо `provider_requests`.
 //! Модули по UDS: `start_with(with_module_tokens)`, затем `h.listen()` →
 //! `(Listening, Url)`; токен модуля — `token(name)`.
 
@@ -22,6 +20,7 @@ use std::{
 use eva::{
     time::{Clock as _, Mock},
     url::Url,
+    utils::SecretString,
 };
 use eva_core::{
     CallStep as _, Caller, SessionMaker as _, service, service::surfaces::Surfaces as _,
@@ -31,10 +30,11 @@ use eva_protocol::{
     errors::{Aux, Generic},
     requests::{Response, surfaces},
     types::{
-        ModelId, ModuleId, SurfaceId,
+        ChatId, ModelId, ModuleId, SessionId, SurfaceId,
         model::{ModelCaps, ModelDecl, ProviderDecl},
         module::TokenKind,
     },
+    wire::Capabilities,
 };
 use eva_providers::{
     AnyProvider, ProviderConfig,
@@ -45,8 +45,8 @@ use eva_rpc::config::{FileMode, Listen, UdsListen};
 use eva_kernel::{
     Components, Config, Kernel, Parts, Session,
     config::{
-        ChatsConfig, DbConfig, HandsConfig, LlmConfig, ModulesConfig, NotesConfig, Secret,
-        SystemConfig, WorkConfig,
+        ChatsConfig, DbConfig, HandsConfig, LlmConfig, ModulesConfig, NotesConfig, SystemConfig,
+        WorkConfig,
         hands::{EndpointConfig, HandsLimits},
         llm::ProviderEntry,
         modules::TokenEntry,
@@ -54,7 +54,10 @@ use eva_kernel::{
     db::{Connection, Db, DbError, DbResult, Queries as _, Reader, Sqlite, Tx},
     hands::Machine,
     providers::KernelProvider,
-    subsystems::modules::{self, Listening},
+    subsystems::modules::{
+        self, Listening,
+        live::{Entry as LiveEntry, TokenSource},
+    },
     world::testing,
 };
 
@@ -268,7 +271,7 @@ pub fn with_module_tokens(cfg: &mut Config) {
         cfg.modules.tokens.insert(
             ModuleId::from(module),
             TokenEntry {
-                token: Secret::new(token(module)),
+                token: SecretString::Plaintext(token(module)),
                 kind,
             },
         );
@@ -352,6 +355,13 @@ pub async fn start_with_mock(tweak: impl FnOnce(&mut Config), mock: mock::Config
     );
     tweak(&mut cfg);
     start_in_with(dir, cfg, MockProvider::new(mock)).await
+}
+
+/// Ядро с готовым провайдером: например, стартовавшим без каталога моделей.
+pub async fn start_with_provider(provider: MockProvider) -> Harness {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cfg = config(dir.path());
+    start_in_with(dir, cfg, provider).await
 }
 
 /// Ядро поверх существующего каталога (рестарт на той же базе).
@@ -450,14 +460,111 @@ impl Harness {
             .create()
             .call(surfaces::create::Args {
                 id: SurfaceId::from(name),
-                name: Some(format!("{name} surface")),
+                name: format!("{name} surface"),
                 rules: None,
-                ask: false,
-                builtin: false,
             })
             .await
             .expect("service creates its surface");
         session
+    }
+
+    /// Живая сессия модуля без транспорта, как после handshake: по ней ядро
+    /// выводит, кто обслуживает surface. Прежняя сессия модуля вытесняется.
+    pub fn live_session(&self, module: &str, kind: TokenKind, ask: bool) -> SessionId {
+        let session = SessionId::from(format!("{module}-session"));
+        let entry = LiveEntry::new(
+            session.clone(),
+            Caller::from_token(kind, ModuleId::from(module)),
+            TokenSource::Config,
+            Capabilities {
+                ask,
+                ..Capabilities::default()
+            },
+            self.clock.get(),
+        );
+        _ = self
+            .kernel
+            .shared()
+            .live()
+            .claim(ModuleId::from(module), entry, None)
+            .expect("config sessions ignore revocations");
+        session
+    }
+
+    /// Сессия модуля закрылась.
+    pub fn drop_session(&self, module: &str, session: &SessionId) {
+        self.kernel
+            .shared()
+            .live()
+            .release(&ModuleId::from(module), session)
+            .expect("the session is current");
+    }
+
+    /// `ask_ui` чатов surface по живым сессиям.
+    pub async fn ask_ui(&self, surface: &str) -> bool {
+        let id = SurfaceId::from(surface);
+        let row = self
+            .query(move |c| c.surfaces().get(&id))
+            .await
+            .expect("surface exists");
+        self.kernel.shared().live().ask_ui(&row.surface_ref())
+    }
+
+    /// Модули, чьи живые сессии обслуживают surface.
+    pub async fn serving(&self, surface: &str) -> Vec<String> {
+        let id = SurfaceId::from(surface);
+        let row = self
+            .query(move |c| c.surfaces().get(&id))
+            .await
+            .expect("surface exists");
+        self.kernel
+            .shared()
+            .live()
+            .serving(&row.surface_ref())
+            .into_iter()
+            .map(|m| m.as_str().to_owned())
+            .collect()
+    }
+
+    /// Открытый сегмент чата: без него сбросу нечего закрывать.
+    pub async fn open_segment(&self, chat: ChatId) -> i64 {
+        self.kernel
+            .shared()
+            .db()
+            .write(move |tx| {
+                Ok::<i64, DbError>(tx.query_row(
+                    "INSERT INTO segments (chat_id, seq, started_at, reason, system_snapshot, tools_snapshot, hot_memory_ids)
+                     VALUES (?1, 1, 1, 'initial', x'', x'', x'') RETURNING id",
+                    [chat.0],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .expect("segment")
+    }
+
+    /// Помечен ли открытый сегмент чата к сбросу (`05 §2.3`).
+    pub async fn reset_pending(&self, chat: ChatId) -> bool {
+        self.query(move |c| {
+            Ok(c.query_row(
+                "SELECT reset_pending IS NOT NULL FROM chats WHERE id = ?1",
+                [chat.0],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
+
+    /// Сумма счётчика `health_stats` за все дни и ключи.
+    pub async fn counter(&self, metric: &'static str) -> i64 {
+        self.query(move |c| {
+            Ok(c.query_row(
+                "SELECT COALESCE(SUM(count), 0) FROM health_stats WHERE metric = ?1",
+                [metric],
+                |r| r.get(0),
+            )?)
+        })
+        .await
     }
 
     /// Запрос к базе в обход операций: проверки состояния.
@@ -481,7 +588,9 @@ pub enum Outcome {
     Unavailable,
     /// Своя ошибка операции (`Spec`).
     Spec,
-    /// `Db`, `Internal`, `Quota`.
+    /// Отказ SQLite: край различает его и `Internal` (`11 §7`).
+    Db,
+    /// `Internal`, `Quota`.
     Other,
 }
 
@@ -495,7 +604,8 @@ pub fn outcome<O, E>(res: &Response<O, E>) -> Outcome {
             Aux::Invalid(_) => Outcome::Invalid,
             Aux::Conflict(_) => Outcome::Conflict,
             Aux::Unavailable(_) => Outcome::Unavailable,
-            Aux::Db(_) | Aux::Internal(_) | Aux::Quota(_) => Outcome::Other,
+            Aux::Db(_) => Outcome::Db,
+            Aux::Internal(_) | Aux::Quota(_) => Outcome::Other,
         },
     }
 }

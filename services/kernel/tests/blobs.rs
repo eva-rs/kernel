@@ -1,11 +1,13 @@
 //! `blobs.*` (`07 §6`, `06 §5`): приём с проверкой по ходу, `Service` —
-//! только blob'ы чатов своих surface.
+//! только blob'ы чатов своих surface; отменённый приём не оставляет файла,
+//! живые blob'ы владельца — до `work.blob_quota`.
 
 mod common;
 
 use std::time::Duration;
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome};
+use eva::bytesize::ByteSize;
 use eva_core::{
     ByteStream, CallStep as _, StreamStep as _, UploadStep as _, service::blobs::Blobs as _,
 };
@@ -16,9 +18,14 @@ use eva_protocol::{
 };
 use futures::StreamExt as _;
 
-use eva_kernel::db::{Db as _, DbResult};
+use eva_kernel::{
+    db::{Db as _, DbResult, blobs::BLOB_FLOOR},
+    handling::blobs::{STAGING, sweep},
+};
 
 const DATA: &[u8] = b"the quick brown fox jumps over the lazy dog";
+
+type PutResult = Result<put::Ok, Generic<put::Err>>;
 
 async fn chat(h: &Harness, surface: &str) -> ChatId {
     let surface = surface.to_owned();
@@ -102,7 +109,27 @@ async fn download(
 
 /// Каталоги blob'ов на диске: отвергнутые не оставляют следа.
 fn stored(h: &Harness) -> usize {
-    std::fs::read_dir(h.dir.path().join("blobs")).map_or(0, |dir| dir.count())
+    std::fs::read_dir(h.dir.path().join("blobs")).map_or(0, |dir| {
+        dir.filter(|e| e.as_ref().map_or(true, |e| e.file_name() != STAGING))
+            .count()
+    })
+}
+
+/// Недописанные приёмы в `blob_dir/.staging`.
+fn staged(h: &Harness) -> usize {
+    std::fs::read_dir(h.dir.path().join("blobs").join(STAGING)).map_or(0, |dir| dir.count())
+}
+
+/// Условие наступает за `within`: фоновая уборка отменённого приёма.
+async fn eventually(within: Duration, mut check: impl FnMut() -> bool) -> bool {
+    let until = std::time::Instant::now() + within;
+    while std::time::Instant::now() < until {
+        if check() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    check()
 }
 
 #[tokio::test]
@@ -270,6 +297,11 @@ async fn size_is_checked_while_receiving() {
     );
 
     assert_eq!(stored(&h), 0, "rejected uploads leave nothing behind");
+    assert_eq!(
+        staged(&h),
+        0,
+        "their staging files are gone before the reply"
+    );
     let rows: i64 = h
         .query(|c| Ok(c.query_row("SELECT count(*) FROM blobs", [], |r| r.get(0))?))
         .await;
@@ -415,4 +447,162 @@ async fn policy_matrix() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn cancelled_upload_leaves_nothing() {
+    let h = common::start().await;
+    let chat = chat(&h, "local").await;
+    let mut client = h.client_session().await;
+    let stalled: ByteStream = Box::pin(
+        futures::stream::iter([Ok(eva::bytes::Bytes::from_static(b"partial"))])
+            .chain(futures::stream::pending()),
+    );
+    let upload = tokio::spawn(async move {
+        client
+            .blobs()
+            .put()
+            .call(args(chat, "cut.bin", 64), stalled)
+            .await
+            .is_ok()
+    });
+
+    assert!(
+        eventually(Duration::from_secs(5), || staged(&h) == 1).await,
+        "the upload is being received into staging"
+    );
+    upload.abort();
+    assert!(upload.await.is_err(), "the call was cancelled");
+    assert!(
+        eventually(Duration::from_secs(5), || staged(&h) == 0).await,
+        "the partial file is removed"
+    );
+    assert_eq!(stored(&h), 0);
+    let rows: i64 = h
+        .query(|c| Ok(c.query_row("SELECT count(*) FROM blobs", [], |r| r.get(0))?))
+        .await;
+    assert_eq!(rows, 0);
+}
+
+#[tokio::test]
+async fn startup_sweep_removes_stale_uploads() {
+    let h = common::start().await;
+    let blob_dir = h.dir.path().join("blobs");
+    let staging = blob_dir.join(STAGING);
+    std::fs::create_dir_all(staging.join("odd-dir")).expect("staging dir");
+    std::fs::write(staging.join("0190aaaa-stale"), b"half").expect("stale upload");
+    let kept = blob_dir.join("0190aaaa-kept");
+    std::fs::create_dir_all(&kept).expect("stored blob dir");
+    std::fs::write(kept.join("f.txt"), b"whole").expect("stored blob");
+
+    assert_eq!(sweep(&blob_dir).await.expect("sweep"), 2);
+    assert_eq!(staged(&h), 0);
+    assert!(kept.join("f.txt").exists(), "stored blobs stay");
+    assert_eq!(
+        sweep(&h.dir.path().join("nowhere")).await.expect("no dir"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn kernel_start_sweeps_stale_uploads() {
+    let common::Harness { kernel, dir, .. } = common::start().await;
+    drop(kernel);
+    let blob_dir = dir.path().join("blobs");
+    let staging = blob_dir.join(STAGING);
+    std::fs::create_dir_all(&staging).expect("staging dir");
+    std::fs::write(staging.join("0190aaaa-stale"), b"half").expect("stale upload");
+
+    let cfg = common::config(dir.path());
+    let h = common::start_in(dir, cfg).await;
+    assert_eq!(staged(&h), 0, "a restart drops half-received uploads");
+}
+
+#[tokio::test]
+async fn live_blobs_of_an_owner_share_a_quota() {
+    // Два blob'а по `BLOB_FLOOR` влезают, третий — нет.
+    let mut h =
+        common::start_with(|cfg| cfg.work.blob_quota = ByteSize::b(3 * BLOB_FLOOR - 1)).await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let mut other = h.service_with_surface(OTHER).await;
+    let own = chat(&h, SVC).await;
+    let foreign = chat(&h, OTHER).await;
+
+    upload(&mut svc, own).await;
+    upload(&mut svc, own).await;
+    let res = svc
+        .blobs()
+        .put()
+        .call(args(own, "fox.txt", DATA.len()), body(&[DATA]))
+        .await;
+    assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
+    let mut kernel = h.kernel_session().await;
+    let res = kernel
+        .blobs()
+        .put()
+        .call(args(own, "fox.txt", DATA.len()), body(&[DATA]))
+        .await;
+    assert!(
+        matches!(res, Err(Generic::Aux(Aux::Quota(_)))),
+        "the chat's owner pays, not the caller: {res:?}"
+    );
+    upload(&mut other, foreign).await;
+
+    h.clock.advance(Duration::from_secs(30 * 24 * 60 * 60));
+    let mut svc = h.session(common::service(SVC)).await;
+    upload(&mut svc, own).await;
+}
+
+#[tokio::test]
+async fn concurrent_uploads_cannot_overshoot_the_quota() {
+    let h = common::start_with(|cfg| cfg.work.blob_quota = ByteSize::b(2 * BLOB_FLOOR - 1)).await;
+    let chat = chat(&h, "local").await;
+    let mut a = h.client_session().await;
+    let mut b = h.client_session().await;
+    async fn put_60(session: &mut TestSession, chat: ChatId, name: &str) -> PutResult {
+        session
+            .blobs()
+            .put()
+            .call(args(chat, name, 60), body(&[&[1; 60]]))
+            .await
+    }
+
+    let (ra, rb) = tokio::join!(put_60(&mut a, chat, "a"), put_60(&mut b, chat, "b"));
+    assert_eq!(
+        usize::from(ra.is_ok()) + usize::from(rb.is_ok()),
+        1,
+        "{ra:?} {rb:?}"
+    );
+    assert!(
+        [&ra, &rb]
+            .iter()
+            .all(|r| r.is_ok() || matches!(r, Err(Generic::Aux(Aux::Quota(_))))),
+        "{ra:?} {rb:?}"
+    );
+    assert_eq!(stored(&h), 1, "the refused upload left no directory");
+    assert_eq!(staged(&h), 0);
+}
+
+/// Пустой blob — тоже каталог, файл и строка: байтовая квота видит его по `BLOB_FLOOR`.
+#[tokio::test]
+async fn empty_blobs_are_charged_a_floor() {
+    let h = common::start_with(|cfg| cfg.work.blob_quota = ByteSize::kib(64)).await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let own = chat(&h, SVC).await;
+
+    let fit = 64 * 1024 / BLOB_FLOOR;
+    for n in 0..fit {
+        svc.blobs()
+            .put()
+            .call(args(own, &format!("empty-{n}"), 0), body(&[]))
+            .await
+            .unwrap_or_else(|e| panic!("empty blob {n}: {e:?}"));
+    }
+    let res = svc
+        .blobs()
+        .put()
+        .call(args(own, "one-too-many", 0), body(&[]))
+        .await;
+    assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
+    assert_eq!(stored(&h), usize::try_from(fit).expect("fits"));
 }

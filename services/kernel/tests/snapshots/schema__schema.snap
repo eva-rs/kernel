@@ -222,6 +222,8 @@ table messages (messages)
   CREATE TABLE messages ( chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, seq INTEGER NOT NULL, event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('user','assistant')), sender_person_id TEXT REFERENCES persons(id) ON DELETE RESTRICT, external_id TEXT, reply_to_external_id TEXT, turn_id TEXT, indexed_at INTEGER, PRIMARY KEY (chat_id, seq)) STRICT
 table module_kv (module_kv)
   CREATE TABLE module_kv (module TEXT NOT NULL, key TEXT NOT NULL, value BLOB NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (module, key)) STRICT
+table module_kv_usage (module_kv_usage)
+  CREATE TABLE module_kv_usage (module TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK (bytes >= 0)) STRICT, WITHOUT ROWID
 table module_tokens (module_tokens)
   CREATE TABLE module_tokens (token_hash BLOB PRIMARY KEY, module TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('client','service')), issued_by TEXT REFERENCES persons(id) ON DELETE RESTRICT, issued_via TEXT, issued_at INTEGER NOT NULL, revoked_at INTEGER, CHECK (issued_by IS NOT NULL OR issued_via IS NOT NULL)) STRICT
 table modules (modules)
@@ -282,3 +284,9 @@ trigger memory_ai (memory)
   CREATE TRIGGER memory_ai AFTER INSERT ON memory BEGIN INSERT INTO memory_fts(rowid,text,name,description,tags) VALUES (new.id,new.text,new.name,new.description,new.tags); END
 trigger memory_au (memory)
   CREATE TRIGGER memory_au AFTER UPDATE OF text,name,description,tags ON memory BEGIN INSERT INTO memory_fts(memory_fts,rowid,text,name,description,tags) VALUES ('delete',old.id,old.text,old.name,old.description,old.tags); INSERT INTO memory_fts(rowid,text,name,description,tags) VALUES (new.id,new.text,new.name,new.description,new.tags); END
+trigger module_kv_usage_ad (module_kv)
+  CREATE TRIGGER module_kv_usage_ad AFTER DELETE ON module_kv BEGIN UPDATE module_kv_usage SET bytes = bytes - (octet_length(old.key) + length(old.value) + 64) WHERE module = old.module; END
+trigger module_kv_usage_ai (module_kv)
+  CREATE TRIGGER module_kv_usage_ai AFTER INSERT ON module_kv BEGIN INSERT INTO module_kv_usage (module, bytes) VALUES (new.module, octet_length(new.key) + length(new.value) + 64) ON CONFLICT (module) DO UPDATE SET bytes = bytes + excluded.bytes; END
+trigger module_kv_usage_au (module_kv)
+  CREATE TRIGGER module_kv_usage_au AFTER UPDATE ON module_kv BEGIN UPDATE module_kv_usage SET bytes = bytes - (octet_length(old.key) + length(old.value) + 64) WHERE module = old.module; INSERT INTO module_kv_usage (module, bytes) VALUES (new.module, octet_length(new.key) + length(new.value) + 64) ON CONFLICT (module) DO UPDATE SET bytes = bytes + excluded.bytes; END

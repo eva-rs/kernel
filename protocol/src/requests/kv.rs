@@ -1,9 +1,8 @@
 //! KV модуля, last-write-wins.
 
 use eva::data;
-use serde_json::Value;
 
-use crate::requests::Limit;
+use crate::{requests::Limit, types::Value};
 
 pub mod get {
     use super::*;

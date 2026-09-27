@@ -28,6 +28,6 @@ pub struct Module {
     pub proto_version: String,
     /// Последний переход состояния.
     pub since: Timestamp,
-    /// Объявленные capability: `provider`, `tools`, `events`, `hooks`.
+    /// Объявленные capability: `provider`, `tools`, `events`, `hooks`, `ask`.
     pub capabilities: Vec<String>,
 }

@@ -13,10 +13,9 @@ use crate::{
     wire::{Capabilities, ErrorCode},
 };
 
+/// Имени модуля нет: идентичность даёт токен (`06 §2`).
 #[data]
 pub struct Hello {
-    /// Имя модуля — его идентичность и скоуп `fs`/`sqlite`/`kv`.
-    pub module: ModuleId,
     /// Версия модуля, для `modules.list`.
     pub version: String,
     pub proto_version: ProtoVersion,
@@ -64,6 +63,8 @@ impl From<&str> for Token {
 #[data]
 pub struct Welcome {
     pub session_id: SessionId,
+    /// Имя записи токена: скоуп `fs`/`sqlite`/`kv` и значение `surface.module`.
+    pub module: ModuleId,
     pub kernel_version: String,
     pub proto_version: ProtoVersion,
     /// Бит токена: по нему модуль строит свой `Caller`, подменить его нельзя.
@@ -79,6 +80,10 @@ pub struct Welcome {
     pub models_accepted: Vec<ModelId>,
     #[serde(default)]
     pub warnings: Vec<Warning>,
+    /// `hello.resume` продолжил окно идемпотентности прошлой сессии; `false`
+    /// (например, после рестарта ядра) — повтор оборванной мутации тем же id исполнит её снова.
+    #[serde(default)]
+    pub resumed: bool,
 }
 
 /// Отклонённая часть `hello`; сессия при этом жива.

@@ -160,7 +160,7 @@ impl Chats<'_> {
     }
 
     /// Keyset по `(last_activity_at, id) DESC`; ключ `after` читается из БД.
-    /// `None` — якорь страницы исчез (purge между страницами).
+    /// `None` — якорь страницы исчез (purge между страницами) или не виден caller'у.
     pub fn list(
         &self,
         filter: &ChatFilter,
@@ -168,7 +168,7 @@ impl Chats<'_> {
         limit: u16,
     ) -> DbResult<Option<Vec<ChatRow>>> {
         let after_at = match after {
-            Some(id) => match self.last_activity(id)? {
+            Some(id) => match self.last_activity(id, &filter.surfaces)? {
                 Some(at) => Some(at),
                 None => return Ok(None),
             },
@@ -203,12 +203,17 @@ impl Chats<'_> {
         Ok(Some(rows))
     }
 
-    fn last_activity(&self, id: ChatId) -> DbResult<Option<Timestamp>> {
+    /// Якорь под тем же фильтром видимости, что и страница: чужой якорь —
+    /// как исчезнувший, иначе он выдавал бы существование и время чужого чата.
+    fn last_activity(&self, id: ChatId, surfaces: &SurfaceFilter) -> DbResult<Option<Timestamp>> {
         Ok(self
             .0
             .query_row(
-                "SELECT last_activity_at FROM chats WHERE id = ?1",
-                [id.0],
+                "SELECT c.last_activity_at FROM chats c
+                   JOIN folders f ON f.id = c.folder_id
+                   JOIN surfaces s ON s.id = f.surface_id
+                  WHERE c.id = ?1 AND (?2 IS NULL OR s.module = ?2)",
+                (id.0, surfaces.module()),
                 |row| row.get::<_, Ts>(0),
             )
             .optional()?
@@ -309,6 +314,41 @@ impl Chats<'_> {
             (chat.0, folder.0),
         )?;
         Ok(())
+    }
+
+    /// `(id, trusted_chat)` чатов папки, наследующих trust: только их задевает
+    /// правка или удаление папки.
+    pub fn inherited_trust(&self, folder: FolderId) -> DbResult<Vec<(ChatId, bool)>> {
+        let mut stmt = self.0.prepare(
+            "SELECT c.id, COALESCE(f.trusted, s.trusted, 0) FROM chats c
+               JOIN folders f ON f.id = c.folder_id
+               JOIN surfaces s ON s.id = f.surface_id
+              WHERE c.folder_id = ?1 AND c.trusted IS NULL",
+        )?;
+        let rows = stmt
+            .query_map([folder.0], |row| Ok((ChatId(row.get(0)?), row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Чаты снимка `before`, чей trust с тех пор сменился: граница пересечена,
+    /// открытый сегмент каждого помечается к сбросу (`05 §2.3`).
+    pub fn reset_crossed(&self, before: &[(ChatId, bool)]) -> DbResult<Vec<ChatId>> {
+        let mut stmt = self.0.prepare(
+            "SELECT COALESCE(c.trusted, f.trusted, s.trusted, 0) FROM chats c
+               JOIN folders f ON f.id = c.folder_id
+               JOIN surfaces s ON s.id = f.surface_id
+              WHERE c.id = ?1",
+        )?;
+        let mut crossed = Vec::new();
+        for &(chat, was) in before {
+            let now: Option<bool> = stmt.query_row([chat.0], |row| row.get(0)).optional()?;
+            if now.is_some_and(|now| now != was) {
+                self.mark_reset(chat)?;
+                crossed.push(chat);
+            }
+        }
+        Ok(crossed)
     }
 
     /// Открытый сегмент есть: его закрывает `turns` компакцией `reset` (`05 §2.3`).

@@ -7,10 +7,13 @@ mod common;
 use std::time::Duration;
 
 use common::{Harness, OTHER, Outcome, SVC, outcome};
-use eva::time::{Clock as _, Date};
+use eva::{
+    time::{Clock as _, Date},
+    utils::SecretString,
+};
 use eva_core::{CallStep as _, service::stats::Stats as _};
 use eva_kernel::{
-    config::{Secret, modules::TokenEntry},
+    config::modules::TokenEntry,
     db::{Db as _, DbResult},
 };
 use eva_protocol::{
@@ -769,7 +772,7 @@ async fn configured_token_kind_wins() {
         cfg.modules.tokens.insert(
             ModuleId::from(OTHER),
             TokenEntry {
-                token: Secret::new("secret"),
+                token: SecretString::Plaintext(String::from("secret")),
                 kind: TokenKind::Client,
             },
         );
@@ -865,4 +868,36 @@ async fn stats_matrix() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Сутки `spend` в зоне IANA — и в ключе группы, и в фильтре периода.
+#[tokio::test]
+async fn spend_days_follow_an_iana_zone() {
+    let h = common::start_with(|cfg| cfg.system.tz = Some(String::from("America/New_York"))).await;
+    // 2026-07-01T02:00Z — ещё 30 июня в Нью-Йорке (EDT, −4).
+    let ts = (i64::from(date("2026-07-01").days()) * 86_400 + 7_200) * SEC;
+    exec(
+        &h,
+        format!(
+            "INSERT INTO spend (ts, model, source, op, input, cache_read, cache_write, output, cost_source)
+             VALUES ({ts}, 'mock-model', 'system', 'other', 1, 0, 0, 1, 'none');"
+        ),
+    )
+    .await;
+
+    let day = date("2026-06-30");
+    let ok = spend(
+        &h,
+        spend::Args {
+            scope: Scope::Global,
+            target: None,
+            from: day,
+            to: day,
+            group_by: GroupBy::Day,
+            view: None,
+        },
+    )
+    .await;
+    let keys: Vec<_> = ok.rows.iter().map(|r| r.key.as_str()).collect();
+    assert_eq!(keys, ["2026-06-30"]);
 }

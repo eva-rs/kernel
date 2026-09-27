@@ -42,6 +42,19 @@ pub async fn server_config(files: &TlsFiles) -> Result<Arc<ServerConfig>, Transp
     Ok(Arc::new(config))
 }
 
+/// Клиент с публичными корнями webpki.
+pub fn public_client_config() -> Result<Arc<ClientConfig>, TransportError> {
+    let roots = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let config = ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(tls_err)?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
 /// Клиент, доверяющий только CA из `ca`.
 pub async fn client_config(ca: &Path) -> Result<Arc<ClientConfig>, TransportError> {
     let mut roots = RootCertStore::empty();

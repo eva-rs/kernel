@@ -2,15 +2,18 @@
 //! зарегистрированных тулов, событий, хуков и провайдера.
 
 use std::{
+    any::Any,
     collections::{BTreeMap, HashMap, VecDeque},
+    panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
-        Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
+use futures::FutureExt as _;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{sync::watch, task::AbortHandle};
 
@@ -34,6 +37,7 @@ use eva_rpc::{ModuleHandler, Progress, RpcClient};
 
 use crate::{
     Kernel,
+    live::Link,
     tool::{BoxFuture, ToolCtx, ToolEntry, canonical},
 };
 
@@ -131,22 +135,14 @@ impl<P: Provider> DynProvider for P {
     }
 }
 
-/// Текущее соединение модуля; меняется на реконнекте.
-pub(crate) struct Current {
-    pub client: RpcClient,
-    pub welcome: Welcome,
-}
-
-pub(crate) type Slot = RwLock<Option<Current>>;
-
 /// Регистрации модуля — общие для всех его соединений.
 pub(crate) struct Registry {
     pub tools: BTreeMap<String, ToolEntry>,
     pub events: Vec<(Topic, EventFn)>,
     pub hooks: HookSlots,
     pub provider: Option<Arc<dyn DynProvider>>,
-    /// Слабая ссылка: пир держит обработчик, слот держит клиента с пиром.
-    pub slot: Weak<Slot>,
+    /// Слабая ссылка: пир держит обработчик, связь держит клиента с пиром.
+    pub link: Weak<Link>,
     flights: Mutex<Flights>,
 }
 
@@ -156,27 +152,23 @@ impl Registry {
         events: Vec<(Topic, EventFn)>,
         hooks: HookSlots,
         provider: Option<Arc<dyn DynProvider>>,
-        slot: Weak<Slot>,
+        link: Weak<Link>,
     ) -> Self {
         Self {
             tools,
             events,
             hooks,
             provider,
-            slot,
+            link,
             flights: Mutex::default(),
         }
     }
 
-    fn client(&self) -> Result<RpcClient, RpcError> {
-        let slot = self
-            .slot
+    fn kernel(&self) -> Result<Kernel, RpcError> {
+        self.link
             .upgrade()
-            .ok_or_else(|| RpcError::new(ErrorCode::Unavailable, "module is shutting down"))?;
-        let current = slot.read().unwrap_or_else(PoisonError::into_inner);
-        current
-            .as_ref()
-            .map(|c| c.client.clone())
+            .ok_or_else(|| RpcError::new(ErrorCode::Unavailable, "module is shutting down"))?
+            .kernel()
             .ok_or_else(|| RpcError::new(ErrorCode::Unavailable, "module is not connected"))
     }
 
@@ -319,7 +311,7 @@ impl SdkHandler {
                 format_args!("unknown tool {}", call.canonical),
             )
         })?;
-        let client = self.registry.client()?;
+        let kernel = self.registry.kernel()?;
 
         let ToolCall {
             call_id,
@@ -331,10 +323,17 @@ impl SdkHandler {
         let (tx, rx) = watch::channel(None);
         let registry = Arc::downgrade(&self.registry);
         let key = call_id.clone();
-        let ctx = ToolCtx::new(call_id.clone(), ctx, client, progress);
+        let ctx = ToolCtx::new(call_id.clone(), ctx, kernel, progress);
 
         let task = tokio::spawn(async move {
-            let outcome = run(ctx, input).await;
+            // Паника иначе оставила бы полёт в `running` навсегда, а повтор `call_id` — `cancelled`.
+            let outcome = AssertUnwindSafe(async move { run(ctx, input).await })
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|panic| {
+                    log::error!(call_id = key.as_str(), panic = panic_message(&*panic); "tool panicked");
+                    Err(RpcError::new(ErrorCode::Internal, "tool panicked"))
+                });
             if let Some(registry) = registry.upgrade() {
                 registry.flights().finish(key, outcome.clone());
             }
@@ -363,15 +362,15 @@ impl SdkHandler {
         if handlers.is_empty() {
             return;
         }
-        let client = match self.registry.client() {
-            Ok(client) => client,
+        let kernel = match self.registry.kernel() {
+            Ok(kernel) => kernel,
             Err(e) => {
                 log::warn!(topic:% = topic, error:% = e; "event dropped");
                 return;
             }
         };
         for handler in handlers {
-            handler(client.session(), publish.event.clone()).await;
+            handler(kernel.clone(), publish.event.clone()).await;
         }
     }
 
@@ -383,8 +382,8 @@ impl SdkHandler {
         let handler = H::slot(&self.registry.hooks)
             .cloned()
             .ok_or_else(|| RpcError::unknown_method(H::POINT.method()))?;
-        let client = self.registry.client()?;
-        Ok(handler(client.session(), input).await)
+        let kernel = self.registry.kernel()?;
+        Ok(handler(kernel, input).await)
     }
 
     fn provider(&self) -> Result<Arc<dyn DynProvider>, ProviderError> {
@@ -395,6 +394,14 @@ impl SdkHandler {
             retry_after: None,
         })
     }
+}
+
+fn panic_message(panic: &(dyn Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
 }
 
 /// Ожидающий результат тула; брошенный — возможно, отмена.

@@ -3,15 +3,16 @@
 use eva_core::Provider;
 use eva_rpc::ModuleProvider;
 
-use crate::{db::Db, hands::Machine, world::Demiurge};
+use crate::{db::Db, hands::Machine, providers::Settle, world::Demiurge};
 
 pub trait Components: Send + Sync + Sized + 'static {
     /// Часы и rng; в тестах время двигает тест.
     type Demiurge: Demiurge;
     /// SQLite (`10 §7`); в тестах — обёртка с инъекцией отказов.
     type Db: Db;
-    /// `KernelProvider`; модуль запасной двери встаёт в реестр через `From`.
-    type Provider: Provider + From<ModuleProvider> + 'static;
+    /// `KernelProvider`; модуль запасной двери встаёт в реестр через `From`,
+    /// встроенный дочитывает каталог моделей через `Settle`.
+    type Provider: Provider + From<ModuleProvider> + Settle + 'static;
     /// `eva_hands::Hands`; в тестах — счётчик с инъекцией `Unavailable`.
     type Hands: Machine;
 }

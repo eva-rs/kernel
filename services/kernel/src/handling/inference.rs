@@ -1,14 +1,14 @@
 //! Хендлер `inference.complete` (`06 §5`, `11 §6`): разовый вызов модели
-//! модулем — без чата, истории и тулов, `cache: off`, `effort` по
-//! умолчанию `low`. Каждый usage-чанк — строка `spend` с `source = module`
-//! (`09 §2`).
+//! модулем или ядром — без чата, истории и тулов, `cache: off`, `effort` по
+//! умолчанию `low`. Каждый usage-чанк — строка `spend` с
+//! `source = module`, у ядра — `system` (`09 §2`).
 
 use eva_core::{GenSink, Provider as _};
 use eva_protocol::{
-    errors::{self, Aux, ext::*},
+    errors::{self, Aux, AuxResult, ext::*},
     requests::{Response, inference::complete},
     types::{
-        Effort, ModelId,
+        Effort, ModelId, ModuleId,
         content::Block,
         generate::{
             self, CacheMode, GenItem, GenerateRequest, Message, OutputFormat, ProviderErrorKind,
@@ -32,6 +32,23 @@ use crate::{
     state::{Policy, State},
 };
 
+/// `context.ratio_default` (`01 §9`): модель ещё не калибрована.
+const RATIO_DEFAULT: f64 = 4.0;
+/// `context.image_tokens` (`01 §9`).
+const IMAGE_TOKENS: u32 = 1600;
+/// `context.output_margin` (`01 §8`).
+const OUTPUT_MARGIN: u32 = 1024;
+
+/// `est(Text) = bytes / ratio(model)` (`01 §9`), вверх; ratio зажат в `[1, 10]`.
+pub(crate) fn estimate_bytes(bytes: usize, ratio: Option<f64>) -> u32 {
+    let tokens = (bytes as f64 / ratio.unwrap_or(RATIO_DEFAULT).clamp(1.0, 10.0)).ceil();
+    if tokens >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        tokens as u32
+    }
+}
+
 /// `llm.roles.cheap`, иначе самая дешёвая по `price.input` модель реестра,
 /// без цен — `default_model` (`01 §8.2`).
 fn cheap(models: &Models, llm: &LlmConfig) -> ModelId {
@@ -52,7 +69,8 @@ pub async fn Complete<C: Components>(
     state: &mut State<C>,
     args: complete::Args,
 ) -> Response<complete::Ok, complete::Err> {
-    let module = Policy::new(&state.caller).module()?.clone();
+    // `Policy` не нужна: объекты вызова — только blob'ы входа, их проверяет `render`.
+    let module = state.caller.module().cloned();
     let complete::Args {
         model,
         system,
@@ -62,6 +80,7 @@ pub async fn Complete<C: Components>(
         effort,
     } = args;
     (!input.is_empty()).true_or(Aux::Invalid("input is empty".into()))?;
+    (max_tokens != Some(0)).true_or(Aux::Invalid("max_tokens must be positive".into()))?;
 
     let models = state.shared.models();
     let llm = &state.shared.cfg().llm;
@@ -77,12 +96,10 @@ pub async fn Complete<C: Components>(
         ))
     })?;
 
-    let max_tokens = match max_tokens {
-        Some(0) => return Err(Aux::Invalid("max_tokens must be positive".into()).into()),
-        Some(n) => n.min(entry.decl.max_output),
-        None => entry.decl.max_output,
-    };
     let blocks = render(state, &entry, input).await?;
+    let db = state.db_conn.acquire(&state.shared).await?;
+    let key = model.clone();
+    let ratio = db.run(move |c| c.turns().ratio(&key)).await?;
     state.db_conn.release();
 
     let mut sections = Vec::new();
@@ -111,6 +128,8 @@ pub async fn Complete<C: Components>(
         None => None,
     };
 
+    let estimate = estimate_input(&sections, &blocks, format.as_ref(), ratio);
+    let max_tokens = output_budget(&entry, estimate, max_tokens)?;
     let req = GenerateRequest {
         model: model.clone(),
         system: sections,
@@ -134,7 +153,7 @@ pub async fn Complete<C: Components>(
     }
 
     let failed = res.as_ref().err().map(|e| e.kind);
-    record::<C>(state, &entry, &module, &out.chunks, failed).await;
+    record::<C>(state, &entry, module.as_ref(), &out.chunks, failed).await;
     if let Err(error) = res {
         return Err(errors::inference::Provider { error }.spec());
     }
@@ -154,6 +173,46 @@ pub async fn Complete<C: Components>(
         }),
         usage: out.usage,
     })
+}
+
+/// Оценка входа запроса (`01 §9`): текст — байты через ratio, картинка — фикс.
+fn estimate_input(
+    sections: &[SystemSection],
+    blocks: &[generate::Block],
+    format: Option<&OutputFormat>,
+    ratio: Option<f64>,
+) -> u32 {
+    let mut bytes: usize = sections.iter().map(|s| s.text.len()).sum();
+    let mut images: u32 = 0;
+    for block in blocks {
+        match block {
+            generate::Block::Text { text } => bytes += text.len(),
+            _ => images = images.saturating_add(1),
+        }
+    }
+    if let Some(format) = format {
+        bytes += format.schema.to_string().len();
+    }
+    estimate_bytes(bytes, ratio).saturating_add(images.saturating_mul(IMAGE_TOKENS))
+}
+
+/// `max_tokens = min(запрошенное или max_output, context_window − оценка входа −
+/// output_margin)` (`01 §8`): иначе провайдер отвечает 400 на `input + max_tokens > окно`.
+fn output_budget(entry: &ModelEntry, estimate: u32, requested: Option<u32>) -> AuxResult<u32> {
+    let window = entry.decl.context_window;
+    let room = window
+        .saturating_sub(estimate)
+        .saturating_sub(OUTPUT_MARGIN);
+    if room == 0 {
+        return Err(Aux::Invalid(format!(
+            "input is about {estimate} tokens and does not fit model {} ({window}-token window, {OUTPUT_MARGIN} reserved for output)",
+            entry.decl.name
+        )));
+    }
+    Ok(requested
+        .unwrap_or(entry.decl.max_output)
+        .min(entry.decl.max_output)
+        .min(room))
 }
 
 /// Вход модуля → блоки запроса: картинка — байтами при `vision`, иначе и
@@ -270,7 +329,7 @@ fn add(sum: &mut Usage, chunk: &Usage) {
 async fn record<C: Components>(
     state: &mut State<C>,
     entry: &ModelEntry,
-    module: &eva_protocol::types::ModuleId,
+    module: Option<&ModuleId>,
     chunks: &[Usage],
     failed: Option<ProviderErrorKind>,
 ) {
@@ -280,12 +339,15 @@ async fn record<C: Components>(
     let ts = state.world.now();
     let zone = state.shared.day_zone();
     let currency = state.shared.cfg().llm.currency.clone();
+    let costs: Vec<Option<Cost>> = chunks.iter().map(|u| cost(entry, u, &currency)).collect();
+    let model = entry.decl.name.clone();
     let rows: Vec<ModuleSpend> = chunks
         .iter()
-        .map(|u| ModuleSpend {
+        .zip(&costs)
+        .map(|(u, cost)| ModuleSpend {
             ts,
-            model: entry.decl.name.clone(),
-            module: module.clone(),
+            model: model.clone(),
+            module: module.cloned(),
             input: u.input,
             cache_read: u.cache_read,
             cache_write: u.cache_write_short.saturating_add(u.cache_write_long),
@@ -293,9 +355,10 @@ async fn record<C: Components>(
             output: u.output,
             reasoning: u.reasoning,
             context_edits_applied: u.context_edits.applied,
-            cost: cost(entry, u, &currency),
+            cost: cost.clone(),
         })
         .collect();
+    let unpriced = costs.iter().filter(|c| c.is_none()).count();
 
     let written = state
         .shared
@@ -304,18 +367,18 @@ async fn record<C: Components>(
             let stats = tx.stats();
             for row in &rows {
                 tx.modules().insert_spend(row)?;
-                if row.cost.is_none() {
-                    stats.bump(Metric::SpendUnpriced, row.model.as_str(), ts, zone)?;
-                }
+            }
+            for _ in 0..unpriced {
+                stats.bump(Metric::SpendUnpriced, model.as_str(), ts, &zone)?;
             }
             match failed {
-                Some(kind) => stats.bump(Metric::InferenceErrors, &kind.to_string(), ts, zone),
+                Some(kind) => stats.bump(Metric::InferenceErrors, &kind.to_string(), ts, &zone),
                 None => Ok(()),
             }
         })
         .await;
     if let Err(e) = written {
-        log::error!(module:% = module, error:% = e; "failed to record module inference spend");
+        log::error!(module:? = module, error:% = e; "failed to record inference spend");
     }
 }
 

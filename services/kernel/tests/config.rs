@@ -72,6 +72,23 @@ fn llm_providers_split_module_from_builtin() {
     let missing = serde_json::from_value::<LlmConfig>(json!({"providers": {}}));
     assert!(missing.is_err(), "default_model is required");
 
+    // `01 §8` документирует дефолт числом: номер 1..=4, не индекс варианта.
+    for (effort, want) in [(json!(2), Effort::Medium), (json!("max"), Effort::Max)] {
+        let llm: LlmConfig = serde_json::from_value(json!({
+            "providers": {},
+            "default_model": "m",
+            "default_effort": effort,
+        }))
+        .unwrap_or_else(|e| panic!("default_effort {effort}: {e}"));
+        assert_eq!(llm.default_effort, want, "{effort}");
+    }
+    let out_of_range = serde_json::from_value::<LlmConfig>(json!({
+        "providers": {},
+        "default_model": "m",
+        "default_effort": 5,
+    }));
+    assert!(out_of_range.is_err(), "default_effort is 1..=4");
+
     let unknown = serde_json::from_value::<LlmConfig>(json!({
         "providers": {"x": {"kind": "acme"}},
         "default_model": "m",
@@ -88,7 +105,7 @@ fn hands_endpoints_are_local_or_remote() {
     let hands: HandsConfig = serde_json::from_value(json!({
         "endpoints": {
             "here": {"local": true, "limits": {"exec": false, "exec_timeout": "30s", "roots": ["/srv/work"]}},
-            "laptop": {"address": "10.0.0.2:7777", "key": "secret"},
+            "laptop": {"address": "10.0.0.2:7777", "key": {"plaintext": "secret"}},
         },
         "default_endpoint": "here",
     }))
@@ -109,16 +126,13 @@ fn hands_endpoints_are_local_or_remote() {
 }
 
 #[test]
-fn module_tokens_never_serialize_their_secret() {
+fn module_tokens_hide_their_secret() {
     let modules: ModulesConfig = serde_json::from_value(json!({
-        "tokens": {"phone": {"token": "hunter2", "kind": "client"}},
+        "tokens": {"phone": {"token": {"plaintext": "hunter2"}, "kind": "client"}},
     }))
     .expect("modules");
     let entry = &modules.tokens[&eva_protocol::types::ModuleId::from("phone")];
     assert_eq!(entry.kind, TokenKind::Client);
-    assert_eq!(entry.token.expose(), "hunter2");
-
-    let dumped = serde_json::to_string(&modules).expect("serialize");
-    assert!(!dumped.contains("hunter2"));
-    assert!(!format!("{modules:?}").contains("hunter2"));
+    assert_eq!(entry.token.read().expect("plaintext"), "hunter2");
+    assert!(!format!("{modules:?} {}", entry.token).contains("hunter2"));
 }

@@ -1,13 +1,8 @@
 //! `llm.providers.<name>` с `kind: openai`.
 
-use std::{borrow::Cow, collections::BTreeMap, fmt, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
-use eva::{
-    _priv::schemars::{JsonSchema, Schema, SchemaGenerator},
-    data,
-    time::HumanDuration,
-};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use eva::{data, time::HumanDuration, utils::SecretString};
 
 use eva_protocol::types::{
     Effort, ModelId,
@@ -21,7 +16,8 @@ pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub struct Config {
     /// Корень API без `/chat/completions`.
     pub base_url: String,
-    pub api_key: Option<ApiKey>,
+    /// `{plaintext: …}` или `{file: …}` (`eva::utils::SecretString`); файл — например `LoadCredential` systemd.
+    pub api_key: Option<SecretString>,
     /// `http://`, `https://` или `socks5://`.
     pub proxy: Option<String>,
     /// Потолок подключения и тишины между чтениями, не всего ответа: длинная генерация не рвётся.
@@ -93,50 +89,4 @@ pub struct CapsOverride {
     /// Только диалект `openrouter`: у `plain` нет `cache_control`.
     pub cache_breakpoints: Option<u8>,
     pub cache_min_prefix: Option<u32>,
-}
-
-/// `Debug` и сериализация ключ не выдают: конфиг уходит в логи и дампы.
-#[data(not(serde, JsonSchema, Debug))]
-pub struct ApiKey(String);
-
-impl ApiKey {
-    pub fn new(key: impl Into<String>) -> Self {
-        Self(key.into())
-    }
-
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ApiKey(***)")
-    }
-}
-
-impl Serialize for ApiKey {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str("***")
-    }
-}
-
-impl<'de> Deserialize<'de> for ApiKey {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer).map(Self)
-    }
-}
-
-impl JsonSchema for ApiKey {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("ApiKey")
-    }
-
-    fn schema_id() -> Cow<'static, str> {
-        Cow::Borrowed(concat!(module_path!(), "::ApiKey"))
-    }
-
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        String::json_schema(generator)
-    }
 }

@@ -251,3 +251,18 @@ async fn notes_matrix() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[tokio::test]
+async fn database_failure_is_aux_db() {
+    let h = common::start().await;
+    let own = chat(&h, "local", None).await;
+    h.db_fail.store(true, std::sync::atomic::Ordering::Relaxed);
+    let res = h
+        .client_session()
+        .await
+        .notes()
+        .list()
+        .call(list::Args { chat: own })
+        .await;
+    assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
+}

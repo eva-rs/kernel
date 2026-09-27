@@ -53,10 +53,16 @@ impl Stream for Body {
         if this.done {
             return Poll::Ready(None);
         }
+        // Загрузка уже провалена (переполнение, отмена, обрыв): буфер не
+        // дочитывается, пир узнаёт отказ сразу.
+        if let Some(Some(error)) = this.end.get() {
+            let aux = codec::into_aux(error.clone());
+            return this.fail(aux);
+        }
 
         loop {
             match this.rx.poll_recv(cx) {
-                Poll::Ready(Some(Event::Item(raw))) => {
+                Poll::Ready(Some(Event::Item(raw, _permit))) => {
                     let at = after(Instant::now(), this.idle_for);
                     this.idle.as_mut().reset(at);
                     return match codec::decode::<Bytes>(&raw) {

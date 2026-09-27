@@ -38,3 +38,53 @@ async fn owner_only() {
         assert_eq!(got, want, "models.list as {who}");
     }
 }
+
+/// Встроенный провайдер, стартовавший без каталога моделей, дочитывает его
+/// фоном: модели каталога появляются в реестре без рестарта ядра.
+#[tokio::test]
+async fn a_late_listing_reaches_the_running_registry() {
+    use std::time::Duration;
+
+    use eva_protocol::types::ModelId;
+    use eva_providers::mock::MockProvider;
+
+    let provider = MockProvider::new(common::mock_config()).awaiting_listing();
+    let h = common::start_with_provider(provider.clone()).await;
+    let names = async || -> Vec<String> {
+        h.client_session()
+            .await
+            .models()
+            .list()
+            .call(list::Args {})
+            .await
+            .expect("list")
+            .models
+            .into_iter()
+            .map(|m| m.decl.name.as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(names().await, [common::MODEL], "config models only");
+
+    let late = eva_protocol::types::model::ModelDecl {
+        name: ModelId::from("late-model"),
+        ..common::model_decl()
+    };
+    provider.list(vec![late]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let names = names().await;
+        if names.iter().any(|n| n == "late-model") {
+            assert_eq!(
+                names,
+                ["late-model", common::MODEL],
+                "by name, config models kept"
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the listing never reached the registry: {names:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

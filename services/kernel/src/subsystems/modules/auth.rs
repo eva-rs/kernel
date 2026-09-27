@@ -1,7 +1,9 @@
-//! Handshake со стороны ядра (`06 §2`, `§3`): токен → caller, зарезервированные
-//! имена, разбор capabilities, строка `modules` и вытеснение прежней сессии
-//! того же имени. Всё это — до `welcome`: первый же запрос модуля
+//! Handshake со стороны ядра (`06 §2`, `§3`): токен → id модуля и caller,
+//! разбор capabilities, строка `modules` и вытеснение прежней сессии того
+//! же модуля. Всё это — до `welcome`: первый же запрос модуля
 //! (`surfaces.create`) опирается на строку `modules`.
+
+use std::time::Duration;
 
 use eva_core::{Caller, NAMESPACES};
 use eva_protocol::{
@@ -21,13 +23,12 @@ use eva_rpc::Authenticator;
 use crate::{
     components::Components,
     db::{Db as _, DbResult, Queries as _, stats::Metric},
-    handling::modules::{RESERVED, check_name},
     markers, registry,
     shared::Shared,
     state::Policy,
     subsystems::modules::{
         cleanup_superseded,
-        live::{Entry, TokenSource},
+        live::{Entry, Refused, TokenSource},
     },
     world::{Demiurge as _, God},
 };
@@ -35,8 +36,23 @@ use crate::{
 /// Предельная длина каноничного имени тула (`02 §1.1`).
 const CANONICAL_MAX: usize = 64;
 
+/// Пауза перед отказом по токену: вместе с лимитом handshake'ей на сеть
+/// она держит перебор слабого токена на десятках попыток в секунду.
+pub const REFUSED_DELAY: Duration = Duration::from_millis(250);
+
 pub struct KernelAuth<C: Components> {
     shared: Shared<C>,
+}
+
+/// Чей токен предъявлен: id модуля — имя записи, бит прав и откуда запись.
+struct Identity {
+    module: ModuleId,
+    kind: TokenKind,
+    source: TokenSource,
+}
+
+fn refused() -> RpcError {
+    RpcError::new(ErrorCode::Unauthorized, "invalid module token")
 }
 
 impl<C: Components> KernelAuth<C> {
@@ -44,39 +60,59 @@ impl<C: Components> KernelAuth<C> {
         Self { shared }
     }
 
-    /// Токен из `modules.tokens.<module>` сильнее выданного тулом: если
-    /// конфиг называет модуль, принимается только его токен.
-    async fn token(&self, hello: &Hello) -> Result<(TokenKind, TokenSource), RpcError> {
-        let presented = blake3::hash(hello.token.expose().as_bytes());
-        let refused = || {
-            RpcError::new(
-                ErrorCode::Unauthorized,
-                format_args!("invalid token for module {}", hello.module),
-            )
-        };
-
-        if let Some(entry) = self.shared.cfg().modules.tokens.get(&hello.module) {
-            // Сравнение хэшей постоянно по времени: длина и префикс токена не утекают.
-            let expected = blake3::hash(entry.token.expose().as_bytes());
-            return (expected == presented)
-                .then_some((entry.kind, TokenSource::Config))
-                .ok_or_else(refused);
+    /// Запись конфига `modules.tokens`, иначе живая строка `module_tokens`;
+    /// выданный тулом токен модулю, которого называет конфиг, не годится.
+    async fn identify(&self, presented: &blake3::Hash) -> Result<Identity, RpcError> {
+        let tokens = self.shared.tokens();
+        if let Some((module, kind)) = tokens.find(presented) {
+            return Ok(Identity {
+                module,
+                kind,
+                source: TokenSource::Config,
+            });
         }
+        match self.issued(presented).await? {
+            Some((module, kind)) if !tokens.configures(&module) => Ok(Identity {
+                module,
+                kind,
+                source: TokenSource::Issued,
+            }),
+            _ => Err(refused()),
+        }
+    }
 
+    /// Живой выданный токен по `blake3`: в БД лежит только хэш.
+    async fn issued(
+        &self,
+        presented: &blake3::Hash,
+    ) -> Result<Option<(ModuleId, TokenKind)>, RpcError> {
         let hash = presented.as_bytes().to_vec();
-        let found = self
-            .shared
+        self.shared
             .db()
             .reader()
             .await
-            .map_err(internal)?
+            .map_err(unverified)?
             .run(move |c| c.modules().token(&hash))
             .await
-            .map_err(internal)?;
-        match found {
-            Some((owner, kind)) if owner == hello.module => Ok((kind, TokenSource::Issued)),
-            _ => Err(refused()),
+            .map_err(unverified)
+    }
+
+    async fn authorize(&self, hello: &Hello) -> Result<(Identity, u64), RpcError> {
+        if hello.token.expose().is_empty() {
+            return Err(refused());
         }
+        let presented = blake3::hash(hello.token.expose().as_bytes());
+        let identity = self.identify(&presented).await?;
+        let epoch = self.shared.live().epoch(&identity.module);
+        // Отзыв между первым чтением и номером отзыва прошёл бы незамеченным:
+        // выданный токен перечитывается уже после номера.
+        if identity.source == TokenSource::Issued
+            && self.issued(&presented).await?.map(|(module, _)| module)
+                != Some(identity.module.clone())
+        {
+            return Err(refused());
+        }
+        Ok((identity, epoch))
     }
 }
 
@@ -84,18 +120,27 @@ fn internal(e: impl std::fmt::Display) -> RpcError {
     RpcError::new(ErrorCode::Internal, e)
 }
 
+/// Сбой проверки токена: пир ещё не опознан, подробность — только в лог.
+fn unverified(e: impl std::fmt::Display) -> RpcError {
+    log::error!(error:% = e; "module token check failed");
+    RpcError::new(ErrorCode::Internal, "internal error")
+}
+
 impl<C: Components> Authenticator for KernelAuth<C> {
     async fn authenticate(&self, hello: &Hello) -> Result<Welcome, RpcError> {
-        let module = &hello.module;
-        if RESERVED.contains(&module.as_str()) {
-            return Err(RpcError::new(
-                ErrorCode::Unauthorized,
-                format_args!("module name {module} is reserved"),
-            ));
-        }
-        check_name(module).map_err(RpcError::invalid_params)?;
-
-        let (kind, source) = self.token(hello).await?;
+        let (identity, epoch) = match self.authorize(hello).await {
+            Ok(found) => found,
+            Err(e) => {
+                tokio::time::sleep(REFUSED_DELAY).await;
+                return Err(e);
+            }
+        };
+        let Identity {
+            module,
+            kind,
+            source,
+        } = identity;
+        let live = self.shared.live();
         let caller = Caller::from_token(kind, module.clone());
         let now = self.shared.now();
 
@@ -106,35 +151,55 @@ impl<C: Components> Authenticator for KernelAuth<C> {
             hello.capabilities.clone(),
             &mut warnings,
         );
+        let row = registration(&module, hello, &capabilities).map_err(internal)?;
 
-        let row = registration(hello, &capabilities).map_err(internal)?;
+        // Id сессии не из мира ядра: тестовый мир детерминирован по числу сессий.
+        let session: SessionId = God.make_world().mint();
+        let mut entry = Entry::new(session.clone(), caller, source, capabilities.clone(), now);
+        if capabilities.events.is_some() {
+            entry = entry.with_events(self.shared.bus().subscribe());
+        }
+        let issued = (source == TokenSource::Issued).then_some(epoch);
+        match live.claim(module.clone(), entry, issued) {
+            Ok(Some(old)) => cleanup_superseded(&self.shared, &module, old),
+            Ok(None) => {}
+            Err(Refused::Revoked) => {
+                return Err(RpcError::new(
+                    ErrorCode::Unauthorized,
+                    format_args!("token of module {module} was revoked during the handshake"),
+                ));
+            }
+            Err(Refused::Closing(reason)) => return Err(reason),
+        }
+
         let (resumed, zone) = (hello.resume.is_some(), self.shared.day_zone());
-        self.shared
+        let written = self
+            .shared
             .db()
             .write(move |tx| {
                 tx.modules()
                     .connected(&row.0, &row.1, &row.2, &row.3, now)?;
                 let stats = tx.stats();
-                stats.bump(Metric::ModulesConnected, row.0.as_str(), now, zone)?;
+                stats.bump(Metric::ModulesConnected, row.0.as_str(), now, &zone)?;
                 if resumed {
-                    stats.bump(Metric::ModulesReconnects, row.0.as_str(), now, zone)?;
+                    stats.bump(Metric::ModulesReconnects, row.0.as_str(), now, &zone)?;
                 }
                 DbResult::Ok(())
             })
-            .await
-            .map_err(internal)?;
-
-        // Id сессии не из мира ядра: тестовый мир детерминирован по числу сессий.
-        let session: SessionId = God.make_world().mint();
-        let entry = Entry::new(session.clone(), caller, source, capabilities.clone(), now);
-        if let Some(old) = self.shared.live().claim(module.clone(), entry) {
-            cleanup_superseded(&self.shared, module, old);
+            .await;
+        if let Err(e) = written {
+            let error = internal(e);
+            if let Some(mut entry) = live.release(&module, &session) {
+                entry.close(error.clone());
+            }
+            return Err(error);
         }
 
-        let models_accepted = accept_models(&self.shared, module, &capabilities, &mut warnings);
+        let models_accepted = accept_models(&self.shared, &module, &capabilities, &mut warnings);
 
         Ok(Welcome {
             session_id: session,
+            module,
             kernel_version: crate::version(),
             proto_version: ProtoVersion::CURRENT,
             kind,
@@ -142,17 +207,20 @@ impl<C: Components> Authenticator for KernelAuth<C> {
             tool_ids: Default::default(),
             models_accepted,
             warnings,
+            // Окно идемпотентности держит транспорт, он и ставит флаг.
+            resumed: false,
         })
     }
 }
 
-/// Строка `modules` сессии: имя, версия, протокол, msgpack принятых capabilities.
+/// Строка `modules` сессии: id, версия, протокол, msgpack принятых capabilities.
 pub fn registration(
+    module: &ModuleId,
     hello: &Hello,
     capabilities: &Capabilities,
 ) -> Result<(ModuleId, String, String, Vec<u8>), rmp_serde::encode::Error> {
     Ok((
-        hello.module.clone(),
+        module.clone(),
         hello.version.clone(),
         hello.proto_version.to_string(),
         rmp_serde::to_vec_named(capabilities)?,

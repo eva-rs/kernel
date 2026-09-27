@@ -60,6 +60,10 @@ pub enum ConnectError {
     /// Ядро нарушило handshake: кадр до `welcome`, молчание, мусор.
     #[display("handshake: {_0}")]
     Handshake(String),
+    /// Негоден конфиг самого модуля (секрет токена не прочитался, `hello`
+    /// не влез в `max_hello`): ядру ничего не ушло.
+    #[display("config: {_0}")]
+    Config(String),
 }
 
 struct ClientInner {
@@ -97,28 +101,43 @@ impl RpcClient {
         Self::connect_with(target, hello, ClientOptions::default(), NoHandler).await
     }
 
+    /// Сокет, TLS и Upgrade укладываются в `handshake_timeout`: иначе путь,
+    /// пропавший посреди handshake, держал бы реконнект вечно.
     pub async fn connect_with<H: ModuleHandler>(
         target: &Url,
         hello: Hello,
         options: ClientOptions,
         handler: H,
     ) -> Result<(Self, Welcome), ConnectError> {
-        let conn = transport::connect(target, &options.config, &options.tls)
+        let request = HelloRequest::encode(&hello, &options)?;
+        let connect = transport::connect(target, &options.config, &options.tls);
+        let conn = tokio::time::timeout(*options.config.handshake_timeout, connect)
             .await
+            .map_err(|_| ConnectError::Transport("transport connect timed out".to_owned()))?
             .map_err(|e| ConnectError::Transport(e.to_string()))?;
-        Self::handshake(conn, hello, options, handler).await
+        Self::establish(conn, request, options, handler).await
     }
 
     /// Handshake поверх готового соединения (в том числе `Conn::pair`).
     pub async fn handshake<H: ModuleHandler>(
-        mut conn: Conn,
+        conn: Conn,
         hello: Hello,
+        options: ClientOptions,
+        handler: H,
+    ) -> Result<(Self, Welcome), ConnectError> {
+        let request = HelloRequest::encode(&hello, &options)?;
+        Self::establish(conn, request, options, handler).await
+    }
+
+    async fn establish<H: ModuleHandler>(
+        mut conn: Conn,
+        request: HelloRequest,
         options: ClientOptions,
         handler: H,
     ) -> Result<(Self, Welcome), ConnectError> {
         let ClientOptions { config, ids, .. } = options;
 
-        let welcome = match hello_exchange(&mut conn, &hello, &config, &ids).await {
+        let welcome = match hello_exchange(&mut conn, request, &config).await {
             Ok(welcome) => welcome,
             Err((error, reason)) => {
                 shut(conn, reason).await;
@@ -126,7 +145,7 @@ impl RpcClient {
             }
         };
 
-        let caller = Caller::from_token(welcome.kind, hello.module);
+        let caller = Caller::from_token(welcome.kind, welcome.module.clone());
         let service = ModuleService::new(handler, config.stream_buffer());
         let peer = Peer::spawn(conn, config, ids, service);
 
@@ -186,29 +205,54 @@ impl SessionMaker for RpcClient {
 
 type HandshakeFailure = (ConnectError, Option<RpcError>);
 
+/// Кадр `hello`, собранный до сети: не влезший в `max_hello` ядро всё
+/// равно отвергло бы, поэтому он не отправляется.
+struct HelloRequest {
+    id: u64,
+    raw: bytes::Bytes,
+}
+
+impl HelloRequest {
+    fn encode(hello: &Hello, options: &ClientOptions) -> Result<Self, ConnectError> {
+        let id = options.ids.next();
+        let params = codec::encode(hello).map_err(|e| ConnectError::Config(e.to_string()))?;
+        let raw = codec::encode_frame(&Frame::Request(Request {
+            id,
+            method: method::HELLO.to_owned(),
+            params,
+        }))
+        .map_err(|e| ConnectError::Config(e.to_string()))?;
+        let max = options.config.max_hello();
+        if raw.len() > max {
+            return Err(ConnectError::Config(format!(
+                "hello of {} bytes exceeds max_hello of {max} bytes",
+                raw.len()
+            )));
+        }
+        Ok(Self { id, raw })
+    }
+}
+
 async fn hello_exchange(
     conn: &mut Conn,
-    hello: &Hello,
+    request: HelloRequest,
     config: &Config,
-    ids: &IdSeq,
 ) -> Result<Welcome, HandshakeFailure> {
     let protocol = |message: String| {
         let reason = RpcError::invalid_params(&message);
         (ConnectError::Handshake(message), Some(reason))
     };
 
-    let id = ids.next();
-    let params = codec::encode(hello).map_err(|e| protocol(e.to_string()))?;
-    let raw = codec::encode_frame(&Frame::Request(Request {
-        id,
-        method: method::HELLO.to_owned(),
-        params,
-    }))
-    .map_err(|e| protocol(e.to_string()))?;
-    conn.tx
-        .send(Outbound::Frame(raw))
-        .await
-        .map_err(|e| (ConnectError::Transport(e.to_string()), None))?;
+    let HelloRequest { id, raw } = request;
+    if let Err(e) = conn.tx.send(Outbound::Frame(raw)).await {
+        // Ядро рвёт сокет, не дочитав крупный `hello`, но причину кладёт в него раньше.
+        let reason = tokio::time::timeout(*config.handshake_timeout, close_reason(conn)).await;
+        let error = match reason {
+            Ok(Some(reason)) => ConnectError::Rejected(reason),
+            _ => ConnectError::Transport(e.to_string()),
+        };
+        return Err((error, None));
+    }
 
     let first = tokio::time::timeout(*config.handshake_timeout, conn.rx.next())
         .await
@@ -231,9 +275,27 @@ async fn hello_exchange(
             }
             Err(error) => Err((ConnectError::Rejected(error), None)),
         },
+        // Отказ до разбора `hello` (без id запроса) ядро шлёт уведомлением `close`.
+        Ok(Frame::Notify(notify)) if notify.method == method::CLOSE => {
+            let reason = codec::decode::<RpcError>(&notify.params)
+                .unwrap_or_else(|e| codec::unavailable(format_args!("closed by kernel: {e}")));
+            Err((ConnectError::Rejected(reason), None))
+        }
         Ok(_) => Err(protocol("a frame before welcome".to_owned())),
         Err(e) => Err(protocol(format!("malformed frame: {e}"))),
     }
+}
+
+/// Причина из `notify close`, если ядро успело её прислать до обрыва.
+async fn close_reason(conn: &mut Conn) -> Option<RpcError> {
+    while let Some(Ok(raw)) = conn.rx.next().await {
+        if let Ok(Frame::Notify(notify)) = codec::decode_frame(&raw)
+            && notify.method == method::CLOSE
+        {
+            return codec::decode(&notify.params).ok();
+        }
+    }
+    None
 }
 
 async fn shut(mut conn: Conn, reason: Option<RpcError>) {

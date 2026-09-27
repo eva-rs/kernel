@@ -1,4 +1,4 @@
-//! Вызовы ядро → модуль через настоящий `ModuleClient` и surface после `welcome`.
+//! Вызовы ядро → модуль через настоящий `ModuleClient`; handshake без регистрации surface.
 
 use std::{
     sync::{
@@ -13,8 +13,9 @@ use futures::StreamExt as _;
 use serde_json::json;
 use tokio::sync::{Notify, mpsc};
 
+use eva_core::prelude::*;
 use eva_protocol::{
-    requests::Patch,
+    requests::surfaces::create,
     types::{ChatId, SurfaceId, ToolId},
     wire::{
         ErrorCode, RpcError,
@@ -24,7 +25,7 @@ use eva_protocol::{
     },
 };
 use eva_rpc::{Config, Conn};
-use eva_sdk::{Connected, Module, Surface, ToolContent, ToolCtx, ToolError};
+use eva_sdk::{Connected, Module, ToolContent, ToolCtx, ToolError};
 
 use crate::fake::{self, Surfaces};
 
@@ -43,7 +44,7 @@ async fn connect(
     let surfaces = Surfaces::default();
     let kernel = tokio::spawn(fake::accept(kernel_end, welcome, surfaces.clone()));
     let connected = module
-        .handshake(module_end, "token")
+        .handshake(module_end, &fake::token("token"))
         .await
         .expect("handshake");
     let session = kernel.await.expect("fake kernel");
@@ -88,7 +89,7 @@ fn text(result: &ToolResult) -> &str {
 }
 
 fn echo_module(runs: Arc<AtomicUsize>) -> Module {
-    Module::new("echo").tool("x.echo", move |ctx: ToolCtx, input: EchoInput| {
+    Module::new().tool("x.echo", move |ctx: ToolCtx, input: EchoInput| {
         let runs = runs.clone();
         async move {
             runs.fetch_add(1, Ordering::SeqCst);
@@ -162,7 +163,7 @@ async fn concurrent_duplicates_share_one_execution() {
     let gate = Arc::new(Notify::new());
     let module = {
         let (runs, gate) = (runs.clone(), gate.clone());
-        Module::new("slow").tool("x.slow", move |_: ToolCtx, _: EchoInput| {
+        Module::new().tool("x.slow", move |_: ToolCtx, _: EchoInput| {
             let (runs, gate) = (runs.clone(), gate.clone());
             async move {
                 runs.fetch_add(1, Ordering::SeqCst);
@@ -188,7 +189,7 @@ async fn concurrent_duplicates_share_one_execution() {
 
 #[tokio::test]
 async fn fatal_error_ends_the_stream() {
-    let module = Module::new("m").tool("x.fail", |_: ToolCtx, _: EchoInput| async {
+    let module = Module::new().tool("x.fail", |_: ToolCtx, _: EchoInput| async {
         Err::<ToolResult, _>(ToolError::fatal("disk on fire"))
     });
     let (_connected, session, _) = connect(module, fake::welcome("s1", &[])).await;
@@ -203,7 +204,7 @@ async fn fatal_error_ends_the_stream() {
     }
 
     // Обычная ошибка через `?` — данные для модели, не обрыв тура.
-    let module = Module::new("m").tool("x.soft", |_: ToolCtx, _: EchoInput| async {
+    let module = Module::new().tool("x.soft", |_: ToolCtx, _: EchoInput| async {
         Err::<ToolResult, _>("not today")
     });
     let (_connected, session, _) = connect(module, fake::welcome("s2", &[])).await;
@@ -218,10 +219,42 @@ async fn fatal_error_ends_the_stream() {
     assert_eq!(text(&res), "not today");
 }
 
+/// Паника тула — `internal`, а не `cancelled`; повтор того же `call_id`
+/// получает тот же итог и тул второй раз не зовёт.
+#[tokio::test]
+async fn a_panicking_tool_ends_internal_and_is_not_rerun() {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let module = {
+        let runs = runs.clone();
+        Module::new().tool("x.boom", move |_: ToolCtx, _: EchoInput| {
+            let runs = runs.clone();
+            async move {
+                if runs.fetch_add(1, Ordering::SeqCst) < usize::MAX {
+                    panic!("tool bug");
+                }
+                Ok::<_, ToolError>(ToolResult::ok(Vec::new()))
+            }
+        })
+    };
+    let (_connected, session, _) = connect(module, fake::welcome("s1", &[])).await;
+
+    let the_call = call("p", None, "x_boom", json!({"text": "", "times": 0}));
+    for attempt in 0..2 {
+        let items = tokio::time::timeout(Duration::from_secs(5), run_tool(&session, &the_call))
+            .await
+            .expect("the call ends");
+        match items.as_slice() {
+            [Err(e)] => assert_eq!(e.code, ErrorCode::Internal, "attempt {attempt}: {e:?}"),
+            other => panic!("attempt {attempt}: expected internal, got {other:?}"),
+        }
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn events_reach_handlers_of_their_topic() {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let module = Module::new("m").on_event(Topic::ChatCreated, move |_, event| {
+    let module = Module::new().on_event(Topic::ChatCreated, move |_, event| {
         let tx = tx.clone();
         async move {
             _ = tx.send(event);
@@ -261,7 +294,7 @@ async fn events_reach_handlers_of_their_topic() {
 
 #[tokio::test]
 async fn hooks_answer_only_declared_points() {
-    let module = Module::new("m").hook(HookPoint::BeforeSend, |_, input: BeforeSend| async move {
+    let module = Module::new().hook(HookPoint::BeforeSend, |_, input: BeforeSend| async move {
         Decision::Patch {
             payload: input.text.to_uppercase(),
         }
@@ -301,93 +334,35 @@ async fn hooks_answer_only_declared_points() {
     assert_eq!(undeclared.code, ErrorCode::UnknownMethod);
 }
 
+/// Surface модуль создаёт сам: сам по себе handshake в `surfaces.*` не ходит,
+/// `ask` уезжает capability, id модуля — из `welcome`.
 #[tokio::test]
-async fn surface_is_created_then_updated() {
-    let surface = || {
-        Surface::new("x")
-            .name("Messenger X")
-            .rules("be brief")
-            .ask(true)
-    };
-
-    let (module_end, kernel_end) = Conn::pair(&Config::default());
-    let surfaces = Surfaces::default();
-    let kernel = tokio::spawn(fake::accept(
-        kernel_end,
-        fake::welcome("s1", &[]),
-        surfaces.clone(),
-    ));
-    let _first = Module::new("x")
-        .surface(surface())
-        .handshake(module_end, "t")
-        .await
-        .unwrap();
-    kernel.await.unwrap();
-    assert_eq!(surfaces.calls(), ["surfaces.get", "surfaces.create"]);
-    let created = surfaces.creates.lock().unwrap()[0].clone();
-    assert_eq!(created.name.as_deref(), Some("Messenger X"));
-    assert_eq!(created.rules.as_deref(), Some("be brief"));
-    assert!(created.ask && !created.builtin);
-
-    let (module_end, kernel_end) = Conn::pair(&Config::default());
-    let kernel = tokio::spawn(fake::accept(
-        kernel_end,
-        fake::welcome("s2", &[]),
-        surfaces.clone(),
-    ));
-    let _second = Module::new("x")
-        .surface(surface())
-        .handshake(module_end, "t")
-        .await
-        .unwrap();
-    kernel.await.unwrap();
-    assert_eq!(
-        surfaces.calls(),
-        [
-            "surfaces.get",
-            "surfaces.create",
-            "surfaces.get",
-            "surfaces.update"
-        ]
-    );
-    let updated = surfaces.updates.lock().unwrap()[0].clone();
-    assert_eq!(updated.update.name, Patch::Change("Messenger X".to_owned()));
-    assert_eq!(
-        updated.update.rules,
-        Patch::Change(Some("be brief".to_owned()))
-    );
-    assert_eq!(updated.update.ask, Patch::Change(true));
-    assert!(updated.update.trusted.is_keep());
-}
-
-#[tokio::test]
-async fn builtin_local_only_registers() {
-    let (module_end, kernel_end) = Conn::pair(&Config::default());
-    let surfaces = Surfaces::default();
-    let kernel = tokio::spawn(fake::accept(
-        kernel_end,
-        fake::welcome("s1", &[]),
-        surfaces.clone(),
-    ));
-    let _client = Module::new("phone")
-        .surface(Surface::local().ask(true))
-        .handshake(module_end, "t")
-        .await
-        .unwrap();
-    kernel.await.unwrap();
-    assert_eq!(surfaces.calls(), ["surfaces.create"]);
-    let created = surfaces.creates.lock().unwrap()[0].clone();
-    assert_eq!(created.id.as_str(), "local");
-    assert!(created.builtin && created.ask);
-    assert!(created.name.is_none() && created.rules.is_none());
-}
-
-#[tokio::test]
-async fn no_surface_means_no_requests() {
-    let (connected, _session, surfaces) =
-        connect(Module::new("bare"), fake::welcome("s1", &[])).await;
+async fn the_handshake_registers_nothing_and_carries_ask() {
+    let (connected, session, surfaces) =
+        connect(Module::new().ask(true), fake::welcome("s1", &[])).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(surfaces.calls().is_empty());
+    assert!(session.hello.capabilities.ask);
     assert_eq!(connected.welcome().session_id.as_str(), "s1");
-    assert_eq!(connected.caller().label(), "bare");
+    assert_eq!(connected.module().as_str(), fake::MODULE);
+    assert_eq!(connected.caller().label(), fake::MODULE);
+}
+
+/// Создание — обычный вызов `Kernel`, повторять его на каждом старте безопасно.
+#[tokio::test]
+async fn the_module_creates_its_surface_through_the_kernel() {
+    let (connected, _session, surfaces) = connect(Module::new(), fake::welcome("s1", &[])).await;
+    let created = connected
+        .kernel()
+        .surfaces()
+        .create()
+        .call(create::Args {
+            id: SurfaceId::from("x"),
+            name: "Messenger X".to_owned(),
+            rules: Some("be brief".to_owned()),
+        })
+        .await
+        .expect("surfaces.create");
+    assert_eq!(created.surface.name, "Messenger X");
+    assert_eq!(surfaces.calls(), ["surfaces.create"]);
 }

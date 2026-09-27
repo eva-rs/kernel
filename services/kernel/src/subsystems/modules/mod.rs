@@ -6,22 +6,29 @@
 //! `modules`, `Entry::capabilities`): вызовы `tools.call` приходят с реестром
 //! тулов (M4), `hooks.<point>` — с движком туров (M2).
 
-use std::{path::Path, time::Duration};
+use std::{path::Path, pin::pin, time::Duration};
 
-use tokio::{sync::watch, task::JoinSet};
+use tokio::{
+    sync::{broadcast, watch},
+    task::JoinSet,
+    time::{Instant, MissedTickBehavior},
+};
+use tokio_util::task::TaskTracker;
 
+use eva_core::Caller;
 use eva_protocol::{
     types::ModuleId,
     wire::{
-        ErrorCode, RpcError,
+        Capabilities, ErrorCode, RpcError,
         events::{Event, ModuleEvent},
     },
 };
 use eva_rpc::{Accepted, Listener, Server, config::Listen};
 
 use crate::{
+    bus::Published,
     components::Components,
-    db::{Db as _, Queries as _, stats::Metric},
+    db::{Db as _, DbResult, Queries as _, stats::Metric},
     kernel::Kernel,
     shared::Shared,
     subsystems::modules::live::{Attach, Entry},
@@ -32,15 +39,20 @@ pub use self::auth::KernelAuth;
 pub mod auth;
 mod events;
 pub mod live;
+pub mod tokens;
 
 /// Сколько остановка ждёт, пока сессии приберут за собой.
 const DRAIN: Duration = Duration::from_secs(5);
+
+/// Как часто давно молчащие модули переводятся в `forgotten` (`06 §8`).
+pub const FORGET_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// Поднятые слушатели; `shutdown` закрывает их и все сессии.
 pub struct Listening<C: Components> {
     shared: Shared<C>,
     stop: watch::Sender<bool>,
     tasks: JoinSet<()>,
+    sessions: TaskTracker,
 }
 
 /// Слушатели `modules.listen`; относительный путь сокета — от `system.state_dir`.
@@ -54,6 +66,7 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
     );
     let (stop, stopped) = watch::channel(false);
     let mut tasks = JoinSet::new();
+    let sessions = TaskTracker::new();
 
     for listen in &cfg.listen {
         let listen = resolve(listen, &shared.cfg().system.state_dir);
@@ -64,6 +77,7 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
 
         let server = server.clone();
         let session_shared = shared.clone();
+        let session_tasks = sessions.clone();
         let mut stopped = stopped.clone();
         tasks.spawn(async move {
             let shutdown = async move {
@@ -71,16 +85,22 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
             };
             server
                 .serve(listener, shutdown, move |accepted| {
-                    on_session(&session_shared, accepted);
+                    on_session(&session_shared, &session_tasks, accepted);
                 })
                 .await;
         });
     }
 
+    let mut stopped = stopped.clone();
+    tasks.spawn(forget_every(shared.clone(), FORGET_EVERY, async move {
+        _ = stopped.wait_for(|stop| *stop).await;
+    }));
+
     Ok(Listening {
         shared,
         stop,
         tasks,
+        sessions,
     })
 }
 
@@ -91,13 +111,11 @@ impl<C: Components> Listening<C> {
         while self.tasks.join_next().await.is_some() {}
 
         let reason = RpcError::new(ErrorCode::Unavailable, "kernel is shutting down");
-        self.shared.live().close_all(&reason);
-        let drained = tokio::time::timeout(DRAIN, async {
-            while !self.shared.live().is_empty() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await;
+        self.shared.live().shut_down(&reason);
+        // Ждём сами задачи уборки, а не пустой реестр: запись `offline` должна
+        // лечь до финального чекпойнта базы.
+        self.sessions.close();
+        let drained = tokio::time::timeout(DRAIN, self.sessions.wait()).await;
         if drained.is_err() {
             log::warn!(sessions:? = self.shared.live().sessions(); "module sessions did not close in time");
         }
@@ -114,6 +132,44 @@ pub async fn run<C: Components>(
     listening.shutdown().await;
     log::info!("modules stopped");
     Ok(())
+}
+
+/// `offline` дольше `modules.offline_forget` → `forgotten` (`06 §8`); сколько забыто.
+pub async fn forget_offline<C: Components>(shared: &Shared<C>) -> DbResult<usize> {
+    let (now, after) = (shared.now(), *shared.cfg().modules.offline_forget);
+    shared
+        .db()
+        .write(move |tx| tx.modules().forget(now, after))
+        .await
+}
+
+/// `forget_offline` раз в `every`, пока не придёт `stop`: ядро живёт
+/// неделями, одного забывания на старте мало.
+pub async fn forget_every<C: Components>(
+    shared: Shared<C>,
+    every: Duration,
+    stop: impl Future<Output = ()>,
+) {
+    let mut stop = pin!(stop);
+    let mut tick = tokio::time::interval_at(Instant::now() + every, every);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = &mut stop => break,
+            _ = tick.tick() => match forget_offline(&shared).await {
+                Ok(0) => {}
+                Ok(forgotten) => log::info!(forgotten; "offline modules forgotten"),
+                Err(e) => log::error!(error:% = e; "failed to forget offline modules"),
+            },
+        }
+    }
+}
+
+/// `Policy` отказал вызову модуля: `modules.forbidden{module}` (`09 §5`).
+pub async fn forbidden<C: Components>(shared: &Shared<C>, caller: &Caller) {
+    if let Some(module) = caller.module() {
+        shared.bump(Metric::ModulesForbidden, module.as_str()).await;
+    }
 }
 
 fn resolve(listen: &Listen, state_dir: &Path) -> Listen {
@@ -137,49 +193,23 @@ fn describe(listen: &Listen) -> String {
 
 /// Сессия прошла handshake: пир в реестр живых, провайдер запасной двери —
 /// в реестр моделей, подписка на события; уборка — по закрытию соединения.
-fn on_session<C: Components>(shared: &Shared<C>, accepted: Accepted) {
-    let module = accepted.hello.module.clone();
+fn on_session<C: Components>(shared: &Shared<C>, sessions: &TaskTracker, accepted: Accepted) {
+    let module = accepted.welcome.module.clone();
     let session = accepted.welcome.session_id.clone();
     let peer = accepted.peer.clone();
 
-    let capabilities = match shared.live().attach(&module, &session, peer.clone()) {
+    match shared.live().attach(&module, &session, peer.clone()) {
         Attach::Superseded => {
             peer.close(superseded());
             return;
         }
-        Attach::Closing(reason, capabilities) => {
-            peer.close(reason);
-            capabilities
-        }
-        Attach::Live(capabilities) => capabilities,
-    };
-
-    if let Some(cap) = capabilities.provider.clone()
-        && !accepted.welcome.models_accepted.is_empty()
-    {
-        let provider = accepted.module().provider(cap);
-        let models = shared.set_provider(module.as_str(), Some(C::Provider::from(provider)));
-        log::info!(module:% = module, models = models.iter().filter(|m| m.provider == module.as_str()).count(); "module provider registered");
+        // Отозвана до `welcome`: ни провайдера, ни подписки — только уборка.
+        Attach::Closing(reason) => peer.close(reason),
+        Attach::Live(capabilities, bus) => serve(shared, &accepted, capabilities, bus),
     }
-
-    if let Some(events) = &capabilities.events {
-        events::forward(
-            shared.clone(),
-            accepted.caller.clone(),
-            events.subscriptions.iter().copied().collect(),
-            accepted.module(),
-        );
-    }
-
-    shared.bus().publish(
-        Event::ModuleConnected(ModuleEvent {
-            module: module.clone(),
-        }),
-        None,
-    );
 
     let shared = shared.clone();
-    tokio::spawn(async move {
+    sessions.spawn(async move {
         let reason = peer.closed().await;
         let Some(entry) = shared.live().release(&module, &session) else {
             return;
@@ -189,11 +219,48 @@ fn on_session<C: Components>(shared: &Shared<C>, accepted: Accepted) {
     });
 }
 
+/// Живая сессия: провайдер запасной двери, рассылка шины, `module.connected`.
+fn serve<C: Components>(
+    shared: &Shared<C>,
+    accepted: &Accepted,
+    capabilities: Capabilities,
+    bus: Option<broadcast::Receiver<Published>>,
+) {
+    let module = &accepted.welcome.module;
+    let accepted_models = &accepted.welcome.models_accepted;
+    if let Some(mut cap) = capabilities.provider
+        && !accepted_models.is_empty()
+    {
+        // Провайдер несёт только принятые модели: отказанное в `welcome` имя не перехватит и потом.
+        cap.models.retain(|m| accepted_models.contains(&m.name));
+        let provider = accepted.module().provider(cap);
+        let models = shared.set_module_provider(module, Some(C::Provider::from(provider)));
+        log::info!(module:% = module, models = models.iter().filter(|m| m.provider == module.as_str()).count(); "module provider registered");
+    }
+
+    if let (Some(events), Some(bus)) = (capabilities.events, bus) {
+        events::forward(
+            shared.clone(),
+            accepted.caller.clone(),
+            events.subscriptions.into_iter().collect(),
+            accepted.module(),
+            bus,
+        );
+    }
+
+    shared.bus().publish(
+        Event::ModuleConnected(ModuleEvent {
+            module: module.clone(),
+        }),
+        None,
+    );
+}
+
 fn superseded() -> RpcError {
     RpcError::new(ErrorCode::Conflict, "superseded")
 }
 
-/// Вытесненная сессия: закрыть; состояние имени (строка `modules`) уже
+/// Вытесненная сессия: закрыть; состояние модуля (строка `modules`) уже
 /// принадлежит новой, поэтому прибирается только память сессии.
 pub(crate) fn cleanup_superseded<C: Components>(
     shared: &Shared<C>,
@@ -201,18 +268,16 @@ pub(crate) fn cleanup_superseded<C: Components>(
     mut old: Entry,
 ) {
     old.close(superseded());
-    shared.serving().drop_module(module);
     if old.capabilities.provider.is_some() {
-        shared.set_provider(module.as_str(), None);
+        shared.set_module_provider(module, None);
     }
     log::info!(module:% = module, session:% = old.session; "module session superseded");
 }
 
-/// Текущая сессия имени закрылась: модуль offline (`06 §8`).
+/// Текущая сессия модуля закрылась: модуль offline (`06 §8`).
 async fn cleanup<C: Components>(shared: &Shared<C>, module: &ModuleId, entry: &Entry) {
-    shared.serving().drop_module(module);
     if entry.capabilities.provider.is_some() {
-        shared.set_provider(module.as_str(), None);
+        shared.set_module_provider(module, None);
     }
 
     let (now, zone) = (shared.now(), shared.day_zone());
@@ -222,7 +287,7 @@ async fn cleanup<C: Components>(shared: &Shared<C>, module: &ModuleId, entry: &E
         .write(move |tx| {
             tx.modules().disconnected(&name, now)?;
             tx.stats()
-                .bump(Metric::ModulesDisconnected, name.as_str(), now, zone)
+                .bump(Metric::ModulesDisconnected, name.as_str(), now, &zone)
         })
         .await
     {

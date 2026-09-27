@@ -34,11 +34,20 @@ async fn send(_: ToolCtx, input: SendInput) -> Result<ToolResult, ToolError> {
 
 #[test]
 fn empty_module_declares_nothing() {
-    let caps = Module::new("m").capabilities();
+    let caps = Module::new().capabilities();
     assert!(caps.provider.is_none());
     assert!(caps.tools.is_none());
     assert!(caps.events.is_none());
     assert!(caps.hooks.is_none());
+    assert!(!caps.ask);
+    assert!(caps.names().is_empty());
+}
+
+#[test]
+fn ask_is_a_capability() {
+    let caps = Module::new().ask(true).capabilities();
+    assert!(caps.ask);
+    assert_eq!(caps.names(), ["ask"]);
 }
 
 #[test]
@@ -66,7 +75,7 @@ fn schema_is_inline_without_title() {
 
 #[test]
 fn builder_fills_every_section() {
-    let caps = Module::new("m")
+    let caps = Module::new()
         .group("x", "Messenger X actions")
         .tool("x.send", send)
         .ends_turn(true)
@@ -113,7 +122,7 @@ fn builder_fills_every_section() {
 #[test]
 #[should_panic(expected = "does not match")]
 fn hook_point_must_match_input() {
-    _ = Module::new("m").hook(HookPoint::BeforeTurn, |_, _: BeforeSend| async {
+    _ = Module::new().hook(HookPoint::BeforeTurn, |_, _: BeforeSend| async {
         Decision::Continue
     });
 }
@@ -121,5 +130,5 @@ fn hook_point_must_match_input() {
 #[test]
 #[should_panic(expected = "declared twice")]
 fn tool_path_is_unique() {
-    _ = Module::new("m").tool("x.send", send).tool("x.send", send);
+    _ = Module::new().tool("x.send", send).tool("x.send", send);
 }

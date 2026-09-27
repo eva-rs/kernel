@@ -35,6 +35,9 @@ pub struct BlobRow {
     pub expires_at: Timestamp,
 }
 
+/// Минимальный вес blob'а в квоте: каталог, файл и строка есть и у пустого.
+pub const BLOB_FLOOR: u64 = 4096;
+
 pub struct Blobs<'c>(pub &'c Connection);
 
 impl Blobs<'_> {
@@ -53,6 +56,22 @@ impl Blobs<'_> {
                 from_row,
             )
             .optional()?)
+    }
+
+    /// Вес живых blob'ов в чатах surface'ов владельца, каждый не меньше
+    /// `BLOB_FLOOR`; `None` — surface без модуля.
+    pub fn live_bytes(&self, owner: Option<&ModuleId>, now: Timestamp) -> DbResult<u64> {
+        let bytes: i64 = self.0.query_row(
+            "SELECT COALESCE(SUM(MAX(b.size, ?3)), 0)
+             FROM blobs b
+             JOIN chats c ON c.id = b.chat_id
+             JOIN folders f ON f.id = c.folder_id
+             JOIN surfaces s ON s.id = f.surface_id
+             WHERE b.expires_at > ?2 AND s.module IS ?1",
+            (owner.map(ModuleId::as_str), Ts(now), BLOB_FLOOR as i64),
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(bytes).unwrap_or(0))
     }
 
     pub fn insert(&self, row: &BlobRow) -> DbResult<()> {

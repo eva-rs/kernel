@@ -1,47 +1,19 @@
 //! Секция `module` конфига модуля (`06 §10`): куда подключаться и с каким
 //! токеном. Свои секции модуль регистрирует рядом в том же `App`.
 
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
-use eva::{cli::App, data, time::HumanDuration, url::Url};
-use serde::{Serialize, Serializer};
+use eva::{cli::App, data, time::HumanDuration, url::Url, utils::SecretString};
 
-use eva_rpc::ClientTls;
-
-/// Секрет конфига: `Debug` и сериализация его не выдают — конфиг уходит в
-/// логи, токен приходит только из `EVA_MODULE__TOKEN`/файла учётных данных.
-#[data(not(Debug, Serialize))]
-#[serde(transparent)]
-pub struct Secret(String);
-
-impl Secret {
-    pub fn new(secret: impl Into<String>) -> Self {
-        Self(secret.into())
-    }
-
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Secret(***)")
-    }
-}
-
-impl Serialize for Secret {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str("***")
-    }
-}
+use eva_rpc::{ClientTls, ConnectError};
 
 #[data]
 pub struct ModuleConfig {
     /// `uds:///run/eva-kernel/modules.sock`, `ws://…/v1/modules`, `wss://…`.
     #[schemars(with = "String")]
     pub kernel: Url,
-    pub token: Secret,
+    /// `{plaintext: …}` или `{file: …}`; файл — например `LoadCredential` systemd.
+    pub token: SecretString,
     /// Сколько ждать ядро на старте, прежде чем сдаться.
     #[serde(default = "default_connect_wait")]
     pub connect_wait: HumanDuration,
@@ -63,4 +35,13 @@ pub(crate) const DEFAULT_CONNECT_WAIT: Duration = Duration::from_secs(180);
 
 fn default_connect_wait() -> HumanDuration {
     HumanDuration(DEFAULT_CONNECT_WAIT)
+}
+
+/// Секрет читается один раз; ошибка называет ключ конфига.
+pub(crate) fn read_token(token: &SecretString, key: &str) -> Result<String, ConnectError> {
+    token
+        .read()
+        // файл секрета обычно кончается переводом строки, в токен он не входит
+        .map(|token| token.trim_end().to_owned())
+        .map_err(|e| ConnectError::Config(format!("{key}: {e:#}")))
 }

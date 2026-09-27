@@ -4,7 +4,8 @@
 
 use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 
-use eva_hands::{Entry, Error, Greeting, Hands, Limits, Output};
+use eva::utils::SecretString;
+use eva_hands::{Entry, Error, Greeting, Hands, Limits, Output, Psk};
 use eyre::bail;
 
 use crate::config::{HandsConfig, hands::EndpointConfig};
@@ -166,11 +167,27 @@ pub fn from_config(cfg: &HandsConfig) -> eyre::Result<BTreeMap<String, Hands>> {
                     "hands.endpoints.{name}: `local` must be true or be replaced by {{address, key}}"
                 )
             }
-            EndpointConfig::Remote { address, key } => Hands::remote(address.as_str(), key),
+            EndpointConfig::Remote { address, key } => {
+                Hands::remote(address.as_str(), &endpoint_key(name, key)?)
+            }
         };
         out.insert(name.clone(), hands);
     }
     Ok(out)
+}
+
+/// PSK endpoint'а из `hands.endpoints.<name>.key`: читается один раз, ошибка
+/// называет ключ конфига.
+pub fn endpoint_key(name: &str, key: &SecretString) -> eyre::Result<Psk> {
+    let read = key
+        .read()
+        .map_err(|e| eyre::eyre!("hands.endpoints.{name}.key: {e:#}"))?;
+    // файл секрета обычно кончается переводом строки, в ключ он не входит
+    let secret = read.trim_end();
+    if secret.is_empty() {
+        bail!("hands.endpoints.{name}.key is empty");
+    }
+    Ok(Psk::new(secret))
 }
 
 /// Сколько ждать greeting на старте: недоступный демон старт не держит.

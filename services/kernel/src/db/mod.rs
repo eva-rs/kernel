@@ -22,6 +22,7 @@ pub use self::{
 pub mod error;
 pub mod math;
 pub mod migrate;
+pub mod quota_vfs;
 pub mod seed;
 pub mod sql;
 pub mod sqlite;
@@ -47,7 +48,7 @@ pub mod turns;
 /// База ядра: пул читателей и единственный писатель (`10 §7`). В тестах —
 /// обёртка с инъекцией отказов поверх `Sqlite`.
 pub trait Db: Send + Sync + 'static {
-    /// Читающее соединение; сессия держит его до конца вызова.
+    /// Доступ к пулу читателей: соединение занято только на время `Reader::run`.
     fn reader(&self) -> impl Future<Output = DbResult<Reader>> + Send;
 
     /// `f` в транзакции `BEGIN IMMEDIATE` писателя: `Ok` — коммит, `Err` — откат.

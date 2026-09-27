@@ -34,6 +34,7 @@ use serde_json::json;
 use eva_kernel::{
     Components, Kernel, Parts, Session,
     db::{Db as _, DbResult},
+    providers::Settle,
     world::testing,
 };
 
@@ -41,6 +42,8 @@ const CHEAP: &str = "cheap";
 const PRICEY: &str = "pricey";
 const VISION: &str = "vision";
 const STRICT: &str = "strict";
+/// Окно меньше `max_output` провайдера: без бюджета запрос переполнял бы его.
+const NARROW: &str = "narrow";
 
 #[derive(Clone, Default)]
 struct Script {
@@ -96,6 +99,11 @@ impl Provider for Scripted {
                     ..ModelCaps::default()
                 },
             ),
+            ModelDecl {
+                context_window: 4_000,
+                max_output: 4_000,
+                ..model(NARROW, None, ModelCaps::default())
+            },
         ]
     }
 
@@ -138,6 +146,13 @@ struct Spend {
     cache_write_long: i64,
     cost: Option<f64>,
     cost_source: String,
+}
+
+/// Каталог моделей готов со старта.
+impl Settle for Scripted {
+    async fn settle(&self) -> bool {
+        false
+    }
 }
 
 struct Inf;
@@ -676,16 +691,16 @@ async fn policy_matrix() {
     h.script(vec![usage(1, 1, None), stop()], None);
 
     for (who, caller) in common::matrix_callers() {
-        let expect = if caller.is_kernel() {
-            Outcome::Forbidden
-        } else {
-            Outcome::Ok
-        };
         let mut session = h.session(caller).await;
         let res = session.inference().complete().call(ask(Some(CHEAP))).await;
-        assert_eq!(outcome(&res), expect, "{who}");
+        assert_eq!(outcome(&res), Outcome::Ok, "{who}: {res:?}");
     }
-    let modules: Vec<Option<String>> = h.spend().await.into_iter().map(|r| r.module).collect();
+    let spend = h.spend().await;
+    let modules: Vec<Option<String>> = spend
+        .iter()
+        .filter(|r| r.source == "module")
+        .map(|r| r.module.clone())
+        .collect();
     assert_eq!(
         modules,
         [
@@ -695,6 +710,82 @@ async fn policy_matrix() {
         ],
         "spend is charged to the calling module"
     );
+    assert!(
+        spend
+            .iter()
+            .all(|r| (r.source == "module") == r.module.is_some()),
+        "the kernel is never charged as a module: {spend:?}"
+    );
+    let system: Vec<_> = spend.iter().filter(|r| r.source == "system").collect();
+    assert_eq!(
+        system.len(),
+        1,
+        "kernel inference is charged to system: {spend:?}"
+    );
+    assert_eq!((system[0].op.as_str(), &system[0].module), ("other", &None));
+}
+
+/// Вход и `max_tokens` вместе не превышают окна: иначе провайдер отвечает 400.
+#[tokio::test]
+async fn max_tokens_fits_the_context_window() {
+    let h = start(|_| {}).await;
+    h.script(vec![stop()], None);
+    let mut svc = h.session(service(SVC)).await;
+    // `Classify.` + `hello` = 14 байт → 4 токена по ratio 4.
+    let small = 4;
+    let room = 4_000 - small - 1_024;
+
+    let call = |input: String, max_tokens| complete::Args {
+        input: vec![Block::text(input)],
+        max_tokens,
+        ..ask(Some(NARROW))
+    };
+    for (requested, want) in [(None, room), (Some(3_500), room), (Some(100), 100)] {
+        svc.inference()
+            .complete()
+            .call(call(String::from("hello"), requested))
+            .await
+            .expect("complete");
+        assert_eq!(h.last_request().max_tokens, want, "requested {requested:?}");
+    }
+
+    // 11 991 байт входа ≈ 3 000 токенов: на вывод остаётся меньше margin.
+    let res = svc
+        .inference()
+        .complete()
+        .call(call("x".repeat(11_991), None))
+        .await;
+    assert!(
+        matches!(&res, Err(Generic::Aux(Aux::Invalid(why))) if why.contains("does not fit")),
+        "{res:?}"
+    );
+
+    // Калиброванный ratio модели меняет оценку: 2 000 байт — 1 000 токенов, не 500.
+    let input = "y".repeat(1_991);
+    svc.inference()
+        .complete()
+        .call(call(input.clone(), None))
+        .await
+        .expect("default ratio");
+    assert_eq!(h.last_request().max_tokens, 4_000 - 500 - 1_024);
+    h.kernel
+        .shared()
+        .db()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO token_ratios (model, bytes_per_token, samples, updated_at) VALUES (?1, 2.0, 10, 1)",
+                [NARROW],
+            )?;
+            Ok::<_, eva_kernel::db::DbError>(())
+        })
+        .await
+        .expect("calibrate");
+    svc.inference()
+        .complete()
+        .call(call(input, None))
+        .await
+        .expect("calibrated ratio");
+    assert_eq!(h.last_request().max_tokens, 4_000 - 1_000 - 1_024);
 }
 
 async fn create_surface(session: &mut Sess) {
@@ -706,10 +797,8 @@ async fn create_surface(session: &mut Sess) {
         .create()
         .call(create::Args {
             id: SurfaceId::from(SVC),
-            name: Some(String::from("svc")),
+            name: String::from("svc"),
             rules: None,
-            ask: false,
-            builtin: false,
         })
         .await
         .expect("surfaces.create");

@@ -6,7 +6,10 @@
 
 use eva::trait_set;
 use eva_core::{ByteStream, CallStep, Items, StreamStep, UploadStep, service};
-use eva_protocol::requests::Response;
+use eva_protocol::{
+    errors::{Aux, Generic},
+    requests::Response,
+};
 
 use crate::{components::Components, state::State};
 
@@ -28,6 +31,7 @@ pub mod sleep;
 pub mod sqlite;
 pub mod stats;
 pub mod surfaces;
+pub mod text;
 pub mod tools;
 pub mod turns;
 
@@ -62,7 +66,12 @@ where
     type Err = Err;
 
     async fn call(&mut self, args: I) -> Response<Ok, Err> {
-        self.handler.call(self.state, args).await
+        let reason = match self.handler.call(self.state, args).await {
+            Err(Generic::Aux(Aux::Forbidden(reason))) => reason,
+            res => return res,
+        };
+        refused(self.state).await;
+        Err(Generic::Aux(Aux::Forbidden(reason)))
     }
 }
 
@@ -87,7 +96,12 @@ where
     type Err = Err;
 
     async fn open(&mut self, args: I) -> Response<Items<Item, Err>, Err> {
-        self.handler.call(self.state, args).await
+        let reason = match self.handler.call(self.state, args).await {
+            Err(Generic::Aux(Aux::Forbidden(reason))) => reason,
+            res => return res,
+        };
+        refused(self.state).await;
+        Err(Generic::Aux(Aux::Forbidden(reason)))
     }
 }
 
@@ -112,6 +126,16 @@ where
     type Err = Err;
 
     async fn call(&mut self, args: I, body: ByteStream) -> Response<Ok, Err> {
-        self.handler.call(self.state, Upload { args, body }).await
+        let reason = match self.handler.call(self.state, Upload { args, body }).await {
+            Err(Generic::Aux(Aux::Forbidden(reason))) => reason,
+            res => return res,
+        };
+        refused(self.state).await;
+        Err(Generic::Aux(Aux::Forbidden(reason)))
     }
+}
+
+/// Отказ `Policy` модулю — в `modules.forbidden` (`09 §5`); ответ отпускается до `await`, иначе будущему нужен `Send` от `Ok`/`Err`.
+async fn refused<C: Components>(state: &State<C>) {
+    crate::subsystems::modules::forbidden(&state.shared, &state.caller).await;
 }

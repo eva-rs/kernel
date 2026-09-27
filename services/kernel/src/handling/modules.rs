@@ -23,7 +23,7 @@ use crate::{
     state::{Policy, State},
 };
 
-/// Имена, которые `hello` не примет (`06 §2`).
+/// Id, которые не бывают именем токена (`06 §2`): их занимают ядро и builtin surface.
 pub const RESERVED: &[&str] = &["kernel", SYSTEM, LOCAL];
 
 /// Имя модуля — ещё и каталог его `fs`/`sqlite`: `[a-z][a-z0-9_-]{0,63}`.
@@ -81,24 +81,24 @@ pub async fn TokenIssue<C: Components>(
     } = state;
     Policy::new(caller)
         .modules()
-        .issue(args.issued_by.as_ref())?;
+        .issue(&args.module, args.issued_by.as_ref())?;
     let token_issue::Args {
         module,
         kind,
         issued_by,
     } = args;
 
-    if RESERVED.contains(&module.as_str()) {
-        return Err(errors::modules::Reserved { module }.spec());
-    }
+    (!RESERVED.contains(&module.as_str()))
+        .true_or(Aux::Invalid(format!("module id {module} is reserved")))?;
     check_name(&module)?;
     let issued_via = caller.module().cloned();
     (issued_by.is_some() || issued_via.is_some()).true_or(Aux::Invalid(
         "issued_by is required when the kernel issues a token".into(),
     ))?;
-    if shared.cfg().modules.tokens.contains_key(&module) {
-        log::warn!(module:% = module; "modules.tokens configures this module: the config token wins");
-    }
+    // Handshake такой токен не примет: конфиг сильнее (`06 §9`).
+    (!shared.tokens().configures(&module)).true_or(Aux::Conflict(format!(
+        "modules.tokens configures module {module}: change its token in the config"
+    )))?;
 
     let secret: [u8; 32] = world.rng().random();
     let token = convert::blob::hex(&secret);

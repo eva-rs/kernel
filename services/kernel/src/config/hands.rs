@@ -3,8 +3,8 @@
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
-use eva::{data, time::HumanDuration};
-use eva_hands::{Limits, Psk};
+use eva::{data, time::HumanDuration, utils::SecretString};
+use eva_hands::Limits;
 
 #[data]
 #[derive(Default)]
@@ -27,7 +27,8 @@ pub enum EndpointConfig {
     },
     Remote {
         address: String,
-        key: Psk,
+        /// PSK демона: `{plaintext: …}` или `{file: …}`, читается один раз на старте.
+        key: SecretString,
     },
 }
 

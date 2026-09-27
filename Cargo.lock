@@ -941,6 +941,7 @@ dependencies = [
  "fastrace",
  "futures",
  "insta",
+ "jiff",
  "log",
  "proptest",
  "rmp-serde",
@@ -950,6 +951,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -1010,6 +1012,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1049,6 +1052,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tokio-util",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -1755,6 +1759,7 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "log",
  "portable-atomic",

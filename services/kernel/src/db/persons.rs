@@ -63,6 +63,8 @@ pub struct MasterSeed {
     pub unmerged: Vec<PersonId>,
     /// Пары, чей surface ещё не создан: резолвятся на его `surfaces.create`.
     pub pending: Vec<MasterIdentity>,
+    /// Пары, чей surface создал не привязанный к ним модуль: не сидятся.
+    pub foreign: Vec<MasterIdentity>,
 }
 
 const PERSON_COLUMNS: &str = "id, name, master, whitelisted, created_at";
@@ -142,10 +144,15 @@ impl Persons<'_> {
         let mut owners: Vec<PersonId> = Vec::new();
         let mut missing = Vec::new();
         let mut pending = Vec::new();
+        let mut foreign = Vec::new();
 
         for pair in pairs {
-            if self.0.surfaces().get(&pair.surface)?.is_none() {
+            let Some(surface) = self.0.surfaces().get(&pair.surface)? else {
                 pending.push(pair.clone());
+                continue;
+            };
+            if pair.module.is_some() && pair.module != surface.module {
+                foreign.push(pair.clone());
                 continue;
             }
             match self.identity_owner(&pair.surface, &pair.external_id)? {
@@ -185,6 +192,7 @@ impl Persons<'_> {
             person,
             unmerged: owners.into_iter().skip(1).collect(),
             pending,
+            foreign,
         })
     }
 

@@ -37,8 +37,13 @@ mod tools;
 mod turns;
 
 pub use self::{
-    capabilities::CapabilitiesPolicy, chats::ChatsPolicy, events::EventsPolicy,
-    memory::MemoryPolicy, modules::ModulesPolicy, stats::StatsPolicy, surfaces::SurfacesPolicy,
+    capabilities::CapabilitiesPolicy,
+    chats::ChatsPolicy,
+    events::EventsPolicy,
+    memory::MemoryPolicy,
+    modules::ModulesPolicy,
+    stats::StatsPolicy,
+    surfaces::{OnSurface, SurfacesPolicy},
 };
 
 #[derive(Debug, Clone, Copy)]

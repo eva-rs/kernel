@@ -76,11 +76,16 @@ impl Meter {
         self.limit.store(u64::MAX, Ordering::Relaxed);
     }
 
+    /// Чтение упёрлось в `cap_reads`.
+    pub(crate) fn exhausted(&self) -> bool {
+        self.read.load(Ordering::Relaxed) > self.limit.load(Ordering::Relaxed)
+    }
+
     fn on_read(&self, n: usize) -> io::Result<()> {
         self.touch_rx();
         let n = u64::try_from(n).unwrap_or(u64::MAX);
-        let read = self.read.fetch_add(n, Ordering::Relaxed).saturating_add(n);
-        if read > self.limit.load(Ordering::Relaxed) {
+        self.read.fetch_add(n, Ordering::Relaxed);
+        if self.exhausted() {
             return Err(io::Error::other("read budget before welcome exceeded"));
         }
         Ok(())

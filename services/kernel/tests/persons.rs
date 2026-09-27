@@ -31,6 +31,7 @@ async fn start() -> Harness {
         cfg.chats.persons.master = vec![MasterIdentity {
             surface: SurfaceId::from("local"),
             external_id: String::from(MASTER),
+            module: None,
         }];
     })
     .await
@@ -674,4 +675,81 @@ async fn merge_refusals() {
     assert_eq!(person.id, me.id);
     assert!(person.master);
     assert_eq!(person.identities.len(), 2);
+}
+
+/// `Service` не отличает чужой surface от несуществующего: иначе
+/// `persons.resolve` выдавал бы, какие surface есть у хозяина.
+#[tokio::test]
+async fn service_cannot_probe_surfaces() {
+    let h = start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    h.service_with_surface(OTHER).await;
+
+    let mut refusals = Vec::new();
+    for surface in [OTHER, "local", "nowhere"] {
+        let res = svc
+            .persons()
+            .resolve()
+            .call(resolve_args(surface, "1"))
+            .await;
+        assert_eq!(outcome(&res), Outcome::Forbidden, "{surface}: {res:?}");
+        refusals.push(format!("{res:?}").replace(surface, "_"));
+    }
+    refusals.dedup();
+    assert_eq!(refusals.len(), 1, "one refusal text: {refusals:?}");
+}
+
+#[tokio::test]
+async fn database_failure_is_aux_db() {
+    let h = start().await;
+    let mut client = h.client_session().await;
+    h.db_fail.store(true, std::sync::atomic::Ordering::Relaxed);
+    let res = client
+        .persons()
+        .resolve()
+        .call(resolve_args("local", MASTER))
+        .await;
+    assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
+    let res = client.persons().list().call(list::Args::default()).await;
+    assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
+}
+
+/// Адрес и имена личности от сервиса ограничены: их пишет мост мессенджера.
+#[tokio::test]
+async fn oversized_identity_strings_are_invalid() {
+    let h = common::start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let huge = "x".repeat(100_000);
+
+    let cases = [
+        ("external_id", resolve_args(SVC, &huge)),
+        (
+            "name",
+            resolve::Args {
+                name: Some(huge.clone()),
+                ..resolve_args(SVC, "u1")
+            },
+        ),
+        (
+            "handle",
+            resolve::Args {
+                handle: Some(huge.clone()),
+                ..resolve_args(SVC, "u1")
+            },
+        ),
+    ];
+    for (what, args) in cases {
+        let res = svc.persons().resolve().call(args).await;
+        assert_eq!(outcome(&res), Outcome::Invalid, "resolve {what}: {res:?}");
+    }
+
+    let person = resolve(
+        &mut svc,
+        resolve::Args {
+            name: Some("и".repeat(256)),
+            ..resolve_args(SVC, "u1")
+        },
+    )
+    .await;
+    assert_eq!(person.name.chars().count(), 256);
 }

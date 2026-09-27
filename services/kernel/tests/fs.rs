@@ -1,17 +1,27 @@
 //! `fs.*` (`06 §5`, I12): файлы модуля в `<state_dir>/modules/<module>/fs`;
-//! `..`, абсолютный путь и симлинк наружу — `forbidden`.
+//! `..`, абсолютный путь и симлинк наружу — `forbidden`; квоты байтов и
+//! записей не обходятся параллельной записью; `read` оставляет место конверту кадра.
 
 mod common;
 
 use std::path::PathBuf;
 
-use common::{Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service};
+use common::{
+    Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, token,
+    with_module_tokens,
+};
+use eva::bytesize::ByteSize;
 use eva_core::{CallStep as _, service::fs::Fs as _};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::fs::{EntryKind, list, read, remove, stat, write},
     types::Bytes,
+    wire::{
+        Capabilities,
+        handshake::{Hello, ProtoVersion},
+    },
 };
+use eva_rpc::{ClientOptions, NoHandler, RpcClient};
 
 fn root(h: &Harness, module: &str) -> PathBuf {
     h.dir.path().join("modules").join(module).join("fs")
@@ -420,4 +430,145 @@ async fn policy_matrix() {
             .await;
         assert_eq!(outcome(&res), expect, "{who} remove");
     }
+}
+
+#[tokio::test]
+async fn dangling_symlinks_are_forbidden() {
+    let h = common::start().await;
+    let mut svc = h.session(service(SVC)).await;
+    write_ok(&mut svc, "inside", b"x", false).await;
+    let outside = h.dir.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("outside dir");
+    std::os::unix::fs::symlink(outside.join("new"), root(&h, SVC).join("dangling"))
+        .expect("dangling link");
+
+    let res = svc.fs().write().call(put("dangling", b"pwn")).await;
+    assert_eq!(outcome(&res), Outcome::Forbidden, "write: {res:?}");
+    let res = svc
+        .fs()
+        .write()
+        .call(write::Args {
+            create_dirs: true,
+            ..put("dangling/x", b"pwn")
+        })
+        .await;
+    assert_eq!(outcome(&res), Outcome::Forbidden, "write under: {res:?}");
+    let res = read(&mut svc, "dangling").await;
+    assert_eq!(outcome(&res), Outcome::Forbidden, "read: {res:?}");
+    let res = svc
+        .fs()
+        .stat()
+        .call(stat::Args {
+            path: String::from("dangling"),
+        })
+        .await;
+    assert_eq!(outcome(&res), Outcome::Forbidden, "stat: {res:?}");
+    assert!(!outside.join("new").exists(), "nothing was created outside");
+}
+
+#[tokio::test]
+async fn concurrent_writes_share_one_quota() {
+    let h = common::start_with(|cfg| cfg.modules.fs_quota = ByteSize::b(100)).await;
+
+    let mut sessions = Vec::new();
+    for _ in 0..16 {
+        sessions.push(h.session(service(SVC)).await);
+    }
+    let writes = sessions
+        .iter_mut()
+        .enumerate()
+        .map(|(i, session)| async move {
+            session
+                .fs()
+                .write()
+                .call(put(&format!("f{i}"), &[0; 60]))
+                .await
+        });
+    let results = futures::future::join_all(writes).await;
+
+    let ok = results.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(ok, 1, "{results:?}");
+    assert!(
+        results
+            .iter()
+            .all(|r| r.is_ok() || matches!(r, Err(Generic::Aux(Aux::Quota(_))))),
+        "{results:?}"
+    );
+    let used: u64 = std::fs::read_dir(root(&h, SVC))
+        .expect("root")
+        .map(|e| e.expect("entry").metadata().expect("meta").len())
+        .sum();
+    assert!(used <= 100, "{used}");
+}
+
+#[tokio::test]
+async fn entry_count_is_capped() {
+    let h = common::start_with(|cfg| cfg.modules.fs_max_entries = 3).await;
+    let mut svc = h.session(service(SVC)).await;
+
+    write_ok(&mut svc, "a", b"", false).await;
+    write_ok(&mut svc, "b", b"", false).await;
+    let res = svc
+        .fs()
+        .write()
+        .call(write::Args {
+            create_dirs: true,
+            ..put("d/e/f", b"")
+        })
+        .await;
+    assert!(
+        matches!(res, Err(Generic::Aux(Aux::Quota(_)))),
+        "two dirs and a file do not fit: {res:?}"
+    );
+    write_ok(&mut svc, "c", b"", false).await;
+    let res = svc.fs().write().call(put("d", b"")).await;
+    assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
+    write_ok(&mut svc, "a", b"rewrite", false).await;
+}
+
+#[tokio::test]
+async fn read_leaves_room_for_the_frame() {
+    let h = common::start_with(|cfg| {
+        with_module_tokens(cfg);
+        cfg.modules.transport.max_frame = ByteSize::kib(4);
+    })
+    .await;
+    let (_listening, url) = h.listen().await;
+    let mut svc = h.session(service(SVC)).await;
+    let max = usize::try_from(h.kernel.shared().cfg().modules.max_payload()).expect("usize");
+    write_ok(&mut svc, "near", &vec![7; 4000], false).await;
+    write_ok(&mut svc, "fits", &vec![7; max], false).await;
+
+    let hello = Hello {
+        version: String::from("1.0.0"),
+        proto_version: ProtoVersion::CURRENT,
+        token: token(SVC).into(),
+        capabilities: Capabilities::default(),
+        resume: None,
+    };
+    let (client, _) = RpcClient::connect_with(&url, hello, ClientOptions::default(), NoHandler)
+        .await
+        .expect("module connects");
+    let mut remote = client.session();
+
+    let res = remote
+        .fs()
+        .read()
+        .call(read::Args {
+            path: String::from("near"),
+        })
+        .await;
+    assert!(
+        matches!(res, Err(Generic::Aux(Aux::Quota(_)))),
+        "a file just under max_frame is quota, not a broken frame: {res:?}"
+    );
+    let ok = remote
+        .fs()
+        .read()
+        .call(read::Args {
+            path: String::from("fits"),
+        })
+        .await
+        .expect("the largest readable file fits a frame");
+    assert_eq!(ok.data.len(), max);
 }

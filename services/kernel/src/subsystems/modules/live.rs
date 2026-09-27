@@ -1,6 +1,7 @@
-//! Живые сессии модулей (`06 §2`): одно имя — одна сессия. Повторный
-//! `hello` того же имени вытесняет прежнюю; между разными именами
-//! вытеснения нет, поэтому `local` держат сразу несколько клиентов.
+//! Живые сессии модулей (`06 §2`): один id модуля — одна сессия. Повторный
+//! `hello` с токеном того же модуля вытесняет прежнюю; между разными
+//! модулями вытеснения нет, поэтому `local` держат сразу несколько клиентов.
+//! Кто обслуживает surface, выводится отсюда же (`06 §3`): реестра нет.
 
 use std::{
     collections::BTreeMap,
@@ -8,13 +9,19 @@ use std::{
 };
 
 use eva::time::Timestamp;
+use tokio::sync::broadcast;
 
 use eva_core::Caller;
 use eva_protocol::{
-    types::{ModuleId, SessionId},
+    types::{ModuleId, SessionId, module::TokenKind},
     wire::{Capabilities, RpcError},
 };
 use eva_rpc::Peer;
+
+use crate::{
+    bus::Published,
+    db::surfaces::{LOCAL, SurfaceRef},
+};
 
 /// Откуда токен сессии: отзыв и ротация `module_tokens` не трогают сессию
 /// с токеном из конфига.
@@ -33,9 +40,12 @@ pub struct Entry {
     /// пор только хранятся.
     pub capabilities: Capabilities,
     pub since: Timestamp,
+    /// Подписка capability `events`, взятая до `welcome`: первые вызовы
+    /// модуля не обгоняют её своими событиями.
+    events: Option<broadcast::Receiver<Published>>,
     /// `None` — handshake ещё не дошёл до `welcome`.
     peer: Option<Peer>,
-    /// Сессию закрыли, пока у неё не было пира.
+    /// Сессию закрыли: новые запросы её модуля не исполняются.
     closing: Option<RpcError>,
 }
 
@@ -53,54 +63,98 @@ impl Entry {
             source,
             capabilities,
             since,
+            events: None,
             peer: None,
             closing: None,
         }
     }
 
+    #[must_use]
+    pub fn with_events(mut self, events: broadcast::Receiver<Published>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
     /// Закрывает соединение; до `welcome` — как только пир появится.
     pub(crate) fn close(&mut self, reason: RpcError) {
-        match &self.peer {
-            Some(peer) => peer.close(reason),
-            None => self.closing = Some(reason),
+        if let Some(peer) = &self.peer {
+            peer.close(reason.clone());
         }
+        self.closing = Some(reason);
     }
 }
 
 /// Итог `attach`: пир встал на место либо сессию надо закрыть сразу.
 #[derive(Debug)]
 pub enum Attach {
-    /// Пир на месте; принятые capabilities сессии.
-    Live(Capabilities),
+    /// Пир на месте; принятые capabilities и подписка на шину.
+    Live(Capabilities, Option<broadcast::Receiver<Published>>),
     /// Вытеснена ещё до `welcome`: состояние модуля держит новая сессия.
     Superseded,
     /// Закрыта отзывом до `welcome`: закрыть и прибрать как обычный разрыв.
-    Closing(RpcError, Capabilities),
+    Closing(RpcError),
+}
+
+/// `hello` опоздал к регистрации сессии.
+#[derive(Debug, Clone)]
+pub enum Refused {
+    /// Отзыв токена застал `hello` между проверкой токена и регистрацией.
+    Revoked,
+    /// Ядро останавливается: сессия, заявленная после `shut_down`, пережила бы его.
+    Closing(RpcError),
 }
 
 #[derive(Debug, Default)]
-pub struct Live(Mutex<BTreeMap<ModuleId, Entry>>);
+struct State {
+    sessions: BTreeMap<ModuleId, Entry>,
+    /// Счётчик отзывов по имени: растёт и без живой сессии.
+    epochs: BTreeMap<ModuleId, u64>,
+    /// Причина `shut_down`: новых сессий больше нет.
+    closing: Option<RpcError>,
+}
+
+#[derive(Debug, Default)]
+pub struct Live(Mutex<State>);
 
 impl Live {
-    fn lock(&self) -> MutexGuard<'_, BTreeMap<ModuleId, Entry>> {
+    fn lock(&self) -> MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Номер отзыва имени: `hello` читает его до проверки токена.
+    pub fn epoch(&self, module: &ModuleId) -> u64 {
+        self.lock().epochs.get(module).copied().unwrap_or_default()
+    }
+
     /// Новая сессия имени; прежняя возвращается, её закрывает вызывающий.
-    pub fn claim(&self, module: ModuleId, entry: Entry) -> Option<Entry> {
-        self.lock().insert(module, entry)
+    /// `epoch` — номер, прочитанный до проверки выданного токена: отзыв
+    /// после него значит, что проверка устарела.
+    pub fn claim(
+        &self,
+        module: ModuleId,
+        entry: Entry,
+        epoch: Option<u64>,
+    ) -> Result<Option<Entry>, Refused> {
+        let mut live = self.lock();
+        if let Some(reason) = &live.closing {
+            return Err(Refused::Closing(reason.clone()));
+        }
+        let current = live.epochs.get(&module).copied().unwrap_or_default();
+        if epoch.is_some_and(|seen| seen != current) {
+            return Err(Refused::Revoked);
+        }
+        Ok(live.sessions.insert(module, entry))
     }
 
     /// Пир принятой сессии.
     pub fn attach(&self, module: &ModuleId, session: &SessionId, peer: Peer) -> Attach {
         let mut live = self.lock();
-        match live.get_mut(module) {
+        match live.sessions.get_mut(module) {
             Some(entry) if entry.session == *session => {
                 entry.peer = Some(peer);
-                let capabilities = entry.capabilities.clone();
-                match entry.closing.take() {
-                    Some(reason) => Attach::Closing(reason, capabilities),
-                    None => Attach::Live(capabilities),
+                match &entry.closing {
+                    Some(reason) => Attach::Closing(reason.clone()),
+                    None => Attach::Live(entry.capabilities.clone(), entry.events.take()),
                 }
             }
             _ => Attach::Superseded,
@@ -111,16 +165,19 @@ impl Live {
     /// должен вызывающий.
     pub fn release(&self, module: &ModuleId, session: &SessionId) -> Option<Entry> {
         let mut live = self.lock();
-        match live.get(module) {
-            Some(entry) if entry.session == *session => live.remove(module),
+        match live.sessions.get(module) {
+            Some(entry) if entry.session == *session => live.sessions.remove(module),
             _ => None,
         }
     }
 
     /// Токен модуля отозван или заменён: сессия с выданным токеном
-    /// закрывается (`06 §9`), с токеном из конфига — живёт.
+    /// закрывается (`06 §9`), с токеном из конфига — живёт; `hello`,
+    /// проверивший токен до отзыва, сессию уже не получит.
     pub fn revoke(&self, module: &ModuleId, reason: RpcError) -> bool {
-        match self.lock().get_mut(module) {
+        let mut live = self.lock();
+        *live.epochs.entry(module.clone()).or_default() += 1;
+        match live.sessions.get_mut(module) {
             Some(entry) if entry.source == TokenSource::Issued => {
                 entry.close(reason);
                 true
@@ -129,22 +186,72 @@ impl Live {
         }
     }
 
-    /// Закрывает все сессии: остановка ядра.
+    /// Причина закрытия текущей сессии модуля: запрос, который пир успел
+    /// прочесть до закрытия, исполнять уже нельзя.
+    pub fn closed(&self, module: &ModuleId) -> Option<RpcError> {
+        self.lock()
+            .sessions
+            .get(module)
+            .and_then(|entry| entry.closing.clone())
+    }
+
+    /// Закрывает все сессии; модули вправе вернуться.
     pub fn close_all(&self, reason: &RpcError) {
-        for entry in self.lock().values_mut() {
+        for entry in self.lock().sessions.values_mut() {
+            entry.close(reason.clone());
+        }
+    }
+
+    /// Остановка ядра: закрывает все сессии и отказывает новым.
+    pub fn shut_down(&self, reason: &RpcError) {
+        let mut live = self.lock();
+        live.closing = Some(reason.clone());
+        for entry in live.sessions.values_mut() {
             entry.close(reason.clone());
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
+        self.lock().sessions.is_empty()
     }
 
     /// Имена и caller'ы живых сессий.
     pub fn sessions(&self) -> Vec<(ModuleId, Caller)> {
         self.lock()
+            .sessions
             .iter()
             .map(|(module, entry)| (module.clone(), entry.caller.clone()))
             .collect()
     }
+
+    /// Модули, чьи живые сессии обслуживают surface (`06 §3`): сессия
+    /// модуля-создателя, у builtin `local` — каждая `client`-сессия.
+    pub fn serving(&self, surface: &SurfaceRef) -> Vec<ModuleId> {
+        self.lock()
+            .sessions
+            .iter()
+            .filter(|(module, entry)| serves(module, entry, surface))
+            .map(|(module, _)| module.clone())
+            .collect()
+    }
+
+    /// `ask_ui` чатов surface (`07 §1`): хоть одна обслуживающая его живая
+    /// сессия объявила capability `ask`.
+    pub fn ask_ui(&self, surface: &SurfaceRef) -> bool {
+        self.lock()
+            .sessions
+            .iter()
+            .any(|(module, entry)| entry.capabilities.ask && serves(module, entry, surface))
+    }
+}
+
+/// Закрываемая сессия уже никого не обслуживает; `system` не обслуживает никто.
+fn serves(module: &ModuleId, entry: &Entry, surface: &SurfaceRef) -> bool {
+    entry.closing.is_none()
+        && match &surface.module {
+            Some(creator) => creator == module,
+            None => {
+                surface.id.as_str() == LOCAL && entry.caller.token_kind() == Some(TokenKind::Client)
+            }
+        }
 }

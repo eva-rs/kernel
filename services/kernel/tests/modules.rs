@@ -16,9 +16,10 @@ use eva_protocol::{
     wire::{Capabilities, capabilities::ToolsCap},
 };
 
+use eva::utils::SecretString;
 use eva_kernel::{
-    config::{Secret, modules::TokenEntry},
-    db::{Db as _, Queries as _},
+    config::modules::TokenEntry,
+    db::{Db as _, Queries as _, modules::TokenRow},
 };
 
 fn issue(module: &str, kind: TokenKind) -> token_issue::Args {
@@ -43,6 +44,25 @@ fn hash(token: &str) -> Vec<u8> {
 async fn live(h: &common::Harness, token: &str) -> Option<(ModuleId, TokenKind)> {
     let hash = hash(token);
     h.query(move |c| c.modules().token(&hash)).await
+}
+
+/// Живая строка `module_tokens` в обход `token_issue`.
+async fn legacy_token(h: &common::Harness, module: &str, kind: TokenKind) {
+    use eva::time::Clock as _;
+    let row = TokenRow {
+        hash: hash(&format!("{module}-legacy")),
+        module: ModuleId::from(module),
+        kind,
+        issued_by: None,
+        issued_via: Some(ModuleId::from(CLIENT)),
+        issued_at: h.clock.get(),
+    };
+    h.kernel
+        .shared()
+        .db()
+        .write(move |tx| tx.modules().insert_token(&row))
+        .await
+        .expect("legacy token");
 }
 
 async fn list_modules(session: &mut TestSession) -> Vec<eva_protocol::types::module::Module> {
@@ -96,7 +116,7 @@ async fn list_kind_comes_from_live_token_and_config_wins() {
         cfg.modules.tokens.insert(
             ModuleId::from(OTHER),
             TokenEntry {
-                token: Secret::new("configured"),
+                token: SecretString::Plaintext(String::from("configured")),
                 kind: TokenKind::Client,
             },
         );
@@ -106,14 +126,14 @@ async fn list_kind_comes_from_live_token_and_config_wins() {
     h.register_module(OTHER).await;
     let mut client = h.client_session().await;
 
-    for (module, kind) in [(SVC, TokenKind::Service), (OTHER, TokenKind::Service)] {
-        client
-            .modules()
-            .token_issue()
-            .call(issue(module, kind))
-            .await
-            .expect("issue");
-    }
+    client
+        .modules()
+        .token_issue()
+        .call(issue(SVC, TokenKind::Service))
+        .await
+        .expect("issue");
+    // Токен, выданный до того, как конфиг назвал модуль.
+    legacy_token(&h, OTHER, TokenKind::Service).await;
 
     let modules = list_modules(&mut client).await;
     let kinds: Vec<_> = modules.iter().map(|m| (m.name.as_str(), m.kind)).collect();
@@ -224,10 +244,7 @@ async fn token_issue_rejects_reserved_and_malformed_names() {
             .token_issue()
             .call(issue(reserved, TokenKind::Client))
             .await;
-        assert!(
-            matches!(&res, Err(Generic::Spec(token_issue::Err::Reserved(e))) if e.module.as_str() == reserved),
-            "{reserved}: {res:?}"
-        );
+        assert_eq!(outcome(&res), Outcome::Invalid, "{reserved}: {res:?}");
     }
 
     for bad in ["", "Bridge", "has space", "a/b", "9lives", &"a".repeat(65)] {
@@ -382,4 +399,71 @@ async fn database_failure_is_aux_db() {
         .call(issue("bridge", TokenKind::Client))
         .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
+}
+
+/// Handshake не примет выданный токен модуля из `modules.tokens`: выдача —
+/// отказ, а не мёртвый секрет (`06 §9`, конфиг сильнее).
+#[tokio::test]
+async fn token_issue_for_a_configured_module_is_a_conflict() {
+    let h = common::start_with(common::with_module_tokens).await;
+    let mut kernel = h.kernel_session().await;
+    let mut owner = h.client_session().await;
+
+    let res = owner
+        .modules()
+        .token_issue()
+        .call(issue(SVC, TokenKind::Service))
+        .await;
+    assert!(
+        matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.tokens")),
+        "{res:?}"
+    );
+    let res = kernel
+        .modules()
+        .token_issue()
+        .call(token_issue::Args {
+            issued_by: Some(PersonId::system()),
+            ..issue(OTHER, TokenKind::Client)
+        })
+        .await;
+    assert_eq!(outcome(&res), Outcome::Conflict, "kernel tool: {res:?}");
+
+    let rows: i64 = h
+        .query(|c| Ok(c.query_row("SELECT count(*) FROM module_tokens", [], |r| r.get(0))?))
+        .await;
+    assert_eq!(rows, 0, "nothing minted");
+}
+
+/// Ротация закрыла бы сессию, которой уходит единственная копия нового токена.
+#[tokio::test]
+async fn a_module_cannot_rotate_the_token_of_its_own_session() {
+    let h = common::start().await;
+    let mut owner = h.client_session().await;
+    let first = owner
+        .modules()
+        .token_issue()
+        .call(issue("tablet", TokenKind::Client))
+        .await
+        .expect("issue")
+        .token;
+
+    let mut tablet = h.session(client("tablet")).await;
+    let res = tablet
+        .modules()
+        .token_issue()
+        .call(issue("tablet", TokenKind::Client))
+        .await;
+    assert_eq!(outcome(&res), Outcome::Conflict, "{res:?}");
+    assert_eq!(
+        live(&h, &first).await,
+        Some((ModuleId::from("tablet"), TokenKind::Client)),
+        "the old token still authenticates"
+    );
+
+    tablet
+        .modules()
+        .token_issue()
+        .call(issue("bridge", TokenKind::Service))
+        .await
+        .expect("other names are fine");
 }

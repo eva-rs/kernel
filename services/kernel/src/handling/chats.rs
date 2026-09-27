@@ -30,16 +30,30 @@ use crate::{
         stats::Metric,
         surfaces::SurfaceRef,
     },
-    handling::folders::check_compact_at,
+    handling::{folders::check_compact_at, text},
     shared::Shared,
     state::{Policy, State},
 };
 
 fn check_title(title: Option<&str>) -> AuxResult<()> {
-    let ok = title.is_none_or(|t| !t.trim().is_empty() && !t.chars().any(char::is_control));
+    let Some(title) = title else {
+        return Ok(());
+    };
+    let ok = !title.trim().is_empty() && !title.chars().any(char::is_control);
     ok.true_or(Aux::Invalid(
         "chat title must be a non-empty single line".into(),
-    ))
+    ))?;
+    text::chars("chat title", title, text::NAME_MAX)
+}
+
+/// `project` и `workdir` — пути, не документы.
+fn check_paths(project: Option<&str>, workdir: Option<&str>) -> AuxResult<()> {
+    for (what, value) in [("project", project), ("workdir", workdir)] {
+        if let Some(value) = value {
+            text::bytes(what, value, text::PATH_MAX)?;
+        }
+    }
+    Ok(())
 }
 
 /// `workdir_on` — имя из `hands.endpoints` (`05 §1.3`).
@@ -112,9 +126,11 @@ pub async fn Create<C: Components>(
         (Some(id), _) if id.is_empty() => {
             return Err(Aux::Invalid("external_id must not be empty".into()).into());
         }
+        (Some(id), _) => text::bytes("external_id", id, text::EXTERNAL_ID_MAX)?,
         _ => {}
     }
     check_title(title.as_deref())?;
+    check_paths(project.as_deref(), workdir.as_deref())?;
     check_endpoint(shared.cfg(), workdir_on.as_deref())?;
 
     let kind = kind.unwrap_or(shared.cfg().chats.default_kind);
@@ -124,12 +140,10 @@ pub async fn Create<C: Components>(
         .db()
         .write(move |tx| -> Response<ChatRow, create::Err> {
             let policy = Policy::new(&who);
-            let target = tx
-                .surfaces()
-                .get(&surface)?
-                .ok_or_else(|| Aux::NotFound(format!("surface {surface}")))?;
-            let target = target.surface_ref();
-            policy.surfaces().own(&target)?;
+            let target = policy.surfaces().named(
+                format_args!("surface {surface}"),
+                tx.surfaces().get(&surface)?.map(|s| s.surface_ref()),
+            )?;
 
             let unsorted = tx.folders().by_name(&surface, UNSORTED)?.ok_or_else(|| {
                 Aux::internal(format!("surface {surface} has no {UNSORTED} folder"))
@@ -137,10 +151,9 @@ pub async fn Create<C: Components>(
             let folder_ref = match folder {
                 None => unsorted.folder_ref(&unsorted),
                 Some(id) => {
-                    let row = tx
-                        .folders()
-                        .get(id)?
-                        .ok_or_else(|| Aux::NotFound(format!("folder {id}")))?;
+                    let row = policy
+                        .surfaces()
+                        .named(format_args!("folder {id}"), tx.folders().get(id)?)?;
                     (row.surface.id == surface).true_or(Aux::Invalid(format!(
                         "folder {id} is not on surface {surface}"
                     )))?;
@@ -205,14 +218,20 @@ pub async fn Get<C: Components>(
     let policy = Policy::new(caller);
 
     let db = db_conn.acquire(shared).await?;
-    let selector = chat.clone();
+    let (selector, who) = (chat.clone(), caller.clone());
     let row = db
-        .run(move |c| match &selector {
-            Selector::Id(id) => c.chats().get(*id),
-            Selector::Alias {
-                surface,
-                external_id,
-            } => c.chats().by_alias(surface, external_id),
+        .run(move |c| -> Response<_, get::Err> {
+            Ok(match &selector {
+                Selector::Id(id) => c.chats().get(*id)?,
+                Selector::Alias {
+                    surface,
+                    external_id,
+                } => {
+                    let owner = c.surfaces().get(surface)?.map(|s| s.surface_ref());
+                    Policy::new(&who).chats().alias(surface, owner.as_ref())?;
+                    c.chats().by_alias(surface, external_id)?
+                }
+            })
         })
         .await?
         .ok_or_else(|| not_found(chat))?;
@@ -252,8 +271,20 @@ pub async fn List<C: Components>(
     };
 
     let db = db_conn.acquire(shared).await?;
+    let who = caller.clone();
     let rows = db
-        .run(move |c| c.chats().list(&filter, after, limit.into_inner()))
+        .run(move |c| -> Response<_, list::Err> {
+            // Явный фильтр — объект аргумента: чужой не превращается в пустую страницу.
+            let surfaces = Policy::new(&who).surfaces();
+            if let Some(id) = &filter.surface {
+                let owner = c.surfaces().get(id)?.map(|s| s.surface_ref());
+                surfaces.named(format_args!("surface {id}"), owner)?;
+            }
+            if let Some(id) = filter.folder {
+                surfaces.named(format_args!("folder {id}"), c.folders().get(id)?)?;
+            }
+            Ok(c.chats().list(&filter, after, limit.into_inner())?)
+        })
         .await?
         .ok_or_else(|| {
             Aux::Conflict(format!(
@@ -366,9 +397,11 @@ fn apply(mut row: ChatRow, update: update::Update) -> Response<ChatRow, update::
         row.compact_at = compact_at;
     }
     if let Patch::Change(project) = project {
+        check_paths(project.as_deref(), None)?;
         row.project = project;
     }
     if let Patch::Change(workdir) = workdir {
+        check_paths(None, workdir.as_deref())?;
         row.workdir = workdir;
     }
     if let Patch::Change(workdir_on) = workdir_on {
@@ -422,7 +455,7 @@ pub async fn Move<C: Components>(
             }
             tx.chats().move_to(chat, target.id)?;
             if from != to {
-                tx.stats().bump(Metric::ChatsTrustMoves, "", now, zone)?;
+                tx.stats().bump(Metric::ChatsTrustMoves, "", now, &zone)?;
             }
             let reset = from != to && tx.chats().mark_reset(chat)?;
             let row = tx

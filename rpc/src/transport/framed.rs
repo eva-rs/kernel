@@ -9,7 +9,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec, LengthDelimitedCodecError}
 use crate::{
     config::Config,
     transport::{
-        Conn, Outbound, TransportError,
+        Conn, MapErr, Outbound, TransportError,
         meter::{Meter, Metered},
     },
 };
@@ -26,7 +26,7 @@ where
     let meter = Meter::new();
     let (sink, source) = Framed::new(Metered::new(io, meter.clone()), codec).split();
 
-    let tx = sink.sink_map_err(classify).with_flat_map(|out: Outbound| {
+    let tx = MapErr::new(sink, classify).with_flat_map(|out: Outbound| {
         let frame = match out {
             Outbound::Frame(frame) => Some(Ok(frame)),
             Outbound::Close(_) => None,

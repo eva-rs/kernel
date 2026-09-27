@@ -1,6 +1,8 @@
 //! msgpack-провод (`to_vec_named`): roundtrip wire-типов и терпимость к
 //! вариантам пира новее (`06 §1, §12`).
 
+mod common;
+
 use std::{collections::BTreeMap, fmt::Debug, time::Duration};
 
 use eva::time::{HumanDuration, Timestamp};
@@ -12,7 +14,7 @@ use eva_protocol::{
     errors::{self, Generic},
     requests::{Patch, blobs, chats, folders, sqlite, surfaces},
     types::{
-        Bytes, ChatId, Effort, EventId, FolderId, MemoryId, Thinking, ToolId,
+        Bytes, ChatId, Effort, EventId, FolderId, MemoryId, Thinking, ToolId, Value as Param,
         blob::{self, Meta},
         content, folder,
         generate::{
@@ -148,6 +150,7 @@ fn frame_every_variant() {
         Frame::Cancel(Cancel { id: 4 }),
         Frame::Unknown,
     ];
+    common::assert_every_variant(&frames);
     for frame in &frames {
         roundtrip(frame);
     }
@@ -157,6 +160,19 @@ fn frame_every_variant() {
         panic!("request expected");
     };
     assert_eq!(decode::<chats::delete::Args>(&request.params), params);
+    // На проводе `params` — `bin` с msgpack `Args`, не вложенная карта.
+    let Param::Map(outer) = decode::<Param>(&encode(&frames[0])) else {
+        panic!("frame is a map");
+    };
+    let [(tag, Param::Map(fields))] = outer.as_slice() else {
+        panic!("one variant key: {outer:?}");
+    };
+    assert_eq!(tag, &Param::from("request"));
+    let payload = fields.iter().find(|(key, _)| key == &Param::from("params"));
+    assert_eq!(
+        payload.map(|(_, value)| value),
+        Some(&Param::Bytes(encode(&params).into()))
+    );
     assert_eq!(frames[0].id(), Some(1));
     assert_eq!(frames[3].id(), None);
 
@@ -251,14 +267,16 @@ fn handshake() {
             timeout: Some(HumanDuration(Duration::from_millis(1500))),
             fail_mode: FailMode::Closed,
         }),
+        ask: true,
     };
     assert_eq!(
         capabilities.names(),
-        ["provider", "tools", "events", "hooks"]
+        ["provider", "tools", "events", "hooks", "ask"]
     );
+    let absent: Capabilities = decode(&encode(&json!({})));
+    assert!(!absent.ask, "ask defaults to false");
 
     let hello = Hello {
-        module: "messenger-x".into(),
         version: "1.2.3".into(),
         proto_version: ProtoVersion::CURRENT,
         token: "secret".into(),
@@ -272,10 +290,16 @@ fn handshake() {
         !format!("{hello:?}").contains("secret"),
         "token leaks into Debug"
     );
+    let wire: serde_json::Value = rmp_serde::from_slice(&encode(&hello)).expect("hello as a map");
+    assert!(
+        wire.get("module").is_none(),
+        "identity comes from the token: {wire}"
+    );
     roundtrip(&Capabilities::default());
 
     let welcome = Welcome {
         session_id: "0198-session".into(),
+        module: "messenger-x".into(),
         kernel_version: "0.1.0".into(),
         proto_version: ProtoVersion { major: 0, minor: 1 },
         kind: TokenKind::Service,
@@ -287,17 +311,23 @@ fn handshake() {
             subject: "provider".into(),
             message: "module is not named in llm.providers".into(),
         }],
+        resumed: true,
     };
     roundtrip(&welcome);
 
     // Пустые секции `welcome` опциональны на проводе.
     let minimal: Welcome = decode(&encode(&json!({
         "session_id": "s",
+        "module": "phone",
         "kernel_version": "0.1.0",
         "proto_version": "0.1",
         "kind": "client",
     })));
     assert!(minimal.tool_ids.is_empty() && minimal.warnings.is_empty());
+    assert!(
+        !minimal.resumed,
+        "an older kernel never claims a resumed window"
+    );
 
     assert_eq!(
         ProtoVersion::parse("2.10"),
@@ -442,6 +472,7 @@ fn gen_item_every_variant() {
         }),
         GenItem::Unknown,
     ];
+    common::assert_every_variant(&items);
     for item in &items {
         roundtrip(item);
     }
@@ -509,6 +540,7 @@ fn turn_item() {
         },
         ItemBody::Unknown,
     ];
+    common::assert_every_variant(&bodies);
 
     let mut events: Vec<FeedEvent> = bodies
         .into_iter()
@@ -559,8 +591,18 @@ fn turn_item() {
             turn: "0198-turn".into(),
             message: "provider failed".into(),
         },
+        FeedEvent::ItemDelta {
+            id: "future".into(),
+            delta: ItemDelta::Unknown,
+        },
         FeedEvent::Unknown,
     ]);
+    common::assert_every_variant(&events);
+    let deltas = events.iter().filter_map(|event| match event {
+        FeedEvent::ItemDelta { delta, .. } => Some(delta),
+        _ => None,
+    });
+    common::assert_every_variant(deltas);
 
     for (seq, event) in events.into_iter().enumerate() {
         roundtrip(&TurnItem {
@@ -734,6 +776,9 @@ fn events_every_topic() {
         Event::ModuleDisconnected(module),
         Event::Unknown,
     ];
+    common::assert_every_variant(&events);
+    let topics: Vec<Topic> = events.iter().map(Event::topic).collect();
+    common::assert_every_variant(&topics);
 
     for (seq, event) in events.into_iter().enumerate() {
         let topic = event.topic();
@@ -877,6 +922,58 @@ fn int_ids_accept_display_form() {
     assert_eq!(map, BTreeMap::from([(ChatId(42), 1), (ChatId(43), 2)]));
 }
 
+/// `05 §2.1`: `Effort` читается именем и номером 1..=4, пишется именем; номер —
+/// не индекс варианта с нуля.
+#[test]
+fn effort_names_and_levels() {
+    let levels = [
+        (1, Effort::Low),
+        (2, Effort::Medium),
+        (3, Effort::High),
+        (4, Effort::Max),
+    ];
+    for (n, effort) in levels {
+        assert_eq!(decode::<Effort>(&encode(&n)), effort, "msgpack {n}");
+        let json: Effort = serde_json::from_value(json!(n)).expect("json level");
+        assert_eq!(json, effort, "json {n}");
+        assert_eq!(effort.as_u8(), n);
+
+        let name = serde_json::to_value(effort).expect("json name");
+        assert!(name.is_string(), "{name}");
+        assert_eq!(encode(&effort), encode(&name), "written as the name");
+        assert_eq!(decode::<Effort>(&encode(&name)), effort, "msgpack {name}");
+        let json: Effort = serde_json::from_value(name.clone()).expect("json name");
+        assert_eq!(json, effort, "json {name}");
+    }
+
+    for bad in [
+        json!(0),
+        json!(5),
+        json!(-1),
+        json!(258),
+        json!(2.0),
+        json!("Medium"),
+        json!("2"),
+        json!("xhigh"),
+        json!(null),
+    ] {
+        assert!(
+            rmp_serde::from_slice::<Effort>(&encode(&bad)).is_err(),
+            "msgpack {bad}"
+        );
+        assert!(
+            serde_json::from_value::<Effort>(bad.clone()).is_err(),
+            "json {bad}"
+        );
+    }
+
+    // Под `Patch`/`Option` и в `caps.effort_levels`.
+    let update: surfaces::update::Update = decode(&encode(&json!({"effort": {"change": 2}})));
+    assert_eq!(update.effort, Patch::Change(Some(Effort::Medium)));
+    let caps: ModelCaps = decode(&encode(&json!({"effort_levels": [1, "high", 4]})));
+    assert_eq!(caps.effort_levels, [Effort::Low, Effort::High, Effort::Max]);
+}
+
 /// `Patch` поверх msgpack: `nil`, `"keep"` и отсутствие — Keep, `{change: nil}` — очистка.
 #[test]
 fn patch_over_msgpack() {
@@ -937,14 +1034,17 @@ fn patch_over_msgpack() {
 #[test]
 fn requests_roundtrip() {
     let params = vec![
-        json!(1),
-        json!(1.5),
-        json!("s"),
-        Value::Null,
-        json!([1, {"a": true}]),
+        Param::Integer(1),
+        Param::Float(1.5),
+        Param::from("s"),
+        Param::Null,
+        Param::from(json!([1, {"a": true}])),
+        // Байты под `flatten` проходят буфер `Content` и остаются `bin`.
+        Param::Bytes(Bytes::from(*b"valid utf-8")),
+        Param::Array(vec![Param::Bytes(Bytes::from([0xc1, 0xff]))]),
     ];
     let statement = sqlite::Statement {
-        sql: "SELECT ?1, ?2, ?3, ?4, ?5".into(),
+        sql: "SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7".into(),
         params,
     };
     roundtrip(&sqlite::exec::Args {
@@ -1205,4 +1305,241 @@ fn malformed_variant_map_fails() {
 
     let bad_payload = encode(&json!({"text_delta": {"text": 5}}));
     assert!(rmp_serde::from_slice::<GenItem>(&bad_payload).is_err());
+}
+
+/// BLOB — `bin` и назад `Blob`, даже если его байты — валидный UTF-8.
+#[test]
+fn sqlite_cells_keep_their_storage_class() {
+    let ok = sqlite::query::Ok {
+        columns: vec!["n".into(), "i".into(), "r".into(), "t".into(), "b".into()],
+        rows: vec![vec![
+            sqlite::Cell::Null,
+            sqlite::Cell::Integer(-7),
+            sqlite::Cell::Real(1.5),
+            sqlite::Cell::Text("abc".into()),
+            sqlite::Cell::Blob(Bytes::from(*b"abc")),
+        ]],
+    };
+    roundtrip(&ok);
+
+    let blob = encode(&sqlite::Cell::Blob(Bytes::from(*b"abc")));
+    assert_eq!(blob, [0xc4, 3, b'a', b'b', b'c']);
+    assert!(rmp_serde::from_slice::<sqlite::Cell>(&encode(&u64::MAX)).is_err());
+}
+
+/// Произвольные строки, байты, числа и время: форма провода не зависит от
+/// выбранных образцов (`06 §12`).
+mod props {
+    use std::num::NonZeroU64;
+
+    use proptest::{collection::vec, option, prelude::*};
+
+    use super::*;
+
+    fn text() -> impl Strategy<Value = String> {
+        "\\PC{0,24}"
+    }
+
+    fn raw() -> impl Strategy<Value = Bytes> {
+        prop_oneof![vec(any::<u8>(), 0..64), vec(any::<u8>(), 250..300)].prop_map(Bytes::from)
+    }
+
+    fn cost() -> impl Strategy<Value = Option<f64>> {
+        option::of(-1.0e12..1.0e12_f64)
+    }
+
+    fn moment() -> impl Strategy<Value = Option<Timestamp>> {
+        option::of(any::<NonZeroU64>().prop_map(Timestamp::from_nanos))
+    }
+
+    fn gen_item() -> impl Strategy<Value = GenItem> {
+        prop_oneof![
+            text().prop_map(|text| GenItem::TextDelta { text }),
+            text().prop_map(|text| GenItem::ThinkingDelta { text }),
+            (raw(), text()).prop_map(|(signature, model)| GenItem::ThinkingBlock {
+                signature,
+                model: model.into(),
+            }),
+            (raw(), text()).prop_map(|(data, model)| GenItem::RedactedThinking {
+                data,
+                model: model.into(),
+            }),
+            (text(), text(), any::<i64>()).prop_map(|(id, name, n)| GenItem::ToolUse {
+                input: json!({"name": name, "n": n, "list": [n, null]}),
+                id,
+                name,
+            }),
+            (text(), raw()).prop_map(|(media_type, data)| GenItem::Image { media_type, data }),
+            (
+                any::<[u64; 6]>(),
+                any::<(u32, u32)>(),
+                cost(),
+                option::of((option::of(any::<u64>()), option::of(any::<u64>()), moment())),
+            )
+                .prop_map(|(n, (applied, cleared), cost, limits)| {
+                    GenItem::Usage(Usage {
+                        input: n[0],
+                        cache_read: n[1],
+                        cache_write_short: n[2],
+                        cache_write_long: n[3],
+                        output: n[4],
+                        reasoning: n[5],
+                        context_edits: ContextEdits {
+                            applied,
+                            cleared_input_tokens: cleared,
+                        },
+                        cost,
+                        rate_limits: limits.map(|(requests, tokens, reset_at)| RateLimits {
+                            requests_remaining: requests,
+                            tokens_remaining: tokens,
+                            reset_at,
+                        }),
+                    })
+                }),
+            option::of(text()).prop_map(|details| GenItem::Stop(Stop {
+                reason: StopReason::MaxTokens,
+                details,
+            })),
+            Just(GenItem::Unknown),
+        ]
+    }
+
+    fn frame() -> impl Strategy<Value = Frame> {
+        prop_oneof![
+            (any::<u64>(), text(), raw()).prop_map(|(id, method, params)| {
+                Frame::Request(Request { id, method, params })
+            }),
+            (any::<u64>(), any::<u64>(), raw())
+                .prop_map(|(id, seq, item)| Frame::StreamItem(StreamItem { id, seq, item })),
+            (any::<u64>(), raw())
+                .prop_map(|(id, result)| Frame::Response(Response::ok(id, result))),
+            (
+                any::<u64>(),
+                text(),
+                option::of(raw()),
+                option::of(any::<u32>())
+            )
+                .prop_map(|(id, message, data, retry)| {
+                    Frame::StreamEnd(StreamEnd {
+                        id,
+                        error: Some(RpcError {
+                            code: ErrorCode::Quota,
+                            message,
+                            data,
+                            retry_after: retry.map(|s| secs(s.into())),
+                        }),
+                    })
+                }),
+            (text(), raw()).prop_map(|(method, params)| Frame::Notify(Notify { method, params })),
+        ]
+    }
+
+    fn feed_event() -> impl Strategy<Value = FeedEvent> {
+        let body = prop_oneof![
+            (text(), option::of(text()), any::<bool>()).prop_map(|(text, sender, master)| {
+                ItemBody::UserMessage {
+                    text,
+                    sender: sender.map(Into::into),
+                    master,
+                }
+            }),
+            (text(), cost()).prop_map(|(text, cost)| ItemBody::AgentMessage { text, cost }),
+            (text(), text(), text(), raw(), option::of(text())).prop_map(
+                |(call_id, name, media_type, data, progress)| ItemBody::ToolCall {
+                    input: json!({"name": name}),
+                    call_id,
+                    name,
+                    agent: None,
+                    result: Some(ToolCallResult {
+                        output: vec![ToolContent::Image { media_type, data }],
+                        is_error: false,
+                    }),
+                    progress,
+                }
+            ),
+        ];
+        prop_oneof![
+            (text(), option::of(text()), any::<i64>(), body).prop_map(|(id, turn, seq, body)| {
+                FeedEvent::ItemCompleted {
+                    item: Item {
+                        id,
+                        turn: turn.map(Into::into),
+                        seq: EventId(seq),
+                        status: ItemStatus::Completed,
+                        body,
+                    },
+                }
+            }),
+            (text(), text()).prop_map(|(id, text)| FeedEvent::ItemDelta {
+                id,
+                delta: ItemDelta::Text { text },
+            }),
+            (text(), any::<u32>(), text(), any::<[u64; 4]>(), cost()).prop_map(
+                |(turn, step, model, n, cost)| FeedEvent::Usage(StepUsage {
+                    turn: turn.into(),
+                    step,
+                    model: model.into(),
+                    input: n[0],
+                    cache_read: n[1],
+                    cache_write: n[2],
+                    output: n[3],
+                    cost,
+                })
+            ),
+            (text(), vec(any::<i64>(), 0..4)).prop_map(|(turn, ids)| FeedEvent::TurnDone {
+                turn: turn.into(),
+                message_ids: ids.into_iter().map(EventId).collect(),
+            }),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn gen_items_roundtrip(item in gen_item()) {
+            prop_assert_eq!(decode::<GenItem>(&encode(&item)), item);
+        }
+
+        #[test]
+        fn frames_roundtrip(frame in frame()) {
+            prop_assert_eq!(decode::<Frame>(&encode(&frame)), frame);
+        }
+
+        /// Кадр несёт payload вторым шагом: `GenItem` внутри `stream_item` цел.
+        #[test]
+        fn stream_item_carries_gen_item(id in any::<u64>(), seq in any::<u64>(), item in gen_item()) {
+            let frame = Frame::StreamItem(StreamItem { id, seq, item: encode(&item).into() });
+            let Frame::StreamItem(back) = decode::<Frame>(&encode(&frame)) else {
+                panic!("stream_item expected");
+            };
+            prop_assert_eq!((back.id, back.seq), (id, seq));
+            prop_assert_eq!(decode::<GenItem>(&back.item), item);
+        }
+
+        #[test]
+        fn turn_items_roundtrip(
+            seq in any::<i64>(),
+            sub in any::<u32>(),
+            replayed in any::<bool>(),
+            event in feed_event(),
+        ) {
+            let item = TurnItem { seq: EventId(seq), sub, replayed, event };
+            prop_assert_eq!(decode::<TurnItem>(&encode(&item)), item);
+        }
+
+        #[test]
+        fn params_roundtrip(raw in raw(), s in text(), i in any::<i64>(), u in any::<u64>()) {
+            let statement = sqlite::Statement {
+                sql: s.clone(),
+                params: vec![
+                    Param::Bytes(raw.clone()),
+                    Param::String(s.clone()),
+                    Param::Integer(i),
+                    Param::from(u),
+                    Param::Map(vec![(Param::String(s), Param::Array(vec![Param::Bytes(raw)]))]),
+                ],
+            };
+            let args = sqlite::exec::Args { statement };
+            prop_assert_eq!(decode::<sqlite::exec::Args>(&encode(&args)), args);
+        }
+    }
 }

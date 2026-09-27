@@ -36,7 +36,7 @@ impl<T> Snapshot<T> {
 pub enum Refusal {
     /// Не прошла allow-list провайдера или `llm.models`.
     NotAllowed,
-    /// Имя уже объявил другой провайдер; первый по порядку имён побеждает.
+    /// Имя уже обслуживает другой провайдер: занятое не перехватывается.
     Taken { by: String },
 }
 
@@ -94,6 +94,12 @@ impl Models {
                 },
             );
         }
+    }
+
+    /// Провайдер ушёл вместе с моделями; чужие записи не трогаются.
+    pub fn remove_provider(&mut self, provider: &str) {
+        self.providers.remove(provider);
+        self.models.retain(|_, entry| entry.provider != provider);
     }
 
     /// Примет ли реестр модель `name` от провайдера с allow-list `allow`.

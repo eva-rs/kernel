@@ -32,7 +32,7 @@ use eva_protocol::{
         turns::attach,
     },
     types::{
-        BlobId, ChatId, EventId, SessionId, TurnId,
+        BlobId, ChatId, EventId, ModuleId, SessionId, TurnId,
         module::TokenKind,
         surface::Surface,
         turn::{FeedEvent, TurnItem},
@@ -69,6 +69,8 @@ pub struct State {
     pub create_delay: Mutex<Duration>,
     pub attach_dropped: Notify,
     pub uploads: Mutex<Vec<Vec<u8>>>,
+    /// `blobs.put` ждёт столько, прежде чем читать тело.
+    pub put_delay: Mutex<Duration>,
 }
 
 #[derive(Clone, Default)]
@@ -324,6 +326,8 @@ impl Blobs for TestSession {
         Upload(move |args: put::Args, mut body: ByteStream| {
             let state = state.clone();
             async move {
+                let delay = *state.put_delay.lock().unwrap();
+                tokio::time::sleep(delay).await;
                 let mut bytes = Vec::new();
                 while let Some(chunk) = body.next().await {
                     bytes.extend_from_slice(&chunk.map_err(Generic::Aux)?);
@@ -485,8 +489,17 @@ impl Kv for TestSession {
 
 pub const CLIENT_TOKEN: &str = "client-token";
 pub const SERVICE_TOKEN: &str = "service-token";
+/// Второй клиент: чужой для `CLIENT_TOKEN`.
+pub const OTHER_TOKEN: &str = "other-token";
 
-/// Токен → бит `kind`; зарезервированные имена и чужой токен — `unauthorized`.
+/// Модуль токена `CLIENT_TOKEN`.
+pub const CLIENT: &str = "mod";
+/// Модуль токена `SERVICE_TOKEN`.
+pub const SERVICE: &str = "bridge";
+/// Модуль токена `OTHER_TOKEN`.
+pub const OTHER: &str = "other";
+
+/// Токен → модуль и бит `kind`; чужой токен — `unauthorized`.
 #[derive(Default)]
 pub struct Auth {
     sessions: AtomicU64,
@@ -494,21 +507,17 @@ pub struct Auth {
 
 impl Authenticator for Auth {
     async fn authenticate(&self, hello: &Hello) -> Result<Welcome, RpcError> {
-        if matches!(hello.module.as_str(), "kernel" | "system" | "local") {
-            return Err(RpcError::new(
-                ErrorCode::Unauthorized,
-                "reserved module name",
-            ));
-        }
-        let kind = match hello.token.expose() {
-            CLIENT_TOKEN => TokenKind::Client,
-            SERVICE_TOKEN => TokenKind::Service,
+        let (module, kind) = match hello.token.expose() {
+            CLIENT_TOKEN => (CLIENT, TokenKind::Client),
+            SERVICE_TOKEN => (SERVICE, TokenKind::Service),
+            OTHER_TOKEN => (OTHER, TokenKind::Client),
             _ => return Err(RpcError::new(ErrorCode::Unauthorized, "unknown token")),
         };
         let n = self.sessions.fetch_add(1, Ordering::SeqCst);
 
         Ok(Welcome {
             session_id: SessionId(format!("s{n}")),
+            module: ModuleId::from(module),
             kernel_version: "test".to_owned(),
             proto_version: ProtoVersion::CURRENT,
             kind,
@@ -516,6 +525,7 @@ impl Authenticator for Auth {
             tool_ids: Default::default(),
             models_accepted: Vec::new(),
             warnings: Vec::new(),
+            resumed: false,
         })
     }
 }

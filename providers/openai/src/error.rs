@@ -109,6 +109,9 @@ pub(crate) fn other(raw: impl Into<String>) -> ProviderError {
     }
 }
 
+/// Подсказка приходит из сети: абсурдное значение не должно парковать повторы.
+const RETRY_AFTER_MAX: Duration = Duration::from_secs(3600);
+
 /// Только секунды: HTTP-дату в `Retry-After` вендоры инференса не шлют.
 pub(crate) fn retry_after(headers: &HeaderMap) -> Option<HumanDuration> {
     let secs = headers
@@ -117,8 +120,11 @@ pub(crate) fn retry_after(headers: &HeaderMap) -> Option<HumanDuration> {
         .ok()?
         .trim()
         .parse::<f64>()
-        .ok()?;
-    (secs.is_finite() && secs >= 0.0).then(|| HumanDuration(Duration::from_secs_f64(secs)))
+        .ok()
+        .filter(|s| !s.is_nan())?;
+    Duration::try_from_secs_f64(secs.min(RETRY_AFTER_MAX.as_secs_f64()))
+        .ok()
+        .map(HumanDuration)
 }
 
 /// Заголовки OpenAI; OpenRouter их не шлёт — тогда `None`.

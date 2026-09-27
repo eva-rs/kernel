@@ -2,7 +2,7 @@
 
 use eva::data;
 
-use eva_protocol::types::{SurfaceId, chat};
+use eva_protocol::types::{ModuleId, SurfaceId, chat};
 
 #[data]
 #[serde(default)]
@@ -44,4 +44,7 @@ impl Default for PersonsConfig {
 pub struct MasterIdentity {
     pub surface: SurfaceId,
     pub external_id: String,
+    /// Единственный модуль, которому можно создать этот surface; `None` — любой сервис.
+    #[serde(default)]
+    pub module: Option<ModuleId>,
 }

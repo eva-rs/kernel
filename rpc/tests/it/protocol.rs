@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use eva_protocol::{
-    requests::surfaces::create,
+    requests::{surfaces::create, turns::attach},
     wire::{
         ErrorCode, Frame, RpcError,
         frame::{Notify, Response},
@@ -11,11 +11,13 @@ use eva_protocol::{
         method,
     },
 };
-use eva_rpc::{Conn, IdSeq, NoHandler, RpcClient, codec, config::Config, transport::Outbound};
+use eva_rpc::{
+    ClientOptions, Conn, IdSeq, NoHandler, RpcClient, codec, config::Config, transport::Outbound,
+};
 
 use crate::{
     harness::{Harness, Via, config, hello, ms, resume},
-    kernel::CLIENT_TOKEN,
+    kernel::{CLIENT_TOKEN, OTHER_TOKEN, chat, chat_id},
 };
 
 fn ping() -> Frame {
@@ -61,7 +63,7 @@ async fn frames_before_welcome_close() {
     });
     let result = RpcClient::handshake(
         client_end,
-        hello("mod", CLIENT_TOKEN),
+        hello(CLIENT_TOKEN),
         Default::default(),
         NoHandler,
     )
@@ -95,7 +97,7 @@ async fn ping_timeout_closes() {
     let mut h = Harness::with(Via::Uds, cfg).await;
 
     let mut raw = h.raw().await;
-    raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
     let accepted = h.accepted().await;
 
     // Молчащий пир: ядро шлёт ping, но ответа нет.
@@ -114,20 +116,60 @@ async fn pinging_peer_stays() {
         ..config()
     };
     let mut h = Harness::with(Via::Uds, cfg).await;
-    let (client, accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, accepted) = h.connect(CLIENT_TOKEN).await;
 
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(!client.peer().is_closed());
     assert!(!accepted.peer.is_closed());
 }
 
+/// `close` приходит раньше конца отдаваемого потока: иначе пир увидел бы
+/// конец потока при ещё открытом соединении и принял обрыв за ошибку потока.
+#[tokio::test(flavor = "multi_thread")]
+async fn close_precedes_the_ends_of_served_streams() {
+    let mut h = Harness::start(Via::Uds).await;
+    let mut raw = h.raw().await;
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
+    let accepted = h.accepted().await;
+
+    let args = attach::Args {
+        chat: chat_id(chat::ENDLESS),
+        since_seq: None,
+    };
+    raw.request(5, "turns.attach", codec::encode(&args).unwrap())
+        .await;
+    loop {
+        match raw.recv().await {
+            Some(Frame::StreamHeartbeat(_)) => {}
+            Some(Frame::StreamItem(item)) if item.id == 5 => break,
+            other => panic!("expected the first item, got {other:?}"),
+        }
+    }
+    accepted
+        .peer
+        .close(RpcError::new(ErrorCode::Unavailable, "kernel restarts"));
+
+    let mut frames = Vec::new();
+    while let Some(frame) = raw.recv().await {
+        frames.push(frame);
+    }
+    let close = frames
+        .iter()
+        .position(|f| matches!(f, Frame::Notify(n) if n.method == method::CLOSE));
+    let end = frames
+        .iter()
+        .position(|f| matches!(f, Frame::StreamEnd(end) if end.id == 5));
+    assert!(
+        matches!((close, end), (Some(close), Some(end)) if close < end),
+        "{frames:?}"
+    );
+}
+
 fn create(id: &str) -> create::Args {
     create::Args {
         id: id.into(),
-        name: Some(id.to_owned()),
+        name: id.to_owned(),
         rules: None,
-        ask: false,
-        builtin: false,
     }
 }
 
@@ -143,7 +185,8 @@ async fn idempotent_retry() {
     let creates = || h_creates(&h);
 
     let mut raw = h.raw().await;
-    let welcome = raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    let welcome = raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
+    assert!(!welcome.resumed);
     let params = codec::encode(&create("idem")).unwrap();
 
     raw.request(7, "surfaces.create", params.clone()).await;
@@ -162,17 +205,18 @@ async fn idempotent_retry() {
 
     // `hello.resume` переносит окно в новую сессию.
     let mut resumed = h.raw().await;
-    resumed
-        .hello(&resume(hello("mod", CLIENT_TOKEN), &welcome.session_id))
+    let continued = resumed
+        .hello(&resume(hello(CLIENT_TOKEN), &welcome.session_id))
         .await
         .unwrap();
+    assert!(continued.resumed);
     resumed.request(7, "surfaces.create", params.clone()).await;
     assert_eq!(decode_created(resumed.response(7).await).unwrap(), first);
     assert_eq!(creates(), 1);
 
     // Без `resume` тот же id — новый запрос.
     let mut fresh = h.raw().await;
-    fresh.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    assert!(!fresh.hello(&hello(CLIENT_TOKEN)).await.unwrap().resumed);
     fresh.request(7, "surfaces.create", params).await;
     assert_eq!(
         fresh.response(7).await.unwrap_err().code,
@@ -182,10 +226,11 @@ async fn idempotent_retry() {
 
     // Чужой модуль не подхватит окно по `resume`.
     let mut thief = h.raw().await;
-    thief
-        .hello(&resume(hello("other", CLIENT_TOKEN), &welcome.session_id))
+    let stolen = thief
+        .hello(&resume(hello(OTHER_TOKEN), &welcome.session_id))
         .await
         .unwrap();
+    assert!(!stolen.resumed);
     thief
         .request(
             7,
@@ -195,6 +240,36 @@ async fn idempotent_retry() {
         .await;
     assert!(thief.response(7).await.is_ok());
     assert_eq!(creates(), 3);
+}
+
+/// `Peer::call_with_id` на сессии `hello.resume`: мутация тем же id не
+/// исполняется снова, ответ — из окна.
+#[tokio::test(flavor = "multi_thread")]
+async fn call_with_id_resends_into_the_window() {
+    let mut h = Harness::start(Via::Uds).await;
+    let (client, _) = h.connect(CLIENT_TOKEN).await;
+    let params = codec::encode(&create("pinned")).unwrap();
+    let id = client.peer().ids().next();
+    let first = client
+        .peer()
+        .call_with_id(id, "surfaces.create", params.clone())
+        .await;
+    let first = decode_created(first).unwrap();
+
+    let options = ClientOptions {
+        ids: client.peer().ids().clone(),
+        ..h.options()
+    };
+    let hello = resume(hello(CLIENT_TOKEN), &client.welcome().session_id);
+    let (resumed, _) = RpcClient::connect_with(&h.target, hello, options, NoHandler)
+        .await
+        .unwrap();
+    let again = resumed
+        .peer()
+        .call_with_id(id, "surfaces.create", params)
+        .await;
+    assert_eq!(decode_created(again).unwrap(), first);
+    assert_eq!(h_creates(&h), 1);
 }
 
 fn h_creates(h: &Harness) -> usize {
@@ -210,7 +285,7 @@ async fn retry_waits_for_the_running_original() {
     *h.kernel.state.create_delay.lock().unwrap() = Duration::from_millis(300);
 
     let mut first = h.raw().await;
-    let welcome = first.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    let welcome = first.hello(&hello(CLIENT_TOKEN)).await.unwrap();
     let params = codec::encode(&create("slow")).unwrap();
     first.request(11, "surfaces.create", params.clone()).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -219,7 +294,7 @@ async fn retry_waits_for_the_running_original() {
 
     let mut again = h.raw().await;
     again
-        .hello(&resume(hello("mod", CLIENT_TOKEN), &welcome.session_id))
+        .hello(&resume(hello(CLIENT_TOKEN), &welcome.session_id))
         .await
         .unwrap();
     again.request(11, "surfaces.create", params).await;
@@ -232,7 +307,7 @@ async fn retry_waits_for_the_running_original() {
 async fn reads_are_not_cached() {
     let h = Harness::start(Via::Uds).await;
     let mut raw = h.raw().await;
-    raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
 
     let get = codec::encode(&eva_protocol::requests::surfaces::get::Args {
         surface: "late".into(),
@@ -257,7 +332,7 @@ async fn reads_are_not_cached() {
 async fn unknown_frame_kind_is_skipped() {
     let mut h = Harness::start(Via::Uds).await;
     let mut raw = h.raw().await;
-    raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
     let accepted = h.accepted().await;
 
     // Вид кадра новее этого пира: `{"telepathy": {...}}`.
@@ -283,7 +358,7 @@ async fn oversized_frame_closes_uds() {
     };
     let mut h = Harness::with(Via::Uds, cfg).await;
     let mut raw = h.raw().await;
-    raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
     let accepted = h.accepted().await;
 
     // Заголовок кадра в мегабайт при лимите 64 KiB.
@@ -329,7 +404,7 @@ async fn live_socket_is_not_stolen() {
 
     // Первый слушатель жив.
     let mut raw = h.raw().await;
-    raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -337,8 +412,7 @@ async fn ws_serves_only_the_modules_path() {
     let h = Harness::start(Via::Ws).await;
     let mut wrong = h.target.clone();
     wrong.set_path("/elsewhere");
-    let result =
-        RpcClient::connect_with(&wrong, hello("mod", CLIENT_TOKEN), h.options(), NoHandler).await;
+    let result = RpcClient::connect_with(&wrong, hello(CLIENT_TOKEN), h.options(), NoHandler).await;
     assert!(
         matches!(result, Err(eva_rpc::ConnectError::Transport(_))),
         "{result:?}"
@@ -347,8 +421,7 @@ async fn ws_serves_only_the_modules_path() {
     // Без пути клиент идёт на `/v1/modules` сам.
     let mut bare = h.target.clone();
     bare.set_path("");
-    let result =
-        RpcClient::connect_with(&bare, hello("mod", CLIENT_TOKEN), h.options(), NoHandler).await;
+    let result = RpcClient::connect_with(&bare, hello(CLIENT_TOKEN), h.options(), NoHandler).await;
     assert!(result.is_ok(), "{result:?}");
 }
 
@@ -358,7 +431,7 @@ async fn unknown_capability_keys_are_warned() {
     let mut raw = h.raw().await;
 
     // Capability новее ядра: `hello` проходит, ключ возвращается в `warnings`.
-    let mut params = serde_json::to_value(hello("mod", CLIENT_TOKEN)).unwrap();
+    let mut params = serde_json::to_value(hello(CLIENT_TOKEN)).unwrap();
     params["capabilities"]["telepathy"] = serde_json::json!({"range": 3});
     params["capabilities"]["events"] = serde_json::json!({"subscriptions": []});
     raw.request(0, method::HELLO, codec::encode(&params).unwrap())
@@ -381,7 +454,7 @@ async fn unknown_capability_keys_are_warned() {
 async fn large_response_is_not_retained() {
     let h = Harness::start(Via::Uds).await;
     let mut raw = h.raw().await;
-    raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
 
     let params = codec::encode(&create(&"b".repeat(100 * 1024))).unwrap();
     raw.request(3, "surfaces.create", params.clone()).await;
@@ -402,7 +475,7 @@ async fn requests_over_max_inflight_get_quota() {
     let h = Harness::with(Via::Uds, cfg).await;
     *h.kernel.state.create_delay.lock().unwrap() = Duration::from_millis(300);
     let mut raw = h.raw().await;
-    raw.hello(&hello("mod", CLIENT_TOKEN)).await.unwrap();
+    raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
 
     raw.request(1, "surfaces.create", codec::encode(&create("a")).unwrap())
         .await;
@@ -415,63 +488,4 @@ async fn requests_over_max_inflight_get_quota() {
     raw.request(3, "surfaces.create", codec::encode(&create("c")).unwrap())
         .await;
     decode_created(raw.response(3).await).unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn hello_over_the_preauth_budget_closes() {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    let h = Harness::start(Via::Uds).await;
-    let mut stream = tokio::net::UnixStream::connect(h.socket.as_ref().unwrap())
-        .await
-        .unwrap();
-    // Кадр в 4 MiB укладывается в `max_frame`, но не в бюджет до `welcome`.
-    let (mut rd, mut wr) = stream.split();
-    let write = async {
-        _ = wr.write_all(&(4_u32 << 20).to_be_bytes()).await;
-        _ = wr.write_all(&vec![0_u8; 3 << 20]).await;
-    };
-    let read = async {
-        let mut buf = [0_u8; 64];
-        // Раньше `handshake_timeout` (2 с): закрывает бюджет, а не таймер.
-        tokio::time::timeout(Duration::from_secs(1), rd.read(&mut buf)).await
-    };
-    let ((), read) = tokio::join!(write, read);
-    assert!(
-        matches!(read, Ok(Ok(0) | Err(_))),
-        "the server must drop the connection: {read:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn silent_sockets_are_capped_per_ip() {
-    use tokio::io::AsyncReadExt as _;
-
-    let h = Harness::start(Via::Ws).await;
-    let addr = format!(
-        "{}:{}",
-        h.target.host_str().unwrap(),
-        h.target.port().unwrap()
-    );
-
-    let mut silent = Vec::new();
-    for _ in 0..8 {
-        silent.push(tokio::net::TcpStream::connect(&addr).await.unwrap());
-    }
-    // Девятое соединение с того же адреса закрывается без handshake.
-    let mut extra = tokio::net::TcpStream::connect(&addr).await.unwrap();
-    let mut buf = [0_u8; 16];
-    let read = tokio::time::timeout(Duration::from_secs(1), extra.read(&mut buf)).await;
-    assert!(matches!(read, Ok(Ok(0) | Err(_))), "{read:?}");
-
-    drop(silent);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let result = RpcClient::connect_with(
-        &h.target,
-        hello("mod", CLIENT_TOKEN),
-        h.options(),
-        NoHandler,
-    )
-    .await;
-    assert!(result.is_ok(), "{result:?}");
 }

@@ -12,6 +12,7 @@ use eva_protocol::{
         memory::{Kind, Visibility},
         turn::TurnView,
     },
+    wire::events::{Event, MemoryChanged, MemoryOp},
 };
 
 use crate::{
@@ -186,6 +187,13 @@ pub async fn Restore<C: Components>(
         })
         .await?;
 
+    shared.bus().publish(
+        Event::MemoryChanged(MemoryChanged {
+            ids: vec![row.id],
+            op: MemoryOp::Restore,
+        }),
+        None,
+    );
     log::info!(memory:% = row.id, kind:? = row.kind, caller = caller.label(); "memory restored");
 
     Ok(restore::Ok {

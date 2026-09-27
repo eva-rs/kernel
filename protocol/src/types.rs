@@ -4,6 +4,7 @@ pub mod bytes;
 pub mod effort;
 pub mod ids;
 pub mod thinking;
+pub mod value;
 
 pub mod agent;
 pub mod blob;
@@ -28,3 +29,4 @@ pub use bytes::Bytes;
 pub use effort::Effort;
 pub use ids::*;
 pub use thinking::Thinking;
+pub use value::Value;

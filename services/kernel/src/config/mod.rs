@@ -16,13 +16,12 @@ pub mod hands;
 pub mod llm;
 pub mod modules;
 pub mod notes;
-pub mod secret;
 pub mod system;
 pub mod work;
 
 pub use self::{
     chats::ChatsConfig, db::DbConfig, hands::HandsConfig, llm::LlmConfig, modules::ModulesConfig,
-    notes::NotesConfig, secret::Secret, system::SystemConfig, work::WorkConfig,
+    notes::NotesConfig, system::SystemConfig, work::WorkConfig,
 };
 
 /// Все секции ядра. `llm` без дефолта (`require`), остальные — `optional`.

@@ -162,7 +162,18 @@ impl Peer {
     /// Не-потоковый вызов. `request_timeout` — срок тишины: heartbeat пира
     /// на id запроса продлевает его, так что долгий живой ответ дожидается.
     pub async fn call(&self, method: &str, params: Payload) -> Result<Payload, RpcError> {
-        let (mut rx, alive, mut guard) = self.request(method, params).await?;
+        self.call_with_id(self.0.ids.next(), method, params).await
+    }
+
+    /// `call` под id из `ids()`, не занятым на этом соединении: повтор мутации
+    /// после `hello.resume` тем же id ядро отдаёт из окна идемпотентности.
+    pub async fn call_with_id(
+        &self,
+        id: u64,
+        method: &str,
+        params: Payload,
+    ) -> Result<Payload, RpcError> {
+        let (mut rx, alive, mut guard) = self.request(id, method, params).await?;
         match self
             .reply(&mut rx, &alive, *self.0.cfg.request_timeout)
             .await
@@ -183,7 +194,7 @@ impl Peer {
         params: Payload,
         limit: Duration,
     ) -> Result<Payload, RpcError> {
-        let (rx, _alive, mut guard) = self.request(method, params).await?;
+        let (rx, _alive, mut guard) = self.request(self.0.ids.next(), method, params).await?;
         match tokio::time::timeout(limit, rx).await {
             Ok(result) => {
                 guard.disarm();
@@ -193,8 +204,7 @@ impl Peer {
         }
     }
 
-    async fn request(&self, method: &str, params: Payload) -> Result<Reply, RpcError> {
-        let id = self.0.ids.next();
+    async fn request(&self, id: u64, method: &str, params: Payload) -> Result<Reply, RpcError> {
         let (tx, rx) = oneshot::channel();
         let alive = Arc::new(Notify::new());
         let mut guard = self.0.register(

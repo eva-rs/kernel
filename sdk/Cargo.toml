@@ -18,6 +18,8 @@ tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# `examples/echo.rs` ждёт Ctrl-C.
+tokio = { workspace = true, features = ["signal"] }
 
 [lints]
 workspace = true

@@ -128,7 +128,7 @@ async fn connect(via: Via) -> Connected {
         events: events_tx,
         hung_dropped: hung_dropped.clone(),
     };
-    let (client, accepted) = h.connect_with(hello("bridge", SERVICE_TOKEN), module).await;
+    let (client, accepted) = h.connect_with(hello(SERVICE_TOKEN), module).await;
     Connected {
         _h: h,
         _client: client,
@@ -240,7 +240,7 @@ async fn tools_call_cancel_reaches_the_module() {
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_call_without_handler() {
     let mut h = Harness::start(Via::Uds).await;
-    let (_client, accepted) = h.connect("plain", SERVICE_TOKEN).await;
+    let (_client, accepted) = h.connect(SERVICE_TOKEN).await;
     // Тул исполняется внутри потока: отказ — его единственный элемент.
     let items: Vec<_> = accepted
         .module()

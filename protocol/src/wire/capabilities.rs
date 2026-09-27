@@ -1,7 +1,7 @@
 //! Capabilities модуля (`06 §3`). Отсутствующая секция — capability не
 //! объявлена; пустой список — ровно ноль элементов (I8).
 //!
-//! Surface — не capability: SDK после `welcome` зовёт `surfaces.create/update`.
+//! Surface — не capability, а сущность ядра: модуль создаёт её `surfaces.create`.
 
 use eva::{data, time::HumanDuration};
 
@@ -22,11 +22,13 @@ pub struct Capabilities {
     pub tools: Option<ToolsCap>,
     pub events: Option<EventsCap>,
     pub hooks: Option<HooksCap>,
+    /// Модуль рисует кнопки pending-запросов в чатах surface, которые обслуживает.
+    pub ask: bool,
 }
 
 impl Capabilities {
     /// Ключи, которые понимает эта версия протокола; прочие — `warnings` (`06 §8`).
-    pub const KEYS: [&str; 4] = ["provider", "tools", "events", "hooks"];
+    pub const KEYS: [&str; 5] = ["provider", "tools", "events", "hooks", "ask"];
 
     /// Имена объявленных секций — строка `modules.list`.
     pub fn names(&self) -> Vec<String> {
@@ -35,6 +37,7 @@ impl Capabilities {
             ("tools", self.tools.is_some()),
             ("events", self.events.is_some()),
             ("hooks", self.hooks.is_some()),
+            ("ask", self.ask),
         ]
         .into_iter()
         .filter(|&(_, declared)| declared)

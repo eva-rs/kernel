@@ -12,7 +12,7 @@ use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
     requests::{chats, inference, persons},
     types::{
-        ModelId, ModuleId, SurfaceId,
+        ModelId, SurfaceId,
         content::Block,
         folder,
         generate::{ProviderError, ProviderErrorKind, StopReason, Usage},
@@ -48,7 +48,6 @@ async fn module_sessions_are_counted() {
     let h = common::start_with(with_module_tokens).await;
     let (_listening, url) = h.listen().await;
     let hello = |resume| Hello {
-        module: ModuleId::from(SVC),
         version: String::from("0.1.0"),
         proto_version: ProtoVersion::CURRENT,
         token: token(SVC).into(),

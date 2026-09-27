@@ -1,58 +1,128 @@
 # Eva kernel
 
-Ядро Евы — персонального агента: один процесс поверх одного SQLite-файла. Хранит чаты, память, заметки, личности и расход; говорит с модулями (клиенты хозяина, мосты мессенджеров, MCP) по msgpack-RPC; инференс — встроенные провайдеры за трейтом `Provider` (OpenAI-совместимый, первым OpenRouter; `mock` для смоука без ключей). Дизайн: `../docs/design/`.
+Ядро Евы — персонального агента, который работает постоянно. Один процесс поверх одного SQLite-файла — единственный владелец её состояния: чатов, поверхностей (surface), личностей, памяти, заметок, статистики и расхода. Всё остальное — модули: отдельные процессы (клиенты хозяина, мосты в мессенджеры, MCP-обвязки), которые подключаются к ядру по msgpack-RPC через unix-сокет, WebSocket или WebSocket поверх TLS и работают с ним тем же библиотечным API, что и код внутри ядра. Инференс — встроенные провайдеры за трейтом `Provider`: OpenAI-совместимый (OpenRouter, либо vLLM и llama-server в диалекте `plain`) и сценарный `mock` для запуска без ключей.
 
-Сейчас готов этап M1: библиотечное API (все операции `11 §3`, кроме туров, поиска и каталога тулов), RPC-сервер модулей, SDK модулей. Туры — M2.
+Построено на фреймворке [eva](https://git.desu.church/VienDesu/eva) (конфиг, `Supervisor`, логи, время); руки — библиотека [eva-hands](https://git.desu.church/eva/hands).
+
+## Состояние
+
+| Этап | Что | Статус |
+|---|---|---|
+| M1 | библиотечное API, схема SQLite и миграции, RPC-сервер модулей, SDK, провайдеры | готов |
+| M2 | туры: диалоговый движок, хуки, `turns.*`, `chats.ingest`/`compact`/`notify` | следующий |
+| M3 | память, заметки, гигиена контекста, поиск по чатам (`chats.search`) | запланирован |
+| M4 | каталог тулов (`tools.catalog`) и вызов тулов модулей, статистика, крон, сон, GC | запланирован |
+| M5 | рабочие туры: субагенты, руки, `ask` | запланирован |
+
+Операции поздних этапов уже есть в протоколе и отвечают ошибкой `unavailable` с маркером `M2_PENDING`/`M3_PENDING`/`M4_PENDING` в тексте. Подробно — [Дорожная карта](docs/src/roadmap.md).
+
+## Крейты
+
+| Крейт | Путь | Назначение |
+|---|---|---|
+| `eva-protocol` | [`protocol/`](protocol/README.md) | типы операций (`Args`/`Ok`/`Err`), ошибки, проводные кадры; без I/O |
+| `eva-core` | [`core/`](core/README.md) | библиотечное API: `Session`, трейты неймспейсов, `Caller`, трейт `Provider` |
+| `eva-rpc` | [`rpc/`](rpc/README.md) | msgpack-кадры поверх uds/ws/wss, сервер-диспетчер, клиентская `RpcSession` |
+| `eva-sdk` | [`sdk/`](sdk/README.md) | модуль ядра: подключение, реконнект, тулы, события, хуки |
+| `eva-provider-openai` | [`providers/openai/`](providers/openai/README.md) | OpenAI-совместимый Chat Completions |
+| `eva-provider-mock` | [`providers/mock/`](providers/mock/README.md) | сценарный провайдер для тестов и смоука |
+| `eva-providers` | [`providers/all/`](providers/all/README.md) | `ProviderConfig` под тегом `kind`, диспетчер `AnyProvider` |
+| `eva-kernel` | [`services/kernel/`](services/kernel/README.md) | бинарь и библиотека ядра |
+
+Зависимости (стрелка — «зависит от», транзитивные рёбра опущены); обратных рёбер нет:
+
+```mermaid
+graph LR
+  core --> protocol
+  rpc --> core
+  sdk --> rpc
+  openai[providers/openai] --> core
+  mock[providers/mock] --> core
+  all[providers/all] --> openai
+  all --> mock
+  kernel[services/kernel] --> rpc
+  kernel --> core
+  kernel --> all
+  kernel --> hands[eva-hands]
+```
 
 ## Сборка и запуск
 
+Сборка — только через Nix: у системного `cargo` нет нужного линкера.
+
 ```sh
-nix develop -c cargo test --workspace   # devShell: у системного cargo нет линкера
-nix build .#eva-kernel                  # бинарь ./result/bin/eva-kernel
-eva-kernel --config eva.yaml            # несколько --config сливаются; env сильнее файлов
+nix develop                                # devShell: toolchain, sqlite, cargo-insta, mdbook
+nix develop -c cargo test --workspace      # тесты
+nix build .#eva-kernel                     # бинарь: ./result/bin/eva-kernel
+nix build .#docs                           # книга: ./result/index.html
+nix develop -c mdbook serve docs           # книга с живой пересборкой
 ```
 
-Минимальный конфиг:
+```sh
+eva-kernel --config eva.yaml [--config more.yaml …]
+```
+
+Форматы — YAML, JSON, TOML (по расширению); несколько `--config` сливаются, поздний сильнее. Переменные `EVA_…` сильнее файлов, вложенность — через `__`: `EVA_DB__READERS=8` — это `db.readers`.
+
+## Минимальный конфиг
 
 ```yaml
 system:
-  state_dir: /var/lib/eva
+  state_dir: /var/lib/eva            # БД, blob'ы, сокет, песочницы модулей
 llm:
   providers:
-    router: {kind: openai}          # api_key — только через env/credential
-  default_model: some-vendor/some-model
+    router:
+      kind: openai                   # base_url по умолчанию — OpenRouter
+      api_key: {file: /run/secrets/router-key}
+  default_model: vendor/model        # id модели из каталога провайдера
 modules:
+  listen:
+    - uds: modules.sock              # относительный путь — от state_dir
   tokens:
-    phone: {token: "...", kind: client}
+    phone:                           # ключ записи — id модуля
+      kind: client                   # client — клиент хозяина, service — служебный модуль
+      token: {file: /run/secrets/eva-phone}
 ```
 
-Секреты — только окружением или файлами вне Nix store: `EVA_LLM__PROVIDERS__<name>__API_KEY`, `EVA_MODULES__TOKENS__<module>__TOKEN`, `EVA_HANDS__ENDPOINTS__<name>__KEY`. NixOS-модуль — `nixosModules.default` (`services.eva-kernel`).
+Без ключей: `llm: {providers: {mock: {kind: mock}}, default_model: mock}`.
 
-## Конфиг
+Секреты (`llm.providers.*.api_key`, `modules.tokens.*.token`, `hands.endpoints.*.key`, `module.token` модуля на SDK) — `{file: /путь}` или `{plaintext: "…"}`. Читаются один раз на старте, хвостовой перевод строки срезается; нечитаемый секрет — отказ старта с путём ключа. Форму `plaintext` держите вне файлов, которые видят другие. Id `kernel`, `system`, `local` зарезервированы.
 
-Секции (YAML/JSON/TOML, env-префикс `EVA_`, вложенность через `__`):
+## NixOS
 
-| Секция | Что | Глава |
-|---|---|---|
-| `system` | `state_dir` (дефолт `$STATE_DIRECTORY`, иначе `/var/lib/eva`), `tz`; фреймворк: `system.rt`, `system.logging` | `00 §5` |
-| `db` | `path` (`<state_dir>/eva.sqlite`), `busy_timeout`, `readers` | `10 §7` |
-| `llm` | обязательна: `providers.<name> = {kind: openai \| mock \| module, …}`, `default_model`, `models`, `roles`, `fallback` | `01 §8.2` |
-| `modules` | `listen` (`{uds, mode, group}` \| `{ws}` \| `{wss, tls}`), `tokens`, тайминги RPC, `fs_quota`, `sqlite_*` | `06 §11` |
-| `chats` | `default_kind`, `persons.master` (личности хозяина), `persons.master_name` | `05` |
-| `hands` | `endpoints.<name> = {local: true, limits}` \| `{address, key}`, `default_endpoint` | `07 §3` |
-| `work` | `blob_dir`, `blob_keep`, `blob_max` | `07 §6` |
-| `notes` | `enabled`, `budget_percent`, `budget_max_tokens` | `04 §2` |
+`nixosModules.default` даёт `services.eva-kernel`: несекретное — в `settings`, секреты — `secrets."<ключ>" = <файл>`. systemd отдаёт файл сервису через `LoadCredential`, в конфиг встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}`.
 
-Провайдер `openai`: `base_url` (дефолт OpenRouter), `api_key`, `proxy`, `timeout`, `dialect: openrouter | plain`, `allow`, `models` (поправки деклараций), `referer`/`title`. Каталог моделей читается при старте.
-
-## Модуль на SDK
-
-```rust
-let connected = eva_sdk::Module::new("bridge")
-    .surface(eva_sdk::Surface::new("bridge").name("Bridge").ask(true))
-    .connect(&cfg.kernel, cfg.token.expose())
-    .await?;
-connected.run(shutdown).await
+```nix
+services.eva-kernel = {
+  enable = true;
+  settings = {
+    llm.providers.router.kind = "openai";
+    llm.default_model = "vendor/model";
+    modules.tokens.phone.kind = "client";
+  };
+  secrets = {
+    "llm.providers.router.api_key" = "/run/secrets/router-key";
+    "modules.tokens.phone.token" = "/run/secrets/eva-phone";
+  };
+};
 ```
 
-Правила для агентов, работающих в репозитории, — `AGENTS.md`.
+`settings` попадают в мирочитаемый Nix store, поэтому модуль отвергает сборку, если секрет стоит в `settings` формой `plaintext`, в `environment` переменной `EVA_…__PLAINTEXT` или если файл секрета, `extraConfigFiles` или `environmentFiles` лежит в сторе. Сокет модулей по умолчанию — `/run/eva-kernel/modules.sock` с группой `eva`.
+
+## Документация
+
+Книга (mdBook) — в [`docs/`](docs/src/SUMMARY.md):
+
+- [Введение](docs/src/introduction.md)
+- [Быстрый старт](docs/src/quickstart.md)
+- [Архитектура](docs/src/architecture.md)
+- [Конфигурация](docs/src/config.md)
+- [Библиотечное API](docs/src/api.md)
+- [Протокол модулей](docs/src/protocol.md)
+- [SDK модулей](docs/src/sdk.md)
+- [Провайдеры инференса](docs/src/providers.md)
+- [Безопасность](docs/src/security.md)
+- [Разработка](docs/src/development.md)
+- [Дорожная карта](docs/src/roadmap.md)
+
+Правила для агентов, работающих в репозитории, — [`AGENTS.md`](AGENTS.md).

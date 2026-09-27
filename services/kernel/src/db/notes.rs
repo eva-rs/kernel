@@ -73,16 +73,4 @@ impl Notes<'_> {
             )
             .optional()?)
     }
-
-    /// Калиброванный `bytes_per_token` модели (`01 §9`).
-    pub fn ratio(&self, model: &ModelId) -> DbResult<Option<f64>> {
-        Ok(self
-            .0
-            .query_row(
-                "SELECT bytes_per_token FROM token_ratios WHERE model = ?1",
-                [model.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?)
-    }
 }

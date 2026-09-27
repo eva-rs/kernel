@@ -56,6 +56,9 @@ const CTRL_BACKLOG: usize = 4 << 20;
 /// Ответов, ждущих записи, в `max_frame`: сверх ответ заменяется `quota`.
 const REPLY_FRAMES: usize = 4;
 
+/// Префикс msgpack `bin32` у чанка загрузки сверх `blob_chunk`.
+const CHUNK_HEADER: usize = 5;
+
 pub(super) fn after(from: Instant, span: Duration) -> Instant {
     from.checked_add(span).unwrap_or(from + FAR)
 }
@@ -130,6 +133,9 @@ pub(super) struct Inner {
     bulk: Lane,
     inflight: Arc<Semaphore>,
     streams: Arc<Semaphore>,
+    /// Байт непрочитанных чанков всех загрузок пира: `stream_buffer` чанков
+    /// на загрузку, но не больше одного такого буфера на сессию.
+    upload_bytes: Budget,
     state: Mutex<State>,
     pub closed: CancellationToken,
     reason: OnceLock<RpcError>,
@@ -164,7 +170,9 @@ struct Served {
 }
 
 pub(super) enum Event {
-    Item(Payload),
+    /// Пермит держит чанк загрузки в `upload_bytes`, пока его не прочтут
+    /// или не выбросят вместе с буфером.
+    Item(Payload, Option<OwnedSemaphorePermit>),
     Heartbeat,
 }
 
@@ -183,6 +191,10 @@ enum Push {
     OutOfOrder,
     Overflow,
     Gone,
+    /// Чанк загрузки больше `blob_chunk`.
+    Oversized(usize),
+    /// Загрузки пира выбрали `upload_bytes`.
+    Starved,
 }
 
 impl Feed {
@@ -204,11 +216,11 @@ impl Feed {
         _ = self.end.set(error);
     }
 
-    fn push(&mut self, seq: u64, item: Payload) -> Push {
+    fn push(&mut self, seq: u64, item: Payload, permit: Option<OwnedSemaphorePermit>) -> Push {
         if seq != self.next_seq {
             return Push::OutOfOrder;
         }
-        match self.tx.try_send(Event::Item(item)) {
+        match self.tx.try_send(Event::Item(item, permit)) {
             Ok(()) => {
                 self.next_seq += 1;
                 Push::Ok
@@ -231,6 +243,13 @@ impl Push {
             Self::OutOfOrder => Some(RpcError::invalid_params("stream item out of order")),
             Self::Overflow => Some(RpcError::new(ErrorCode::Quota, "stream buffer overflow")),
             Self::Gone => Some(RpcError::cancelled()),
+            Self::Oversized(len) => Some(RpcError::invalid_params(format_args!(
+                "upload chunk of {len} bytes exceeds blob_chunk"
+            ))),
+            Self::Starved => Some(RpcError::new(
+                ErrorCode::Quota,
+                "upload buffers of the session are full",
+            )),
         }
     }
 }
@@ -302,6 +321,7 @@ impl Inner {
             },
             inflight: Arc::new(Semaphore::new(cfg.max_inflight())),
             streams: Arc::new(Semaphore::new(cfg.max_streams())),
+            upload_bytes: Budget::new(cfg.stream_buffer().saturating_mul(cfg.blob_chunk())),
             cfg,
             state: Mutex::default(),
             closed: CancellationToken::new(),
@@ -469,6 +489,17 @@ impl Inner {
             )
         };
 
+        // `close` раньше концов потоков: иначе пир примет обрыв за ошибку
+        // потока и не повторит его открытие.
+        if tell_peer {
+            match codec::encode(&reason) {
+                Ok(params) => self.send_ctrl(&Frame::Notify(NotifyFrame {
+                    method: method::CLOSE.to_owned(),
+                    params,
+                })),
+                Err(e) => log::warn!(error:% = e; "close reason dropped"),
+            }
+        }
         // Потоки, которые отдаём мы, узнают причину до закрытия сокета;
         // унарные обработчики доживают сами — их итог нужен окну идемпотентности.
         for (id, served) in served {
@@ -478,15 +509,6 @@ impl Inner {
                     id,
                     error: Some(reason.clone()),
                 }));
-            }
-        }
-        if tell_peer {
-            match codec::encode(&reason) {
-                Ok(params) => self.send_ctrl(&Frame::Notify(NotifyFrame {
-                    method: method::CLOSE.to_owned(),
-                    params,
-                })),
-                Err(e) => log::warn!(error:% = e; "close reason dropped"),
             }
         }
         self.closed.cancel();
@@ -583,7 +605,7 @@ impl Inner {
         let mut state = self.lock();
 
         if let Some(Pending::Stream(feed)) = state.pending.get_mut(&id) {
-            let Some(error) = feed.push(seq, item).error() else {
+            let Some(error) = feed.push(seq, item, None).error() else {
                 return;
             };
             let Some(Pending::Stream(feed)) = state.pending.remove(&id) else {
@@ -597,11 +619,24 @@ impl Inner {
             return;
         }
 
-        if let Some(feed) = state.uploads.get_mut(&id)
-            && let Some(error) = feed.push(seq, item).error()
+        let Some(feed) = state.uploads.get_mut(&id) else {
+            return;
+        };
+        // Буфер считает чанки, поэтому их размер проверяет получатель: иначе
+        // загрузки держали бы `stream_buffer` кадров по `max_frame` каждая.
+        let push = if item.len() > self.cfg.blob_chunk().saturating_add(CHUNK_HEADER) {
+            Push::Oversized(item.len())
+        } else {
+            match self.upload_bytes.try_take(&item) {
+                Some(permit) => feed.push(seq, item, Some(permit)),
+                None => Push::Starved,
+            }
+        };
+        if let Some(error) = push.error()
             && let Some(feed) = state.uploads.remove(&id)
         {
             drop(state);
+            log::debug!(remote = self.remote.as_str(), id = id, error:% = error; "upload broken on receive");
             feed.finish(Some(error));
         }
     }

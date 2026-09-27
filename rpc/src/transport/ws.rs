@@ -21,7 +21,7 @@ use eva_protocol::wire::RpcError;
 use crate::{
     config::{ClientTls, Config},
     transport::{
-        Conn, Outbound, TransportError, WS_PATH,
+        Conn, MapErr, Outbound, TransportError, WS_PATH,
         meter::{Meter, Metered},
         tls,
     },
@@ -91,10 +91,7 @@ pub(crate) async fn connect(
         .map_err(TransportError::io)?;
     socket.set_nodelay(true).map_err(TransportError::io)?;
 
-    let connector = match (url.scheme(), &tls.extra_ca) {
-        ("wss", Some(ca)) => Some(Connector::Rustls(tls::client_config(ca).await?)),
-        _ => None,
-    };
+    let connector = connector(&url, tls).await?;
     let meter = Meter::new();
     let (ws, _) = tokio_tungstenite::client_async_tls_with_config(
         url.as_str(),
@@ -108,13 +105,26 @@ pub(crate) async fn connect(
     Ok(conn(ws, url.to_string(), meter))
 }
 
+/// Для `wss` конфиг всегда свой: без него библиотека ws строит rustls на
+/// провайдере процесса, которого у SDK может не быть.
+async fn connector(url: &Url, tls: &ClientTls) -> Result<Option<Connector>, TransportError> {
+    if url.scheme() != "wss" {
+        return Ok(None);
+    }
+    let config = match &tls.extra_ca {
+        Some(ca) => tls::client_config(ca).await?,
+        None => tls::public_client_config()?,
+    };
+    Ok(Some(Connector::Rustls(config)))
+}
+
 fn conn<S>(ws: WebSocketStream<S>, remote: String, meter: Arc<Meter>) -> Conn
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (sink, mut source) = ws.split();
 
-    let tx = sink.sink_map_err(classify).with(|out: Outbound| {
+    let tx = MapErr::new(sink, classify).with(|out: Outbound| {
         future::ready(Ok::<_, TransportError>(match out {
             Outbound::Frame(frame) => Message::Binary(frame),
             Outbound::Close(reason) => Message::Close(Some(close_frame(reason))),
@@ -168,5 +178,43 @@ fn classify(e: WsError) -> TransportError {
         WsError::Capacity(CapacityError::MessageTooLong { .. }) => TransportError::TooLarge,
         WsError::Tls(e) => TransportError::Tls(e.to_string()),
         e => TransportError::io(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    #[tokio::test]
+    async fn wss_always_gets_its_own_rustls_config() {
+        let public = connector(&url("wss://kernel.example"), &ClientTls::default())
+            .await
+            .unwrap();
+        assert!(matches!(public, Some(Connector::Rustls(_))));
+
+        let pinned = ClientTls {
+            extra_ca: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ca.pem")),
+        };
+        let own_ca = connector(&url("wss://127.0.0.1:1"), &pinned).await.unwrap();
+        assert!(matches!(own_ca, Some(Connector::Rustls(_))));
+    }
+
+    #[tokio::test]
+    async fn plain_ws_has_no_tls() {
+        let tls = ClientTls {
+            extra_ca: Some(PathBuf::from("/nonexistent/ca.pem")),
+        };
+        assert!(
+            connector(&url("ws://127.0.0.1:1"), &tls)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

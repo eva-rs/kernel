@@ -1,5 +1,9 @@
 //! Хендлеры `blobs.*` (`07 §6`, `06 §5`): байты в `work.blob_dir/<id>/<name>`,
 //! строка — в `blobs`. `Service` видит только blob'ы чатов своих surface.
+//!
+//! Приём идёт во временный файл `work.blob_dir/.staging/<id>`: брошенный
+//! приём (ошибка, отмена вызова) удаляется, принятый переносится rename'ом.
+//! Живые blob'ы чатов одного владельца surface — до `work.blob_quota`.
 
 use std::path::{Path, PathBuf};
 
@@ -20,12 +24,16 @@ use crate::{
     components::Components,
     convert,
     db::{
-        Db as _, Queries as _,
-        blobs::{BlobRow, Source},
+        Db as _, DbResult, Queries as _,
+        blobs::{BLOB_FLOOR, BlobRow, Source},
     },
-    handling::Upload,
+    handling::{Upload, text},
+    shared::Shared,
     state::{Policy, State},
 };
+
+/// Каталог недописанных приёмов внутри `blob_dir`: rename оттуда атомарен.
+pub const STAGING: &str = ".staging";
 
 /// Имя файла blob'а — leaf: без разделителей, `.`/`..` и управляющих символов.
 fn check_name(name: &str) -> bool {
@@ -61,6 +69,17 @@ fn io(what: &str, e: std::io::Error) -> Aux {
 
 fn file(dir: &Path, row: &BlobRow) -> PathBuf {
     dir.join(row.id.as_str()).join(&row.name)
+}
+
+/// Вес blob'а в `work.blob_quota`: не меньше `BLOB_FLOOR`.
+fn charged(size: u64) -> u64 {
+    size.max(BLOB_FLOOR)
+}
+
+fn over_quota(used: u64, quota: u64) -> Aux {
+    Aux::Quota(format!(
+        "blobs of this surface owner take {used} of work.blob_quota {quota} bytes"
+    ))
 }
 
 /// Загрузка и `Policy` blob'а: `NotFound` — и истёкшему, `Service` — только свой чат.
@@ -114,12 +133,25 @@ pub async fn Put<C: Components>(
         hash,
     } = args;
     let policy = Policy::new(caller);
+    let now = world.now();
 
     let db = db_conn.acquire(shared).await?;
-    let chat_ref = db
-        .run(move |c| c.chats().chat_ref(chat))
-        .await?
-        .ok_or_else(|| Aux::NotFound(format!("chat {chat}")))?;
+    let found = db
+        .run(move |c| -> DbResult<_> {
+            match c.chats().chat_ref(chat)? {
+                Some(chat_ref) => {
+                    let used = c
+                        .blobs()
+                        .live_bytes(chat_ref.surface.module.as_ref(), now)?;
+                    Ok(Some((chat_ref, used)))
+                }
+                None => Ok(None),
+            }
+        })
+        .await?;
+    // Приём долгий: соединение пула ему не нужно.
+    db_conn.release();
+    let (chat_ref, used) = found.ok_or_else(|| Aux::NotFound(format!("chat {chat}")))?;
     policy.chats().read(&chat_ref)?;
 
     if !check_name(&name) {
@@ -128,13 +160,15 @@ pub async fn Put<C: Components>(
     (!media_type.trim().is_empty() && !media_type.chars().any(char::is_control)).true_or(
         Aux::Invalid("media_type must be a non-empty single line".into()),
     )?;
-    let max = shared.cfg().work.blob_max.as_u64();
+    text::bytes("media_type", &media_type, text::MEDIA_TYPE_MAX)?;
+    let work = &shared.cfg().work;
+    let (max, quota) = (work.blob_max.as_u64(), work.blob_quota.as_u64());
     (size <= max).true_or(Aux::Quota(format!(
         "blob is {size} bytes, work.blob_max is {max}"
     )))?;
+    (used.saturating_add(charged(size)) <= quota).true_or(over_quota(used, quota))?;
     let declared = hash.as_deref().map(parse_hash).transpose()?;
 
-    let now = world.now();
     let row = BlobRow {
         id: world.mint(),
         kind,
@@ -145,68 +179,152 @@ pub async fn Put<C: Components>(
         hash: Vec::new(),
         source: Source::Upload,
         created_at: now,
-        expires_at: expires(now, *shared.cfg().work.blob_keep),
+        expires_at: expires(now, *work.blob_keep),
     };
-    let dir = shared.cfg().blob_dir().join(row.id.as_str());
+    let staging = Staging::new(&shared.cfg().blob_dir(), &row.id);
 
-    let received = receive(&dir, &row.name, &mut body, size).await;
-    let (actual, digest) = match received {
-        Ok(done) => done,
-        Err(e) => {
-            discard(&dir).await;
-            return Err(e);
+    let received = receive(&staging.path, &mut body, size).await;
+    let checked = received.and_then(|(actual, digest)| {
+        if actual != size {
+            return Err(errors::blobs::SizeMismatch {
+                declared: size,
+                actual,
+            }
+            .spec());
         }
-    };
-    let checked = if actual != size {
-        Err(errors::blobs::SizeMismatch {
-            declared: size,
-            actual,
-        }
-        .spec())
-    } else {
         match declared {
             Some(declared) if declared != *digest.as_bytes() => Err(errors::blobs::HashMismatch {
                 declared: convert::blob::hex(&declared),
                 actual: digest.to_hex().to_string(),
             }
             .spec()),
-            _ => Ok(()),
+            _ => Ok(digest),
+        }
+    });
+    let digest = match checked {
+        Ok(digest) => digest,
+        Err(e) => {
+            staging.discard().await;
+            return Err(e);
         }
     };
-    if let Err(e) = checked {
-        discard(&dir).await;
-        return Err(e);
-    }
 
     let row = BlobRow {
         hash: digest.as_bytes().to_vec(),
         ..row
     };
-    let saved = row.clone();
-    if let Err(e) = shared.db().write(move |tx| tx.blobs().insert(&saved)).await {
-        discard(&dir).await;
-        return Err(Aux::from(e).into());
-    }
+    let (id, log_row) = (row.id.clone(), row.id.clone());
+    // Отдельная задача: отмена вызова после приёма не оставит файл без строки.
+    tokio::spawn(commit(shared.clone(), staging, row, quota, now))
+        .await
+        .map_err(|e| Aux::internal(format_args!("blob commit task failed: {e}")))??;
 
-    log::info!(blob:% = row.id, chat:% = chat, size, caller = caller.label(); "blob stored");
+    log::info!(blob:% = log_row, chat:% = chat, size, caller = caller.label(); "blob stored");
     Ok(put::Ok {
-        id: row.id,
+        id,
         size,
         hash: digest.to_hex().to_string(),
     })
 }
 
+/// Файл приёма в `blob_dir/.staging`; не перенесённый на место удаляется на drop.
+struct Staging {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Staging {
+    fn new(blob_dir: &Path, id: &BlobId) -> Self {
+        Self {
+            path: blob_dir.join(STAGING).join(id.as_str()),
+            armed: true,
+        }
+    }
+
+    /// Отвергнутый приём уходит до ответа, а не фоном.
+    async fn discard(mut self) {
+        self.armed = false;
+        let path = std::mem::take(&mut self.path);
+        if let Err(e) = tokio::task::spawn_blocking(move || remove_staged(&path)).await {
+            log::warn!(error:% = e; "blob staging cleanup task failed");
+        }
+    }
+}
+
+fn remove_staged(path: &Path) {
+    if let Err(e) = std::fs::remove_file(path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!(path:? = path, error:% = e; "failed to remove an abandoned blob upload");
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let path = std::mem::take(&mut self.path);
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn_blocking(move || remove_staged(&path))),
+            Err(_) => remove_staged(&path),
+        }
+    }
+}
+
+/// Файл на место, затем строка под квотой в транзакции писателя: параллельные
+/// приёмы одного владельца её не обойдут.
+async fn commit<C: Components>(
+    shared: Shared<C>,
+    mut staging: Staging,
+    row: BlobRow,
+    quota: u64,
+    now: Timestamp,
+) -> Response<(), put::Err> {
+    let dir = shared.cfg().blob_dir().join(row.id.as_str());
+    let (from, to, target) = (staging.path.clone(), dir.join(&row.name), dir.clone());
+    let moved = tokio::task::spawn_blocking(move || {
+        std::fs::create_dir(&target)?;
+        std::fs::rename(&from, &to)
+    })
+    .await
+    .map_err(|e| Aux::internal(format_args!("blob store task failed: {e}")))?;
+    if let Err(e) = moved {
+        discard(&dir).await;
+        staging.discard().await;
+        return Err(io("store", e).into());
+    }
+    staging.armed = false;
+
+    let owner = row.chat.as_ref().and_then(|c| c.surface.module.clone());
+    let size = row.size;
+    let inserted = shared
+        .db()
+        .write(move |tx| -> AuxResult<()> {
+            let used = tx.blobs().live_bytes(owner.as_ref(), now)?;
+            (used.saturating_add(charged(size)) <= quota).true_or(over_quota(used, quota))?;
+            Ok(tx.blobs().insert(&row)?)
+        })
+        .await;
+    if let Err(e) = inserted {
+        discard(&dir).await;
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 /// Приём тела с проверкой по ходу: перебор заявленного размера рвёт приём.
 async fn receive(
-    dir: &Path,
-    name: &str,
+    path: &Path,
     body: &mut eva_core::ByteStream,
     declared: u64,
 ) -> Response<(u64, blake3::Hash), put::Err> {
-    tokio::fs::create_dir_all(dir)
-        .await
-        .map_err(|e| io("create dir", e))?;
-    let mut out = tokio::fs::File::create(dir.join(name))
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| io("create dir", e))?;
+    }
+    let mut out = tokio::fs::File::create(path)
         .await
         .map_err(|e| io("create file", e))?;
     let mut hasher = blake3::Hasher::new();
@@ -236,6 +354,36 @@ async fn discard(dir: &Path) {
     {
         log::warn!(dir:? = dir, error:% = e; "failed to remove a rejected blob");
     }
+}
+
+/// Недописанные приёмы прошлого процесса: на старте ядра их уже никто не
+/// допишет. Возвращает, сколько записей убрано.
+pub async fn sweep(blob_dir: &Path) -> std::io::Result<usize> {
+    let staging = blob_dir.join(STAGING);
+    tokio::task::spawn_blocking(move || {
+        let entries = match std::fs::read_dir(&staging) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        let mut removed = 0;
+        for entry in entries {
+            let entry = entry?;
+            let gone = if entry.file_type()?.is_dir() {
+                std::fs::remove_dir_all(entry.path())
+            } else {
+                std::fs::remove_file(entry.path())
+            };
+            match gone {
+                Ok(()) => removed += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(removed)
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 fn expires(now: Timestamp, keep: std::time::Duration) -> Timestamp {

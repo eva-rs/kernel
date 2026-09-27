@@ -4,7 +4,7 @@ use std::{path::PathBuf, time::Duration};
 
 use eva::{data, time::HumanDuration};
 
-/// Читающих соединений, которые пул держит открытыми.
+/// Потолок читающих соединений: сверх него запрос ждёт свободное до `busy_timeout`.
 #[eva::int(u8, 1..=64)]
 pub enum Readers {}
 

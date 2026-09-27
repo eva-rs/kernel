@@ -2,16 +2,29 @@
 
 mod common;
 
+use eva_core::{CallStep as _, service::surfaces::Surfaces as _};
 use eva_kernel::{
     config::chats::MasterIdentity,
     db::{DbResult, Queries as _},
 };
-use eva_protocol::types::{PersonId, SurfaceId, surface::Builtin};
+use eva_protocol::{
+    errors::{Aux, Generic},
+    requests::surfaces::create,
+    types::{ModuleId, PersonId, SurfaceId, surface::Builtin},
+};
 
 fn master(surface: &str, external_id: &str) -> MasterIdentity {
     MasterIdentity {
         surface: SurfaceId::from(surface),
         external_id: external_id.to_owned(),
+        module: None,
+    }
+}
+
+fn bound(surface: &str, external_id: &str, module: &str) -> MasterIdentity {
+    MasterIdentity {
+        module: Some(ModuleId::from(module)),
+        ..master(surface, external_id)
     }
 }
 
@@ -131,4 +144,59 @@ async fn master_is_removed_only_by_config() {
         rows[1],
         (String::from("p1"), String::from("Master"), false, true)
     );
+}
+
+fn create_svc() -> create::Args {
+    create::Args {
+        id: SurfaceId::from(common::SVC),
+        name: String::from("svc surface"),
+        rules: None,
+    }
+}
+
+/// Иначе любой сервис, первым создавший surface адреса хозяина, выдавал бы
+/// себе master-туры.
+#[tokio::test]
+async fn a_bound_master_surface_is_created_only_by_its_module() {
+    let h = common::start_with(|cfg| {
+        cfg.chats.persons.master = vec![bound(common::SVC, "42", common::SVC)];
+    })
+    .await;
+
+    h.register_module(common::OTHER).await;
+    let mut other = h.session(common::service(common::OTHER)).await;
+    let res = other.surfaces().create().call(create_svc()).await;
+    assert!(
+        matches!(res, Err(Generic::Aux(Aux::Forbidden(_)))),
+        "{res:?}"
+    );
+    assert_eq!(
+        persons(&h).await.len(),
+        1,
+        "no master seeded for a squatter"
+    );
+
+    h.service_with_surface(common::SVC).await;
+    let owner = h
+        .query(|c| c.persons().identity_owner(&SurfaceId::from("svc"), "42"))
+        .await;
+    assert_eq!(owner, Some(PersonId::from("p1")));
+}
+
+#[tokio::test]
+async fn a_bound_pair_on_a_surface_of_another_module_is_not_seeded() {
+    let h = common::start().await;
+    h.service_with_surface(common::SVC).await;
+
+    let common::Harness { kernel, dir, .. } = h;
+    drop(kernel);
+    let mut cfg = common::config(dir.path());
+    cfg.chats.persons.master = vec![bound(common::SVC, "42", common::OTHER)];
+    let h = common::start_in(dir, cfg).await;
+
+    let owner = h
+        .query(|c| c.persons().identity_owner(&SurfaceId::from("svc"), "42"))
+        .await;
+    assert_eq!(owner, None);
+    assert_eq!(persons(&h).await.len(), 1, "only p0");
 }

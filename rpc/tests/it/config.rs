@@ -18,6 +18,7 @@ fn defaults() {
     assert_eq!(*cfg.stream_idle_timeout, Duration::from_secs(120));
     assert_eq!(cfg.stream_buffer(), 64);
     assert_eq!(cfg.max_frame, ByteSize::mib(16));
+    assert_eq!(cfg.max_hello, ByteSize::mib(4));
     assert_eq!(cfg.blob_chunk, ByteSize::mib(1));
     assert_eq!(*cfg.idempotency_window, Duration::from_secs(600));
 
@@ -30,6 +31,13 @@ fn defaults() {
     assert_eq!(*cfg.ping_interval, Duration::from_secs(5));
     assert_eq!(cfg.max_frame, ByteSize::mib(8));
     assert_eq!(cfg.stream_buffer, StreamBuffer::POS16);
+
+    // `hello` не бывает больше кадра.
+    let cfg = Config {
+        max_frame: ByteSize::mib(2),
+        ..Config::default()
+    };
+    assert_eq!(cfg.max_hello(), 2 << 20);
     assert!(serde_json::from_value::<Config>(json!({"stream_buffer": 0})).is_err());
 }
 
@@ -60,4 +68,35 @@ fn listen_by_address_key() {
     assert_eq!(wss.tls.key.to_str(), Some("/etc/eva/key.pem"));
 
     assert!(serde_json::from_value::<Listen>(json!({"tcp": "127.0.0.1:1"})).is_err());
+}
+
+/// Ответ и элемент потока с данными в `max_payload` укладываются в `max_frame`.
+#[test]
+fn max_payload_leaves_room_for_the_envelope() {
+    use eva_protocol::{
+        types::Bytes,
+        wire::{
+            Frame,
+            frame::{Response, StreamItem},
+        },
+    };
+    use eva_rpc::codec::encode_frame;
+
+    let cfg = Config {
+        max_frame: ByteSize::kib(64),
+        ..Config::default()
+    };
+    let data = Bytes(vec![0; usize::try_from(cfg.max_payload()).unwrap()]);
+    let payload = eva_rpc::codec::encode(&data).unwrap();
+    for frame in [
+        Frame::Response(Response::ok(u64::MAX, payload.clone())),
+        Frame::StreamItem(StreamItem {
+            id: u64::MAX,
+            seq: u64::MAX,
+            item: payload,
+        }),
+    ] {
+        let len = encode_frame(&frame).unwrap().len();
+        assert!(len <= cfg.max_frame(), "{len} > {}", cfg.max_frame());
+    }
 }

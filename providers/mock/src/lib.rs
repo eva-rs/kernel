@@ -6,7 +6,10 @@ mod echo;
 mod script;
 mod validate;
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{
+    Arc, Mutex, MutexGuard, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 use eva::data;
 use tokio::sync::watch;
@@ -102,6 +105,11 @@ struct Inner {
     scripts: Mutex<std::collections::VecDeque<Script>>,
     requests: Mutex<Vec<GenerateRequest>>,
     seen: watch::Sender<usize>,
+    /// Модели сверх конфига, дочитанные `settle`.
+    listed: Mutex<Vec<ModelDecl>>,
+    /// Каталог ещё не прочитан: `settle` ждёт `list`.
+    awaiting: AtomicBool,
+    listing: watch::Sender<Option<Vec<ModelDecl>>>,
 }
 
 impl MockProvider {
@@ -111,7 +119,41 @@ impl MockProvider {
             scripts: Mutex::default(),
             requests: Mutex::default(),
             seen: watch::Sender::new(0),
+            listed: Mutex::default(),
+            awaiting: AtomicBool::new(false),
+            listing: watch::Sender::new(None),
         }))
+    }
+
+    /// Каталог недоступен до [`Self::list`]: так стартует провайдер без сети.
+    #[must_use]
+    pub fn awaiting_listing(self) -> Self {
+        self.0.awaiting.store(true, Ordering::Release);
+        self
+    }
+
+    /// Каталог ответил: `settle` добавит `models` к моделям конфига.
+    pub fn list(&self, models: Vec<ModelDecl>) {
+        self.0.listing.send_replace(Some(models));
+    }
+
+    /// Дочитывает каталог, как `openai`: ждёт [`Self::list`], если провайдер
+    /// стартовал без него; `true` — `models()` сменился.
+    pub async fn settle(&self) -> bool {
+        if !self.0.awaiting.load(Ordering::Acquire) {
+            return false;
+        }
+        let mut listing = self.0.listing.subscribe();
+        let Ok(models) = listing
+            .wait_for(Option::is_some)
+            .await
+            .map(|listed| listed.clone().unwrap_or_default())
+        else {
+            return false;
+        };
+        *lock(&self.0.listed) = models;
+        self.0.awaiting.store(false, Ordering::Release);
+        true
     }
 
     /// Модели по умолчанию; запрос сверх сценариев — ошибка.
@@ -146,11 +188,9 @@ impl MockProvider {
         self.0.seen.subscribe()
     }
 
-    fn model(&self, name: &ModelId) -> Result<&ModelDecl, ProviderError> {
-        self.0
-            .config
-            .models
-            .iter()
+    fn model(&self, name: &ModelId) -> Result<ModelDecl, ProviderError> {
+        self.models()
+            .into_iter()
             .find(|m| m.name == *name)
             .ok_or_else(|| {
                 error(
@@ -195,13 +235,15 @@ impl Provider for MockProvider {
     }
 
     fn models(&self) -> Vec<ModelDecl> {
-        self.0.config.models.clone()
+        let mut models = self.0.config.models.clone();
+        models.extend(lock(&self.0.listed).iter().cloned());
+        models
     }
 
     async fn generate(&self, req: GenerateRequest, mut sink: GenSink) -> Result<(), ProviderError> {
         self.record(&req);
         let model = self.model(&req.model)?;
-        validate::request(&req, model).map_err(|raw| error(ProviderErrorKind::Invalid, raw))?;
+        validate::request(&req, &model).map_err(|raw| error(ProviderErrorKind::Invalid, raw))?;
 
         self.next_script(&req)?.play(&mut sink).await
     }

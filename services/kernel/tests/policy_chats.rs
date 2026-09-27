@@ -4,16 +4,20 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::chats::Chats as _};
+use eva_core::{
+    CallStep as _,
+    service::{chats::Chats as _, folders::Folders as _},
+};
 use eva_protocol::{
     requests::{
         Patch,
         chats::{
-            compact, create, delete, get, history_read, list, r#move, notify, restore, search,
-            update,
+            Selector, compact, create, delete, get, history_read, list, r#move, notify, restore,
+            search, update,
         },
+        folders,
     },
-    types::{ChatId, SurfaceId, folder},
+    types::{ChatId, FolderId, SurfaceId, folder},
 };
 
 use Outcome::{Forbidden as F, Ok as K, Unavailable as U};
@@ -279,4 +283,235 @@ async fn service_lists_only_own_chats() {
             }
         }
     }
+}
+
+async fn aliased(session: &mut TestSession, surface: &str, external_id: &str) -> ChatId {
+    session
+        .chats()
+        .create()
+        .call(create::Args {
+            external_id: Some(String::from(external_id)),
+            ..create_args(surface)
+        })
+        .await
+        .expect("aliased chat")
+        .chat
+        .id
+}
+
+/// Чужой объект в явном фильтре `chats.list` — `forbidden`, не пустая
+/// страница; несуществующий — тот же отказ, чтобы не служить оракулом.
+#[tokio::test]
+async fn service_list_filter_must_be_own() {
+    let h = common::start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let mut other = h.service_with_surface(OTHER).await;
+    let mut owner = h.client_session().await;
+    let foreign_folder = owner
+        .folders()
+        .create()
+        .call(folders::create::Args {
+            surface: SurfaceId::from(OTHER),
+            name: String::from("work"),
+        })
+        .await
+        .expect("foreign folder")
+        .folder
+        .id;
+    let own_folder = owner
+        .folders()
+        .create()
+        .call(folders::create::Args {
+            surface: SurfaceId::from(SVC),
+            name: String::from("work"),
+        })
+        .await
+        .expect("own folder")
+        .folder
+        .id;
+    other
+        .chats()
+        .create()
+        .call(create_args(OTHER))
+        .await
+        .expect("foreign chat");
+    svc.chats()
+        .create()
+        .call(create::Args {
+            folder: Some(own_folder),
+            ..create_args(SVC)
+        })
+        .await
+        .expect("own chat");
+
+    let by_surface = |surface: &str| list::Args {
+        surface: Some(SurfaceId::from(surface)),
+        ..Default::default()
+    };
+    let by_folder = |folder| list::Args {
+        folder: Some(folder),
+        ..Default::default()
+    };
+    let cases = [
+        ("own surface", by_surface(SVC), K),
+        ("own folder", by_folder(own_folder), K),
+        ("foreign surface", by_surface(OTHER), F),
+        ("local", by_surface("local"), F),
+        ("system", by_surface("system"), F),
+        ("unknown surface", by_surface("nowhere"), F),
+        ("foreign folder", by_folder(foreign_folder), F),
+        ("unknown folder", by_folder(FolderId(9_999)), F),
+    ];
+    for (what, args, want) in cases {
+        let res = svc.chats().list().call(args).await;
+        assert_eq!(outcome(&res), want, "{what}: {res:?}");
+        if let Ok(ok) = res {
+            assert!(!ok.found.is_empty(), "{what}");
+            assert!(
+                ok.found.iter().all(|c| c.surface_id.as_str() == SVC),
+                "{what}"
+            );
+        }
+    }
+
+    let res = owner.chats().list().call(by_surface("nowhere")).await;
+    assert_eq!(outcome(&res), Outcome::NotFound, "owner: {res:?}");
+    let res = owner.chats().list().call(by_surface(OTHER)).await;
+    assert_eq!(outcome(&res), K, "owner sees every surface: {res:?}");
+}
+
+/// Якорь страницы решается под видимостью caller'а: чужой чат как якорь
+/// неотличим от исчезнувшего и не выдаёт своё время активности.
+#[tokio::test]
+async fn service_page_anchor_must_be_visible() {
+    let h = common::start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let mut other = h.service_with_surface(OTHER).await;
+    let mut own = Vec::new();
+    for _ in 0..3 {
+        own.push(
+            svc.chats()
+                .create()
+                .call(create_args(SVC))
+                .await
+                .expect("own chat")
+                .chat
+                .id,
+        );
+    }
+    let foreign = other
+        .chats()
+        .create()
+        .call(create_args(OTHER))
+        .await
+        .expect("foreign chat")
+        .chat
+        .id;
+
+    let after = |after| list::Args {
+        after: Some(after),
+        ..Default::default()
+    };
+    let page = svc
+        .chats()
+        .list()
+        .call(after(own[2]))
+        .await
+        .expect("own anchor pages on");
+    assert_eq!(
+        page.found.iter().map(|c| c.id).collect::<Vec<_>>(),
+        [own[1], own[0]]
+    );
+
+    let foreign_res = svc.chats().list().call(after(foreign)).await;
+    let missing_res = svc.chats().list().call(after(ChatId(9_999))).await;
+    assert_eq!(outcome(&foreign_res), Outcome::Conflict, "{foreign_res:?}");
+    assert_eq!(outcome(&missing_res), Outcome::Conflict, "{missing_res:?}");
+
+    let page = h
+        .client_session()
+        .await
+        .chats()
+        .list()
+        .call(after(foreign))
+        .await
+        .expect("the owner may anchor on any chat");
+    assert!(page.found.iter().all(|c| c.id != foreign));
+}
+
+/// `chats.get` по alias: `Service` сначала доказывает свой surface — иначе
+/// ответ выдавал бы, есть ли у хозяина чат с этим внешним id.
+#[tokio::test]
+async fn service_cannot_probe_aliases() {
+    let h = common::start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let mut other = h.service_with_surface(OTHER).await;
+    let mut owner = h.client_session().await;
+    let mine = aliased(&mut svc, SVC, "u1").await;
+    aliased(&mut other, OTHER, "u1").await;
+    aliased(&mut owner, "local", "u1").await;
+
+    let alias = |surface: &str, external_id: &str| get::Args {
+        chat: Selector::Alias {
+            surface: SurfaceId::from(surface),
+            external_id: String::from(external_id),
+        },
+    };
+    let ok = svc
+        .chats()
+        .get()
+        .call(alias(SVC, "u1"))
+        .await
+        .expect("own alias");
+    assert_eq!(ok.chat.id, mine);
+    let res = svc.chats().get().call(alias(SVC, "u2")).await;
+    assert_eq!(
+        outcome(&res),
+        Outcome::Spec,
+        "own surface, no chat: {res:?}"
+    );
+
+    let mut refusals = Vec::new();
+    for (surface, external_id) in [
+        (OTHER, "u1"),
+        (OTHER, "u2"),
+        ("local", "u1"),
+        ("local", "u2"),
+        ("nowhere", "u1"),
+    ] {
+        let res = svc.chats().get().call(alias(surface, external_id)).await;
+        assert_eq!(
+            outcome(&res),
+            F,
+            "{surface}/{external_id} exists or not — same answer: {res:?}"
+        );
+        refusals.push(format!("{res:?}").replace(surface, "_"));
+    }
+    refusals.dedup();
+    assert_eq!(refusals.len(), 1, "one refusal text: {refusals:?}");
+
+    for surface in [OTHER, "nowhere"] {
+        let res = owner.chats().get().call(alias(surface, "u2")).await;
+        assert_eq!(outcome(&res), Outcome::Spec, "owner, {surface}: {res:?}");
+    }
+}
+
+/// `chats.create` на чужом и несуществующем surface — один отказ сервису.
+#[tokio::test]
+async fn service_cannot_probe_surfaces_by_create() {
+    let h = common::start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    h.service_with_surface(OTHER).await;
+    for surface in [OTHER, "nowhere"] {
+        let res = svc.chats().create().call(create_args(surface)).await;
+        assert_eq!(outcome(&res), F, "{surface}: {res:?}");
+    }
+    let res = h
+        .client_session()
+        .await
+        .chats()
+        .create()
+        .call(create_args("nowhere"))
+        .await;
+    assert_eq!(outcome(&res), Outcome::NotFound, "owner: {res:?}");
 }

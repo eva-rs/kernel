@@ -33,12 +33,12 @@ use eva_protocol::{
     },
     types::{
         ChatId, CronJobId, HandsGrantId, MemoryId, ModelId, ModuleId, PersonId, RunId, SurfaceId,
-        blob, chat, content::Block, folder, hands::GrantKind, module::TokenKind, stats::Scope,
+        Value, blob, chat, content::Block, folder, hands::GrantKind, module::TokenKind,
+        stats::Scope,
     },
     wire::{Capabilities, ErrorCode, RpcError, handshake::ProtoVersion},
 };
-use eva_sdk::{ConnectError, Connected, Module, Surface};
-use serde_json::json;
+use eva_sdk::{ConnectError, Connected, Module, SecretString};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -114,7 +114,7 @@ fn today(h: &Harness) -> Date {
         .expect("the test clock is inside the calendar")
 }
 
-fn statement(sql: &str, params: Vec<serde_json::Value>) -> Statement {
+fn statement(sql: &str, params: Vec<Value>) -> Statement {
     Statement {
         sql: sql.to_owned(),
         params,
@@ -212,26 +212,33 @@ async fn contract<M: SessionMaker>(
 }
 
 async fn surfaces_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, local: &SurfaceId) {
-    let create = |id: &SurfaceId, name: Option<&str>, builtin: bool| surfaces::create::Args {
+    let create = |id: &SurfaceId, name: &str| surfaces::create::Args {
         id: id.clone(),
-        name: name.map(str::to_owned),
+        name: name.to_owned(),
         rules: None,
-        ask: true,
-        builtin,
     };
 
-    let res = call!(r.c.surfaces.create(create(local, None, true)));
-    r.ok("surfaces.create local by client", res);
+    let res = call!(r.c.surfaces.create(create(local, "Local")));
+    r.check("surfaces.create local by client", &res, Outcome::Forbidden);
     let res = call!(r.s.surfaces.create(surfaces::create::Args {
         rules: Some(String::from("Answer briefly.")),
-        ..create(svc, Some("Service"), false)
+        ..create(svc, "Service")
     }));
     r.ok("surfaces.create own", res);
-    let res = call!(r.s.surfaces.create(create(local, None, true)));
+    let res = call!(r.s.surfaces.create(create(svc, "Renamed")));
+    let again = r.ok("surfaces.create own again", res).surface;
+    assert_eq!(
+        (again.name.as_str(), again.rules.as_deref()),
+        ("Service", Some("Answer briefly.")),
+        "a repeated create leaves the row as it was"
+    );
+    let res = call!(r.c.surfaces.create(create(svc, "Mine now")));
+    r.check("surfaces.create of another module", &res, Outcome::Spec);
+    let res = call!(r.s.surfaces.create(create(local, "Local")));
     r.check("surfaces.create local by service", &res, Outcome::Forbidden);
     let res = call!(
         r.c.surfaces
-            .create(create(&SurfaceId::from("system"), Some("System"), false))
+            .create(create(&SurfaceId::from("system"), "System"))
     );
     r.check("surfaces.create system", &res, Outcome::Forbidden);
 
@@ -612,7 +619,7 @@ async fn modules_part<M: SessionMaker>(r: &mut Run<'_, M>) {
         kind: TokenKind::Client,
         issued_by: None,
     }));
-    r.check("modules.token_issue reserved", &res, Outcome::Spec);
+    r.check("modules.token_issue reserved", &res, Outcome::Invalid);
     let res = call!(r.c.modules.token_revoke(modules::token_revoke::Args {
         module: ModuleId::from("bridge"),
     }));
@@ -729,38 +736,53 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
     }));
     r.ok("fs.remove", res);
 
+    // Валидный UTF-8 в `bin`: строкой назад он читаться не должен.
+    let tea_raw = eva_protocol::types::Bytes::from(*b"tea leaves");
     let res = call!(r.s.sqlite.exec(sqlite::exec::Args {
         statement: statement(
-            "CREATE TABLE seen (id INTEGER PRIMARY KEY, what TEXT)",
+            "CREATE TABLE seen (id INTEGER PRIMARY KEY, what TEXT, raw BLOB)",
             vec![]
         ),
     }));
     r.ok("sqlite.exec", res);
     let res = call!(r.s.sqlite.tx(sqlite::tx::Args {
         statements: vec![
-            statement("INSERT INTO seen (what) VALUES (?1)", vec![json!("tea")]),
-            statement("INSERT INTO seen (what) VALUES (?1)", vec![json!("cake")]),
+            statement(
+                "INSERT INTO seen (what, raw) VALUES (?1, ?2)",
+                vec!["tea".into(), Value::Bytes(tea_raw.clone())],
+            ),
+            statement("INSERT INTO seen (what) VALUES (?1)", vec!["cake".into()]),
         ],
     }));
     r.ok("sqlite.tx", res);
     let res = call!(r.s.sqlite.query(sqlite::query::Args {
-        statement: statement("SELECT id, what FROM seen ORDER BY id", vec![]),
+        statement: statement("SELECT id, what, raw FROM seen ORDER BY id", vec![]),
     }));
-    r.ok("sqlite.query", res);
+    let seen = r.ok("sqlite.query", res);
+    assert_eq!(
+        seen.rows[0][2],
+        sqlite::Cell::Blob(tea_raw),
+        "a blob param stays a blob"
+    );
     let res = call!(r.s.sqlite.exec(sqlite::exec::Args {
         statement: statement("ATTACH DATABASE 'x.db' AS x", vec![]),
     }));
     r.check("sqlite.exec attach", &res, Outcome::Forbidden);
 
+    let offset = Value::Map(vec![
+        ("n".into(), Value::Integer(42)),
+        ("raw".into(), Value::Bytes(vec![0, 0xc1, 0xff].into())),
+    ]);
     let res = call!(r.s.kv.set(kv::set::Args {
         key: String::from("offset"),
-        value: json!({"n": 42}),
+        value: offset.clone(),
     }));
     r.ok("kv.set", res);
     let res = call!(r.s.kv.get(kv::get::Args {
         key: String::from("offset"),
     }));
-    r.ok("kv.get", res);
+    let got = r.ok("kv.get", res);
+    assert_eq!(got.value, Some(offset), "bytes survive kv");
     let res = call!(r.s.kv.list(kv::list::Args::default()));
     r.ok("kv.list", res);
     let res = call!(r.s.kv.del(kv::del::Args {
@@ -775,11 +797,37 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
     r.ok("kv.list of another module", res);
 }
 
+/// SDK-модуль с токеном записи `module`: имя ему даёт `welcome`.
 async fn connect(url: &Url, module: &str) -> Connected {
-    Module::new(module)
-        .connect(url, &token(module))
+    let connected = Module::new()
+        .connect(url, &secret(module))
         .await
-        .expect("module connects")
+        .expect("module connects");
+    assert_eq!(
+        connected.module().as_str(),
+        module,
+        "the token names the module"
+    );
+    connected
+}
+
+fn secret(module: &str) -> SecretString {
+    SecretString::Plaintext(token(module))
+}
+
+/// Surface модуля: создание идемпотентно, звать можно на каждом старте.
+async fn create_surface(module: &Connected, id: &str, name: &str) {
+    module
+        .kernel()
+        .surfaces()
+        .create()
+        .call(surfaces::create::Args {
+            id: SurfaceId::from(id),
+            name: name.to_owned(),
+            rules: None,
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{id} creates its surface: {e:?}"));
 }
 
 fn compare(in_process: &Transcript, over_uds: &Transcript) {
@@ -794,18 +842,23 @@ fn compare(in_process: &Transcript, over_uds: &Transcript) {
     }
 }
 
-#[tokio::test]
-async fn in_process_and_uds_answer_alike() {
+/// Эталонный прогон: ядро в процессе, без транспорта.
+async fn in_process() -> Transcript {
     let near = common::start_with(with_module_tokens).await;
     seed(&near).await;
     handshake_row(&near, CLIENT).await;
     handshake_row(&near, SVC).await;
-    let in_process = contract(
+    contract(
         (&near.kernel, client(CLIENT)),
         (&near.kernel, service(SVC)),
         today(&near),
     )
-    .await;
+    .await
+}
+
+#[tokio::test]
+async fn in_process_and_uds_answer_alike() {
+    let in_process = in_process().await;
 
     let far = common::start_with(with_module_tokens).await;
     seed(&far).await;
@@ -824,24 +877,82 @@ async fn in_process_and_uds_answer_alike() {
     compare(&in_process, &over_uds);
 }
 
-/// Объект пула свойства: чат, его surface и blob в нём.
+/// `Kernel` SDK — то, что зовёт код модуля: мутации, потоки и загрузки идут
+/// через `LiveSession` своим путём, а не через `RpcSession`.
+struct Sdk<'a>(&'a Connected);
+
+impl SessionMaker for Sdk<'_> {
+    type Session = eva_sdk::live::LiveSession;
+
+    fn make_session(
+        &self,
+        caller: Caller,
+    ) -> impl eva_core::service::AuxFut<Session<eva_sdk::live::LiveSession>> {
+        let kernel = self.0.kernel();
+        async move {
+            if kernel.caller() != &caller {
+                return Err(Aux::forbidden("the SDK session belongs to another caller"));
+            }
+            Ok(kernel)
+        }
+    }
+}
+
+/// `11 §9`: код SDK — код ядра и для публичного `Kernel` модуля.
+#[tokio::test]
+async fn in_process_and_the_sdk_kernel_answer_alike() {
+    let in_process = in_process().await;
+
+    let far = common::start_with(with_module_tokens).await;
+    seed(&far).await;
+    let (_listening, url) = far.listen().await;
+    let phone = connect(&url, CLIENT).await;
+    let svc = connect(&url, SVC).await;
+    let over_sdk = contract(
+        (&Sdk(&phone), phone.caller()),
+        (&Sdk(&svc), svc.caller()),
+        today(&far),
+    )
+    .await;
+
+    compare(&in_process, &over_sdk);
+}
+
+/// Объект пула свойства: чат, его surface, alias, папка и blob в нём.
 struct Object {
     chat: ChatId,
     surface: SurfaceId,
     blob: eva_protocol::types::BlobId,
+    alias: Option<String>,
+    folder: eva_protocol::types::FolderId,
 }
 
-/// Хозяин (в процессе) заводит по чату с blob'ом на каждом surface.
+/// Хозяин (в процессе) заводит на каждом surface папку и чаты с alias и
+/// blob'ом, а личности `user-N` — с адресами на всех surface сразу.
 async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Vec<Object> {
     let mut owner = h.client_session().await;
     let mut pool = Vec::new();
     for surface in surfaces {
+        let folder = owner
+            .folders()
+            .create()
+            .call(folders::create::Args {
+                surface: surface.clone(),
+                name: String::from("work"),
+            })
+            .await
+            .unwrap_or_else(|e| panic!("owner creates a folder on {surface}: {e:?}"))
+            .folder
+            .id;
         for n in 0..per_surface {
+            let alias = format!("ext-{n}");
             let chat = owner
                 .chats()
                 .create()
                 .call(chats::create::Args {
                     title: Some(format!("{surface} #{n}")),
+                    external_id: Some(alias.clone()),
+                    folder: (n % 2 == 0).then_some(folder),
                     ..new_chat(surface)
                 })
                 .await
@@ -869,7 +980,41 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
                 chat,
                 surface: surface.clone(),
                 blob,
+                alias: Some(alias),
+                folder,
             });
+        }
+    }
+
+    for n in 0..20 {
+        let mut people = Vec::new();
+        for surface in surfaces {
+            let person = owner
+                .persons()
+                .resolve()
+                .call(persons::resolve::Args {
+                    surface: surface.clone(),
+                    external_id: format!("user-{n}"),
+                    handle: None,
+                    name: None,
+                })
+                .await
+                .expect("owner resolves an identity")
+                .person
+                .id;
+            people.push(person);
+        }
+        for from in &people[1..] {
+            owner
+                .persons()
+                .merge()
+                .call(persons::merge::Args {
+                    from: from.clone(),
+                    into: people[0].clone(),
+                    confirm: true,
+                })
+                .await
+                .expect("one person on every surface");
         }
     }
     pool
@@ -886,16 +1031,10 @@ fn expect_own<O: Debug, E: Debug>(step: &str, own: bool, res: &Response<O, E>) {
 async fn a_service_over_uds_reaches_only_its_own_surface() {
     let h = common::start_with(with_module_tokens).await;
     let (_listening, url) = h.listen().await;
-    let svc = Module::new(SVC)
-        .surface(Surface::new(SVC).name("Service"))
-        .connect(&url, &token(SVC))
-        .await
-        .expect("service connects");
-    let _other = Module::new(OTHER)
-        .surface(Surface::new(OTHER).name("Other"))
-        .connect(&url, &token(OTHER))
-        .await
-        .expect("other service connects");
+    let svc = connect(&url, SVC).await;
+    create_surface(&svc, SVC, "Service").await;
+    let other = connect(&url, OTHER).await;
+    create_surface(&other, OTHER, "Other").await;
 
     let mine = SurfaceId::from(SVC);
     let surfaces = [
@@ -905,6 +1044,11 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
         SurfaceId::from(OTHER),
     ];
     let mut pool = populate(&h, &surfaces, 3).await;
+    let own_folder = pool
+        .iter()
+        .find(|o| o.surface == mine)
+        .map(|o| o.folder)
+        .expect("a folder of the own surface");
     let mut rng = Xoshiro256StarStar::seed_from_u64(11);
 
     for round in 0..300 {
@@ -912,9 +1056,10 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
         let object = &pool[rng.random_range(0..pool.len())];
         let (chat, surface, own) = (object.chat, object.surface.clone(), object.surface == mine);
         let blob_id = object.blob.clone();
+        let (alias, folder) = (object.alias.clone(), object.folder);
         let step = |op: &str| format!("round {round}: {op} on {surface}");
 
-        match rng.random_range(0..12u8) {
+        match rng.random_range(0..15u8) {
             0 => {
                 let res = k
                     .chats()
@@ -1050,6 +1195,8 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                         chat: ok.chat.id,
                         surface,
                         blob,
+                        alias: None,
+                        folder: own_folder,
                     });
                 }
             }
@@ -1063,14 +1210,66 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                         ..Default::default()
                     })
                     .await;
-                let found = res
-                    .unwrap_or_else(|e| panic!("{}: {e:?}", step("chats.list")))
-                    .found;
-                assert!(
-                    found.iter().all(|c| c.surface_id == mine),
-                    "{}",
-                    step("chats.list")
-                );
+                expect_own(&step("chats.list by surface"), own, &res);
+                if let Ok(ok) = &res {
+                    assert!(ok.found.iter().all(|c| c.surface_id == mine), "{res:?}");
+                }
+            }
+            11 => {
+                let res = k
+                    .chats()
+                    .list()
+                    .call(chats::list::Args {
+                        folder: Some(folder),
+                        ..Default::default()
+                    })
+                    .await;
+                expect_own(&step("chats.list by folder"), own, &res);
+                if let Ok(ok) = &res {
+                    assert!(ok.found.iter().all(|c| c.surface_id == mine), "{res:?}");
+                }
+            }
+            12 => {
+                let res = k
+                    .chats()
+                    .list()
+                    .call(chats::list::Args {
+                        after: Some(chat),
+                        ..Default::default()
+                    })
+                    .await;
+                let want = if own { Outcome::Ok } else { Outcome::Conflict };
+                assert_eq!(outcome(&res), want, "{}: {res:?}", step("chats.list after"));
+                if let Ok(ok) = &res {
+                    assert!(ok.found.iter().all(|c| c.surface_id == mine), "{res:?}");
+                }
+            }
+            13 => {
+                // Есть alias или нет — чужой surface отвечает одинаково.
+                let external_id = match (&alias, rng.random::<bool>()) {
+                    (Some(alias), true) => alias.clone(),
+                    _ => format!("absent-{round}"),
+                };
+                let exists = alias.as_ref() == Some(&external_id);
+                let res = k
+                    .chats()
+                    .get()
+                    .call(chats::get::Args {
+                        chat: chats::Selector::Alias {
+                            surface: surface.clone(),
+                            external_id,
+                        },
+                    })
+                    .await;
+                let want = match (own, exists) {
+                    (false, _) => Outcome::Forbidden,
+                    (true, true) => Outcome::Ok,
+                    (true, false) => Outcome::Spec,
+                };
+                assert_eq!(outcome(&res), want, "{}: {res:?}", step("chats.get alias"));
+                if let Ok(ok) = &res {
+                    assert_eq!(ok.chat.surface_id, mine);
+                }
             }
             _ => {
                 let missing = ChatId(100_000 + i64::from(rng.random_range(0..1000u16)));
@@ -1111,28 +1310,26 @@ async fn eventually(what: &str, mut check: impl AsyncFnMut() -> bool) {
     }
 }
 
-/// Два клиента хозяина с разными именами обслуживают `local` одновременно
-/// и видят одни чаты (`06 §2`).
+/// Два клиента хозяина с разными токенами обслуживают `local` одновременно
+/// и видят одни чаты (`06 §2`); `local` никто не создаёт — его сеет ядро.
 #[tokio::test]
 async fn two_sdk_clients_serve_local_together() {
     let h = common::start_with(with_module_tokens).await;
     let (_listening, url) = h.listen().await;
-    let phone = Module::new(CLIENT)
-        .surface(Surface::local().ask(true))
-        .connect(&url, &token(CLIENT))
+    let phone = Module::new()
+        .ask(true)
+        .connect(&url, &secret(CLIENT))
         .await
         .expect("phone connects");
-    let tui = Module::new(CLIENT2)
-        .surface(Surface::local())
-        .connect(&url, &token(CLIENT2))
-        .await
-        .expect("tui connects");
+    let tui = connect(&url, CLIENT2).await;
+    let _svc = connect(&url, SVC).await;
+
+    let mut serving = h.serving("local").await;
+    serving.sort();
+    assert_eq!(serving, [CLIENT, CLIENT2], "a service never serves local");
+    assert!(h.ask_ui("local").await, "one asking client is enough");
 
     let local = SurfaceId::from("local");
-    let serving = h.kernel.shared().serving();
-    assert!(serving.serves(&local, &ModuleId::from(CLIENT)));
-    assert!(serving.serves(&local, &ModuleId::from(CLIENT2)));
-
     let chat = phone
         .kernel()
         .chats()
@@ -1154,27 +1351,26 @@ async fn two_sdk_clients_serve_local_together() {
     assert!(!phone.client().peer().is_closed() && !tui.client().peer().is_closed());
 }
 
-/// Второй `hello` того же имени вытесняет первый, и SDK первого не лезет
+/// Второй `hello` с тем же токеном вытесняет первый, и SDK первого не лезет
 /// обратно (иначе два процесса выбивали бы друг друга по кругу).
 #[tokio::test]
 async fn a_superseded_sdk_module_stops_instead_of_fighting_back() {
     let h = common::start_with(with_module_tokens).await;
     let (_listening, url) = h.listen().await;
-    let module = || {
-        Module::new(SVC)
-            .surface(Surface::new(SVC).name("Service"))
-            .reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50))
-    };
+    let module =
+        || Module::new().reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50));
     let first = module()
-        .connect(&url, &token(SVC))
+        .connect(&url, &secret(SVC))
         .await
         .expect("first connects");
+    create_surface(&first, SVC, "Service").await;
     let running = tokio::spawn(first.run(pending()));
 
     let second = module()
-        .connect(&url, &token(SVC))
+        .connect(&url, &secret(SVC))
         .await
         .expect("second connects");
+    create_surface(&second, SVC, "Service").await;
     let ended = tokio::time::timeout(WAIT, running)
         .await
         .expect("the first module stops")
@@ -1194,18 +1390,26 @@ async fn a_superseded_sdk_module_stops_instead_of_fighting_back() {
     assert!(!second.client().peer().is_closed());
 }
 
-/// Обрыв со стороны ядра: SDK переподключается с `hello.resume`, заново
-/// регистрирует surface, прежняя ручка `Connected` ведёт уже в новую сессию.
+/// Обрыв со стороны ядра: SDK переподключается с `hello.resume`, surface
+/// снова обслуживается без единого вызова модуля, прежняя ручка `Connected`
+/// ведёт уже в новую сессию, а тот же процесс ядра продолжает окно
+/// идемпотентности.
 #[tokio::test]
 async fn an_sdk_module_reconnects_with_resume() {
     let h = common::start_with(with_module_tokens).await;
     let (_listening, url) = h.listen().await;
-    let svc = Module::new(SVC)
-        .surface(Surface::new(SVC).name("Service").ask(true))
+    let svc = Module::new()
+        .ask(true)
         .reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50))
-        .connect(&url, &token(SVC))
+        .connect(&url, &secret(SVC))
         .await
         .expect("service connects");
+    create_surface(&svc, SVC, "Service").await;
+    assert!(h.ask_ui(SVC).await);
+    assert!(
+        !svc.welcome().resumed,
+        "the first hello has nothing to resume"
+    );
     let first = svc.welcome().session_id;
     let handle = svc.clone();
     let running = tokio::spawn(svc.run(pending()));
@@ -1214,12 +1418,15 @@ async fn an_sdk_module_reconnects_with_resume() {
         ErrorCode::Unavailable,
         "the test drops sessions",
     ));
-    let (mine, module) = (SurfaceId::from(SVC), ModuleId::from(SVC));
     eventually("a new session serves the surface again", async || {
-        handle.welcome().session_id != first && h.kernel.shared().serving().ask_ui(&mine)
+        handle.welcome().session_id != first && h.ask_ui(SVC).await
     })
     .await;
-    assert!(h.kernel.shared().serving().serves(&mine, &module));
+    assert_eq!(h.serving(SVC).await, [SVC]);
+    assert!(
+        handle.welcome().resumed,
+        "the same kernel process continues the window"
+    );
 
     let reconnects = h
         .query(|c| {
@@ -1236,25 +1443,36 @@ async fn an_sdk_module_reconnects_with_resume() {
         .kernel()
         .surfaces()
         .get()
-        .call(surfaces::get::Args { surface: mine })
+        .call(surfaces::get::Args {
+            surface: SurfaceId::from(SVC),
+        })
         .await;
     assert!(res.is_ok(), "{res:?}");
     running.abort();
 }
 
+/// Имя модулю даёт токен: чужой токен — это чужая идентичность, а не отказ.
 #[tokio::test]
-async fn an_sdk_module_with_a_foreign_token_is_unauthorized() {
+async fn an_sdk_module_is_whoever_its_token_names() {
     let h = common::start_with(with_module_tokens).await;
     let (_listening, url) = h.listen().await;
 
-    for (module, token) in [(SVC, String::from("wrong")), (SVC, token(OTHER))] {
-        let res = Module::new(module).connect(&url, &token).await;
-        assert!(
-            matches!(&res, Err(ConnectError::Rejected(e)) if e.code == ErrorCode::Unauthorized),
-            "{module} with {token}: {:?}",
-            res.map(|c| c.welcome())
-        );
-    }
+    let res = Module::new()
+        .connect(&url, &SecretString::Plaintext(String::from("wrong")))
+        .await;
+    assert!(
+        matches!(&res, Err(ConnectError::Rejected(e)) if e.code == ErrorCode::Unauthorized),
+        "{:?}",
+        res.map(|c| c.welcome())
+    );
+
+    let other = connect(&url, OTHER).await;
+    assert_eq!(other.caller(), service(OTHER));
+    assert_eq!(
+        other.module().as_str(),
+        OTHER,
+        "welcome.module names the token entry"
+    );
 }
 
 /// Время изменения файла ставит файловая система хоста, не мир ядра.

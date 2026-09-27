@@ -15,7 +15,7 @@ use eva_protocol::{
     types::SurfaceId,
 };
 
-use Outcome::{Forbidden as F, Ok as K};
+use Outcome::{Forbidden as F, Ok as K, Spec as S};
 
 #[derive(Debug, Clone, Copy)]
 enum Case {
@@ -29,7 +29,8 @@ enum Case {
     UpdateNameSystem,
     CreateFresh,
     CreateSystem,
-    CreateLocalBuiltin,
+    CreateLocal,
+    CreateA,
 }
 
 /// Ожидание по caller'ам: kernel, client, service-own (A), service-foreign (B).
@@ -44,7 +45,8 @@ const MATRIX: &[(Case, [Outcome; 4])] = &[
     (Case::UpdateNameSystem, [K, K, F, F]),
     (Case::CreateFresh, [F, K, K, K]),
     (Case::CreateSystem, [F, F, F, F]),
-    (Case::CreateLocalBuiltin, [F, K, F, F]),
+    (Case::CreateLocal, [F, F, F, F]),
+    (Case::CreateA, [F, S, K, S]),
 ];
 
 fn a() -> SurfaceId {
@@ -118,10 +120,8 @@ async fn run(session: &mut TestSession, case: Case, who: &str) -> Outcome {
                 .create()
                 .call(create::Args {
                     id: SurfaceId::from(format!("fresh_{}", who.replace('-', "_"))),
-                    name: Some(String::from("Fresh")),
+                    name: String::from("Fresh"),
                     rules: None,
-                    ask: false,
-                    builtin: false,
                 })
                 .await,
         ),
@@ -130,22 +130,28 @@ async fn run(session: &mut TestSession, case: Case, who: &str) -> Outcome {
                 .create()
                 .call(create::Args {
                     id: SurfaceId::from("system"),
-                    name: Some(String::from("Mine")),
+                    name: String::from("Mine"),
                     rules: None,
-                    ask: false,
-                    builtin: false,
                 })
                 .await,
         ),
-        Case::CreateLocalBuiltin => outcome(
+        Case::CreateLocal => outcome(
             &surfaces
                 .create()
                 .call(create::Args {
                     id: SurfaceId::from("local"),
-                    name: None,
+                    name: String::from("Mine"),
                     rules: None,
-                    ask: false,
-                    builtin: true,
+                })
+                .await,
+        ),
+        Case::CreateA => outcome(
+            &surfaces
+                .create()
+                .call(create::Args {
+                    id: a(),
+                    name: String::from("Again"),
+                    rules: None,
                 })
                 .await,
         ),

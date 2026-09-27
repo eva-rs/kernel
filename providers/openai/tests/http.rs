@@ -10,6 +10,7 @@ use tokio::{
     task::JoinHandle,
 };
 
+use eva::utils::SecretString;
 use eva_core::{GenSink, Provider};
 use eva_protocol::types::{
     ModelId,
@@ -18,7 +19,7 @@ use eva_protocol::types::{
         Purpose, Stop, StopReason, SystemSection,
     },
 };
-use eva_provider_openai::{ApiKey, Config, Dialect, ModelOverride, OpenAiProvider};
+use eva_provider_openai::{Config, Dialect, ModelOverride, OpenAiProvider};
 
 struct Reply {
     status: u16,
@@ -147,7 +148,7 @@ async fn connect_then_stream_a_reply() {
 
     let provider = OpenAiProvider::connect(Config {
         base_url: base,
-        api_key: Some(ApiKey::new("sk-test")),
+        api_key: Some(SecretString::Plaintext("sk-test".into())),
         referer: Some("https://eva.invalid".into()),
         title: Some("Eva".into()),
         ..Config::default()
@@ -203,6 +204,11 @@ async fn http_errors_are_classified() {
             headers: vec![("retry-after", "3"), ("content-type", "application/json")],
             body: json!({"error": {"code": 429, "message": "Rate limit exceeded"}}).to_string(),
         },
+        Reply {
+            status: 503,
+            headers: vec![("retry-after", "1e20")],
+            body: "overloaded".into(),
+        },
     ])
     .await;
     let provider = OpenAiProvider::connect(Config {
@@ -220,6 +226,18 @@ async fn http_errors_are_classified() {
     assert_eq!(error.http_status, Some(429));
     assert_eq!(error.retry_after.map(|d| *d), Some(Duration::from_secs(3)));
     assert!(error.raw.contains("Rate limit exceeded"));
+
+    let (tx, _rx) = mpsc::unbounded();
+    let huge = provider
+        .generate(request("openai/gpt-5-mini"), GenSink::new(tx))
+        .await
+        .unwrap_err();
+    assert_eq!(huge.kind, ProviderErrorKind::Transient);
+    assert_eq!(
+        huge.retry_after.map(|d| *d),
+        Some(Duration::from_secs(3600)),
+        "an absurd hint is capped, not a panic"
+    );
     server.await.unwrap();
 
     let (tx, _rx) = mpsc::unbounded();
@@ -231,11 +249,74 @@ async fn http_errors_are_classified() {
 }
 
 #[tokio::test]
-async fn openrouter_needs_the_catalog() {
+async fn openrouter_starts_without_the_catalog_and_settles() {
+    let (base, server) = serve(vec![
+        Reply {
+            status: 503,
+            headers: Vec::new(),
+            body: "down".into(),
+        },
+        Reply::ok("application/json", listing()),
+    ])
+    .await;
+    let provider = OpenAiProvider::connect(Config {
+        base_url: base,
+        ..Config::default()
+    })
+    .await
+    .unwrap();
+    assert!(provider.models().is_empty(), "config models only");
+
+    assert!(provider.settle().await, "the catalog came back");
+    assert_eq!(provider.models().len(), 7);
+    assert!(!provider.settle().await, "nothing left to settle");
+    server.await.unwrap();
+}
+
+/// Ключ из файла `LoadCredential`: читается один раз при сборке, перевод
+/// строки в заголовок не попадает; нечитаемый файл — ошибка сборки с ключом.
+#[tokio::test]
+async fn api_key_comes_from_a_credential_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("router");
+    std::fs::write(&path, "sk-file\n").unwrap();
+    let (base, server) = serve(vec![
+        Reply::ok("application/json", listing()),
+        Reply::ok("application/json", listing()),
+    ])
+    .await;
+
+    let provider = OpenAiProvider::connect(Config {
+        base_url: base,
+        api_key: Some(SecretString::File(path.clone())),
+        ..Config::default()
+    })
+    .await
+    .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    provider.refresh().await.expect("the key outlives its file");
+
+    let seen = server.await.unwrap();
+    for request in &seen {
+        assert_eq!(request.headers["authorization"], "Bearer sk-file");
+    }
+
+    let error = OpenAiProvider::connect(Config {
+        api_key: Some(SecretString::File(path)),
+        ..Config::default()
+    })
+    .await
+    .err()
+    .unwrap();
+    assert!(error.reason.starts_with("api_key: "), "{}", error.reason);
+}
+
+#[tokio::test]
+async fn openrouter_refuses_a_wrong_path() {
     let (base, server) = serve(vec![Reply {
-        status: 503,
+        status: 404,
         headers: Vec::new(),
-        body: "down".into(),
+        body: "no such route".into(),
     }])
     .await;
     let error = OpenAiProvider::connect(Config {
@@ -287,6 +368,7 @@ async fn plain_server_without_catalog_embeds() {
     };
     let provider = OpenAiProvider::connect(config).await.unwrap();
     assert_eq!(provider.models().len(), 1);
+    assert!(!provider.settle().await, "a missing route is not retried");
 
     let response = provider
         .embed(EmbedRequest {

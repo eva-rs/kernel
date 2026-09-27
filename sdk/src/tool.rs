@@ -11,7 +11,7 @@ use eva_protocol::{
     types::{tool::ToolDecl, turn::TurnCtx},
     wire::{ErrorCode, RpcError, tools::ToolResult},
 };
-use eva_rpc::{Progress, RpcClient};
+use eva_rpc::Progress;
 
 use crate::Kernel;
 
@@ -21,28 +21,23 @@ pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 pub struct ToolCtx {
     call_id: String,
     turn: TurnCtx,
-    client: RpcClient,
+    kernel: Kernel,
     progress: Progress,
 }
 
 impl ToolCtx {
-    pub(crate) fn new(
-        call_id: String,
-        turn: TurnCtx,
-        client: RpcClient,
-        progress: Progress,
-    ) -> Self {
+    pub(crate) fn new(call_id: String, turn: TurnCtx, kernel: Kernel, progress: Progress) -> Self {
         Self {
             call_id,
             turn,
-            client,
+            kernel,
             progress,
         }
     }
 
-    /// Сессия соединения, по которому пришёл вызов.
+    /// Ядро через текущее соединение: тул переживает реконнект, ручка тоже.
     pub fn kernel(&self) -> Kernel {
-        self.client.session()
+        self.kernel.clone()
     }
 
     pub fn turn(&self) -> &TurnCtx {

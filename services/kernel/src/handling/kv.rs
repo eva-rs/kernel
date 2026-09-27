@@ -1,5 +1,6 @@
 //! Хендлеры `kv.*` (`06 §5`, I12): KV модуля, last-write-wins. Скоуп —
-//! имя модуля сессии, поэтому чужого ключа не адресовать вовсе.
+//! имя модуля сессии, поэтому чужого ключа не адресовать вовсе. Значение —
+//! до `modules.kv_value_max`, всё KV модуля — до `modules.kv_quota`.
 
 use eva_protocol::{
     errors::{Aux, AuxResult, ext::*},
@@ -7,12 +8,12 @@ use eva_protocol::{
         Response,
         kv::{del, get, list, set},
     },
+    types::Value,
 };
-use serde_json::Value;
 
 use crate::{
     components::Components,
-    db::{Db as _, DbError, Queries as _},
+    db::{Db as _, DbError, Queries as _, kv::row_cost},
     state::{Policy, State},
 };
 
@@ -69,12 +70,25 @@ pub async fn Set<C: Components>(
     check_key(&key)?;
 
     let raw = rmp_serde::to_vec_named(&value).map_err(Aux::internal)?;
+    let modules = &shared.cfg().modules;
+    let (value_max, quota) = (modules.kv_value_max.as_u64(), modules.kv_quota.as_u64());
+    (raw.len() as u64 <= value_max).true_or(Aux::Quota(format!(
+        "kv value is {} bytes, modules.kv_value_max is {value_max}",
+        raw.len()
+    )))?;
+
     let now = world.now();
+    // Проверка в той же транзакции писателя: параллельные `set` её не обойдут.
     shared
         .db()
-        .write(move |tx| tx.kv().set(&module, &key, &raw, now))
-        .await
-        .aux_err()?;
+        .write(move |tx| -> AuxResult<()> {
+            let used = tx.kv().usage(&module, &key)?;
+            (used.saturating_add(row_cost(&key, &raw)) <= quota).true_or(Aux::Quota(format!(
+                "module kv takes {used} of modules.kv_quota {quota} bytes"
+            )))?;
+            Ok(tx.kv().set(&module, &key, &raw, now)?)
+        })
+        .await?;
 
     Ok(set::Ok {})
 }

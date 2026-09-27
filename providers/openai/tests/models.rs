@@ -244,17 +244,24 @@ fn caps_override_rejects_forms_chat_completions_cannot_express() {
 
 #[test]
 fn config_defaults_and_hidden_key() {
-    let config: Config = serde_json::from_value(json!({"api_key": "sk-or-secret"})).unwrap();
+    let config: Config =
+        serde_json::from_value(json!({"api_key": {"plaintext": "sk-or-secret"}})).unwrap();
     assert_eq!(config.base_url, "https://openrouter.ai/api/v1");
     assert_eq!(config.dialect, Dialect::Openrouter);
     assert_eq!(config.timeout.as_secs(), 300);
-    assert_eq!(config.api_key.as_ref().unwrap().expose(), "sk-or-secret");
-    assert!(!format!("{config:?}").contains("sk-or-secret"));
-    assert!(
-        !serde_json::to_string(&config)
-            .unwrap()
-            .contains("sk-or-secret")
+    assert_eq!(
+        config.api_key.as_ref().unwrap().read().unwrap(),
+        "sk-or-secret"
     );
+    assert!(!format!("{config:?}").contains("sk-or-secret"));
+
+    let file: Config =
+        serde_json::from_value(json!({"api_key": {"file": "/run/credentials/eva/openrouter"}}))
+            .unwrap();
+    assert!(matches!(
+        file.api_key,
+        Some(eva::utils::SecretString::File(_))
+    ));
 }
 
 #[test]

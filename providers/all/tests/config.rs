@@ -1,7 +1,7 @@
 //! `ProviderConfig` под тегом `kind` и диспетчер `AnyProvider`.
 //!
 //! У крейта нет dev-зависимостей: JSON и рантайма нет — конфиг читается
-//! десериализатором карты serde, а готовые сразу future мока — одним poll.
+//! десериализатором карты serde, а future, не дошедшие до I/O, — одним poll.
 
 use std::{
     future::Future,
@@ -14,6 +14,7 @@ use serde::{
     de::value::{Error, MapDeserializer},
 };
 
+use eva::utils::SecretString;
 use eva_core::Provider;
 use eva_protocol::types::{ModelId, generate::EmbedRequest};
 use eva_providers::{AnyProvider, ProviderConfig, build, mock, openai};
@@ -22,11 +23,10 @@ fn parse(pairs: &[(&'static str, &'static str)]) -> Result<ProviderConfig, Error
     ProviderConfig::deserialize(MapDeserializer::<_, Error>::new(pairs.iter().copied()))
 }
 
-/// Future мока не ждёт ничего: готов с первого poll.
 fn ready<F: Future>(future: F) -> F::Output {
     match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(output) => output,
-        Poll::Pending => panic!("mock future is expected to be ready at once"),
+        Poll::Pending => panic!("future is expected to be ready without I/O"),
     }
 }
 
@@ -37,7 +37,6 @@ fn openai_kind() {
         ("base_url", "http://127.0.0.1:8080/v1"),
         ("dialect", "plain"),
         ("timeout", "30s"),
-        ("api_key", "sk-local"),
         ("title", "Eva"),
     ])
     .unwrap();
@@ -47,10 +46,8 @@ fn openai_kind() {
     assert_eq!(config.base_url, "http://127.0.0.1:8080/v1");
     assert_eq!(config.dialect, openai::Dialect::Plain);
     assert_eq!(config.timeout.as_secs(), 30);
-    assert_eq!(
-        config.api_key.as_ref().map(openai::ApiKey::expose),
-        Some("sk-local")
-    );
+    // форма секрета — вложенная (`{plaintext}`/`{file}`), её разбор проверяют тесты крейта openai
+    assert!(config.api_key.is_none());
     assert_eq!(config.title.as_deref(), Some("Eva"));
     assert!(config.models.is_empty() && config.allow.is_none());
 
@@ -88,4 +85,22 @@ fn unknown_kind_is_rejected() {
     let error = parse(&[("kind", "acme")]).unwrap_err().to_string();
     assert!(error.contains("acme"), "{error}");
     assert!(parse(&[("base_url", "x")]).is_err(), "kind is required");
+}
+
+/// Ошибка сборки — отказ старта ядра: она называет путь ключа конфига.
+#[test]
+fn build_error_names_the_config_key_path() {
+    // ключ читается до сборки HTTP-клиента: ни рантайма, ни провайдера rustls тесту не нужно
+    let config = ProviderConfig::Openai(openai::Config {
+        api_key: Some(SecretString::File("/nonexistent/eva-test-key".into())),
+        ..Default::default()
+    });
+    let Err(error) = ready(build("router", config)) else {
+        panic!("unreadable api_key must fail the build");
+    };
+    let error = error.to_string();
+    assert!(
+        error.starts_with("llm.providers.router: api_key:"),
+        "{error}"
+    );
 }

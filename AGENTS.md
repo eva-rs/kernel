@@ -1,6 +1,6 @@
 # Правила для агентов
 
-Дизайн обязателен: `../docs/design/` (`00` инварианты I1–I14, `11` слои и операции, `06` протокол, `10` схема). Расходишься с ним — сначала правка дизайна.
+Источник истины — код; книга `docs/` описывает его. Меняешь поведение — правь соответствующую главу книги в том же изменении.
 
 ## Сборка
 
@@ -16,18 +16,18 @@
 | `protocol/` | `eva-protocol` | типы, `requests/<ns>.rs` (`Args/Ok/Err`), `errors/`, wire; без I/O |
 | `core/` | `eva-core` | `Session`, шаги, трейты неймспейсов, `Caller`, `Provider`, `prelude` |
 | `rpc/` | `eva-rpc` | кадры msgpack, uds/ws/wss, пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
-| `sdk/` | `eva-sdk` | `Module` → `Connected`, `Kernel = Session<RpcSession>` |
+| `sdk/` | `eva-sdk` | `Module` → `Connected`, `Kernel = Session<LiveSession>` (переживает реконнект) |
 | `providers/{openai,mock}` | `eva-provider-*` | `impl Provider` одного вендора |
 | `providers/all/` | `eva-providers` | `ProviderConfig` (тег `kind`), `AnyProvider`, `build` |
 | `services/kernel/` | `eva-kernel` | бинарь и библиотека ядра |
 
-## Слои (`11 §1`, `§9`)
+## Слои
 
 - Рёбра: `protocol ← core ← {rpc, providers/*}`, `rpc ← sdk`, `kernel ← {core, rpc, eva-providers, eva-hands}`. Обратных нет.
 - Авторизация только в `state/policy/`; транспорт лишь выводит `Caller` из токена.
-- SQL только в `db/`, хендлеры (`#[eva::endpoint]` + `#[fastrace::trace]`) только в `handling/`, строки БД → типы в `convert/`.
-- Одна реализация операции: RPC-метод и тул — обёртки. Новая операция: `protocol` → `core` → `handling`/`impls`/`policy` → строка в `tests/contract.rs`.
-- Vendor- и surface-строки только в `providers/*` (I14, `tests/vendor_lint.rs`).
+- SQL только в `db/`, хендлеры (`#[eva::endpoint]` + `#[fastrace::trace]`) только в `handling/`, строки БД → типы в `convert/` (`tests/k3_layer_lint.rs`).
+- Одна реализация операции: RPC-метод и тул — обёртки. Новая операция: `protocol` → `core` → `handling`/`impls`/`policy` → строки в `core/tests/namespaces.rs`, `tests/k3_policy_all.rs`, `tests/contract.rs`.
+- Vendor- и surface-строки только в `providers/*` (`tests/vendor_lint.rs`).
 - Операции поздних этапов отвечают `Aux::Unavailable` с `M2_PENDING`/`M3_PENDING`/`M4_PENDING`.
 
 ## Код

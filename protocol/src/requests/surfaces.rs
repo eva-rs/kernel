@@ -1,4 +1,5 @@
-//! Surface: модуль создаёт своё лицо сам, хозяин настраивает доверие.
+//! Surface — сущность ядра: модуль её только создаёт, ядро помнит создателя,
+//! хозяин настраивает доверие.
 
 use eva::data;
 
@@ -11,19 +12,14 @@ use crate::{
 pub mod create {
     use super::*;
 
+    /// Идемпотентно для создателя: свой `id` отдаётся как есть, `name`/`rules`
+    /// меняет `update`.
     #[data]
     pub struct Args {
         pub id: SurfaceId,
-        /// Обязательно, кроме `builtin`.
-        pub name: Option<String>,
+        pub name: String,
         /// Prompt-блок канала; многострочный, проверяется на маркеры реестра.
         pub rules: Option<String>,
-        /// Модуль рисует кнопки pending-запросов.
-        #[serde(default)]
-        pub ask: bool,
-        /// Занять встроенный `local` вместо создания нового.
-        #[serde(default)]
-        pub builtin: bool,
     }
 
     #[data]
@@ -95,8 +91,6 @@ pub mod update {
     pub struct Update {
         pub name: Patch<String>,
         pub rules: Patch<Option<String>>,
-        /// Состояние сессии, в базе не хранится.
-        pub ask: Patch<bool>,
         /// Доверие и модель ставит только хозяин.
         pub trusted: Patch<Option<bool>>,
         pub model: Patch<Option<ModelId>>,

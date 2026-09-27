@@ -10,7 +10,8 @@ use eva::data;
 pub struct SystemConfig {
     /// Корень всех путей глав.
     pub state_dir: PathBuf,
-    /// IANA-зона календарных суток (`09 §1`); `None` — зона хоста.
+    /// Зона календарных суток (`09 §1`): `UTC`/`Etc/UTC`, `±HH:MM` или имя IANA
+    /// из встроенной tz-базы; `None` — зона хоста, прочее роняет старт.
     pub tz: Option<String>,
 }
 

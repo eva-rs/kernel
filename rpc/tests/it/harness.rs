@@ -123,8 +123,8 @@ impl Harness {
         }
     }
 
-    pub async fn connect(&mut self, module: &str, token: &str) -> (RpcClient, Accepted) {
-        self.connect_with(hello(module, token), NoHandler).await
+    pub async fn connect(&mut self, token: &str) -> (RpcClient, Accepted) {
+        self.connect_with(hello(token), NoHandler).await
     }
 
     pub async fn connect_with<H: ModuleHandler>(
@@ -154,9 +154,8 @@ impl Harness {
     }
 }
 
-pub fn hello(module: &str, token: &str) -> Hello {
+pub fn hello(token: &str) -> Hello {
     Hello {
-        module: module.into(),
         version: "0.0.0".to_owned(),
         proto_version: ProtoVersion::CURRENT,
         token: token.into(),

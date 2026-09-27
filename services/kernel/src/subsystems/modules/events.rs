@@ -4,23 +4,22 @@
 
 use std::collections::BTreeSet;
 
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use eva_core::Caller;
 use eva_protocol::wire::events::{Publish, Topic};
 use eva_rpc::ModuleClient;
 
-use crate::{components::Components, shared::Shared, state::Policy};
+use crate::{bus::Published, components::Components, shared::Shared, state::Policy};
 
-/// Подписывается сразу, чтобы не потерять события после `welcome`; живёт,
-/// пока живо соединение.
+/// `bus` взят на handshake, до `welcome`; рассылка живёт, пока живо соединение.
 pub fn forward<C: Components>(
     shared: Shared<C>,
     caller: Caller,
     topics: BTreeSet<Topic>,
     module: ModuleClient,
+    mut bus: Receiver<Published>,
 ) {
-    let mut bus = shared.bus().subscribe();
     tokio::spawn(async move {
         let mut seq = 0;
         loop {

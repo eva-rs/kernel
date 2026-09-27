@@ -16,7 +16,6 @@ pub mod kernel;
 pub mod markers;
 pub mod providers;
 pub mod registry;
-pub mod serving;
 pub mod session;
 pub mod shared;
 pub mod state;

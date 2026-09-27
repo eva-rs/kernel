@@ -19,6 +19,7 @@ use crate::{
         stats::Metric,
         surfaces::SurfaceFilter,
     },
+    handling::text,
     state::{Policy, State},
 };
 
@@ -26,7 +27,8 @@ fn check_name(name: &str) -> AuxResult<()> {
     let ok = !name.trim().is_empty() && !name.chars().any(char::is_control);
     ok.true_or(Aux::Invalid(
         "person name must be a non-empty single line".into(),
-    ))
+    ))?;
+    text::chars("person name", name, text::NAME_MAX)
 }
 
 /// `p0` — актор ядра: его не переименовывают, не сливают и не трогают whitelist.
@@ -84,6 +86,12 @@ pub async fn Resolve<C: Components>(
         name,
     } = args;
     (!external_id.is_empty()).true_or(Aux::Invalid("external_id must not be empty".into()))?;
+    text::bytes("external_id", &external_id, text::EXTERNAL_ID_MAX)?;
+    for (what, value) in [("handle", &handle), ("name", &name)] {
+        if let Some(value) = value {
+            text::chars(what, value, text::NAME_MAX)?;
+        }
+    }
 
     let (now, zone) = (world.now(), shared.day_zone());
     let who = caller.clone();
@@ -91,11 +99,10 @@ pub async fn Resolve<C: Components>(
         .db()
         .write(move |tx| -> Response<_, resolve::Err> {
             let policy = Policy::new(&who);
-            let target = tx
-                .surfaces()
-                .get(&surface)?
-                .ok_or_else(|| Aux::NotFound(format!("surface {surface}")))?;
-            policy.surfaces().own(&target.surface_ref())?;
+            policy.surfaces().named(
+                format_args!("surface {surface}"),
+                tx.surfaces().get(&surface)?.map(|s| s.surface_ref()),
+            )?;
 
             let (person, created) = match tx.persons().identity_owner(&surface, &external_id)? {
                 Some(person) => (person, false),
@@ -109,7 +116,7 @@ pub async fn Resolve<C: Components>(
                     tx.persons()
                         .insert_identity(&person, &surface, &external_id, now)?;
                     tx.stats()
-                        .bump(Metric::PersonsCreated, surface.as_str(), now, zone)?;
+                        .bump(Metric::PersonsCreated, surface.as_str(), now, &zone)?;
                     (person, true)
                 }
             };

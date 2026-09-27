@@ -4,6 +4,7 @@ use eva_core::Caller;
 use eva_protocol::{
     errors::{Aux, AuxResult},
     requests::chats::update::Update,
+    types::SurfaceId,
 };
 
 use crate::{
@@ -24,6 +25,19 @@ impl ChatsPolicy<'_> {
     /// `chats.get/history_read`, `turns.*`, `blobs.*`, `stats.chat_spend`.
     pub fn read(self, chat: &ChatRef) -> AuxResult<()> {
         self.0.surfaces().own(&chat.surface)
+    }
+
+    /// `chats.get` по alias — до поиска чата: `Service` иначе узнавал бы,
+    /// есть ли у хозяина чат с этим внешним id на чужом surface.
+    pub fn alias(self, surface: &SurfaceId, owner: Option<&SurfaceRef>) -> AuxResult<()> {
+        match self.0.caller() {
+            Caller::Service { .. } => self
+                .0
+                .surfaces()
+                .named(format_args!("surface {surface}"), owner)
+                .map(drop),
+            Caller::Kernel | Caller::Client { .. } => Ok(()),
+        }
     }
 
     /// `chats.update`: `Service` — `title, pinned, alerted, kind, project,

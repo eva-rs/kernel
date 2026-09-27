@@ -57,7 +57,7 @@ async fn wss_with_extra_ca() {
         ..ClientOptions::default()
     };
     let (client, welcome) =
-        RpcClient::connect_with(&target, hello("mod", CLIENT_TOKEN), options, NoHandler)
+        RpcClient::connect_with(&target, hello(CLIENT_TOKEN), options, NoHandler)
             .await
             .unwrap();
     let accepted = tokio::time::timeout(Duration::from_secs(5), sessions.recv())
@@ -72,14 +72,25 @@ async fn wss_with_extra_ca() {
         .create()
         .call(create::Args {
             id: "tls".into(),
-            name: Some("tls".to_owned()),
+            name: "tls".to_owned(),
             rules: None,
-            ask: false,
-            builtin: false,
         })
         .await
         .unwrap();
     assert_eq!(surface.id.as_str(), "tls");
+
+    // Самоподписанное ядро не проходит публичные корни webpki.
+    let public = ClientOptions {
+        config: cfg.clone(),
+        ..ClientOptions::default()
+    };
+    let err = RpcClient::connect_with(&target, hello(CLIENT_TOKEN), public, NoHandler)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ConnectError::Transport(m) if m.contains("UnknownIssuer")),
+        "{err:?}"
+    );
 
     // Без CA сертификат ядра не проверяется.
     let untrusted = ClientOptions {
@@ -89,7 +100,7 @@ async fn wss_with_extra_ca() {
         },
         ..ClientOptions::default()
     };
-    let err = RpcClient::connect_with(&target, hello("mod", CLIENT_TOKEN), untrusted, NoHandler)
+    let err = RpcClient::connect_with(&target, hello(CLIENT_TOKEN), untrusted, NoHandler)
         .await
         .unwrap_err();
     assert!(matches!(err, ConnectError::Transport(_)), "{err:?}");

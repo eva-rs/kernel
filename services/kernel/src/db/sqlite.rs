@@ -1,5 +1,5 @@
-//! Соединения SQLite (`10 §7`): один писатель за async-мьютексом и пул
-//! читателей; каждый запрос — в `spawn_blocking`.
+//! Соединения SQLite (`10 §7`): один писатель за async-мьютексом и не более
+//! `db.readers` читателей; каждый запрос — в `spawn_blocking`.
 
 use std::{
     path::{Path, PathBuf},
@@ -8,6 +8,7 @@ use std::{
 };
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use tokio::sync::Semaphore;
 
 use crate::db::{Db, DbError, DbResult, Tx, math};
 
@@ -30,20 +31,23 @@ struct Pool {
     /// `None` — база в памяти: читатели делят соединение писателя.
     path: Option<PathBuf>,
     busy_timeout: Duration,
-    keep: usize,
-    idle: Mutex<Vec<Shared>>,
+    /// Разрешение — право на одно читающее соединение на время запроса.
+    permits: Arc<Semaphore>,
+    readers: usize,
+    idle: Mutex<Vec<Connection>>,
     memory: Option<Shared>,
 }
 
 pub const MEMORY: &str = ":memory:";
 
 impl Sqlite {
-    /// Открывает писателя; `readers` — сколько читающих соединений держать.
+    /// Открывает писателя; `readers` — потолок читающих соединений.
     pub async fn open(path: &Path, busy_timeout: Duration, readers: usize) -> DbResult<Self> {
         let memory = path.as_os_str() == MEMORY;
         let owned = path.to_path_buf();
         let conn = blocking(move || open_writer(&owned, memory, busy_timeout)).await??;
         let conn = Arc::new(Mutex::new(conn));
+        let readers = readers.max(1);
 
         Ok(Self {
             writer: Arc::new(Writer {
@@ -53,7 +57,8 @@ impl Sqlite {
             pool: Arc::new(Pool {
                 path: (!memory).then(|| path.to_path_buf()),
                 busy_timeout,
-                keep: readers,
+                permits: Arc::new(Semaphore::new(readers)),
+                readers,
                 idle: Mutex::new(Vec::new()),
                 memory: memory.then_some(conn),
             }),
@@ -63,27 +68,8 @@ impl Sqlite {
 
 impl Db for Sqlite {
     async fn reader(&self) -> DbResult<Reader> {
-        let pool = self.pool.clone();
-        let idle = match &pool.memory {
-            Some(conn) => Some(conn.clone()),
-            None => lock(&pool.idle).pop(),
-        };
-        let conn = match idle {
-            Some(conn) => conn,
-            None => {
-                let (path, busy) = (pool.path.clone(), pool.busy_timeout);
-                let conn = blocking(move || match path {
-                    Some(path) => open_reader(&path, busy),
-                    None => Err(DbError::Sqlite("reader of an in-memory database".into())),
-                })
-                .await??;
-                Arc::new(Mutex::new(conn))
-            }
-        };
-
         Ok(Reader {
-            conn: Some(conn),
-            pool,
+            pool: self.pool.clone(),
         })
     }
 
@@ -122,38 +108,55 @@ impl Db for Sqlite {
     }
 }
 
-/// Читающее соединение сессии; на drop возвращается в пул.
+/// Доступ сессии к пулу читателей: соединение берётся на время одного
+/// запроса, поэтому держать `Reader` долго — не значит держать соединение.
 pub struct Reader {
-    conn: Option<Shared>,
     pool: Arc<Pool>,
 }
 
 impl Reader {
-    /// Запрос на этом соединении в блокирующем потоке.
+    /// Запрос на свободном читающем соединении в блокирующем потоке.
     pub async fn run<T, E, F>(&self, f: F) -> Result<T, E>
     where
         T: Send + 'static,
         E: From<DbError> + Send + 'static,
         F: FnOnce(&Connection) -> Result<T, E> + Send + 'static,
     {
-        let Some(conn) = self.conn.clone() else {
-            return Err(DbError::Task("reader is already released".into()).into());
-        };
-        blocking(move || f(&lock(&conn))).await.map_err(E::from)?
+        let pool = self.pool.clone();
+        if let Some(conn) = pool.memory.clone() {
+            return blocking(move || f(&lock(&conn))).await.map_err(E::from)?;
+        }
+
+        let permit = tokio::time::timeout(pool.busy_timeout, pool.permits.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                DbError::Sqlite(format!(
+                    "all {} readers stayed busy for {:?}",
+                    pool.readers, pool.busy_timeout
+                ))
+            })?
+            .map_err(|e| DbError::Task(format!("reader pool: {e}")))?;
+        // Разрешение уходит в поток: отменённый запрос держит его, пока соединение занято.
+        blocking(move || {
+            let _permit = permit;
+            let conn = match lock(&pool.idle).pop() {
+                Some(conn) => conn,
+                None => pool.open().map_err(E::from)?,
+            };
+            let out = f(&conn);
+            lock(&pool.idle).push(conn);
+            out
+        })
+        .await
+        .map_err(E::from)?
     }
 }
 
-impl Drop for Reader {
-    fn drop(&mut self) {
-        let Some(conn) = self.conn.take() else {
-            return;
-        };
-        if self.pool.memory.is_some() {
-            return;
-        }
-        let mut idle = lock(&self.pool.idle);
-        if idle.len() < self.pool.keep {
-            idle.push(conn);
+impl Pool {
+    fn open(&self) -> DbResult<Connection> {
+        match &self.path {
+            Some(path) => open_reader(path, self.busy_timeout),
+            None => Err(DbError::Sqlite("reader of an in-memory database".into())),
         }
     }
 }
@@ -199,11 +202,18 @@ fn open_reader(path: &Path, busy: Duration) -> DbResult<Connection> {
     Ok(conn)
 }
 
+/// Штатная остановка: статистика планировщика и WAL в основной файл.
+pub fn close(conn: &Connection) -> DbResult<()> {
+    conn.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(PASSIVE);")?;
+    Ok(())
+}
+
 /// PRAGMA каждого соединения (`10 §7`).
 fn prepare(conn: &Connection, busy: Duration) -> DbResult<()> {
     conn.busy_timeout(busy)?;
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
-    math::install(conn)
+    math::install(conn)?;
+    super::stats::install_day(conn)
 }

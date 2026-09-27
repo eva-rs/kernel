@@ -617,3 +617,36 @@ async fn restore_id(
         .call(restore::Args { id: MemoryId(id) })
         .await
 }
+
+/// `memory.changed{ids, op: restore}` — клиентам без surface (`06 §7`):
+/// иначе клиент, показывающий память, не узнал бы о чужом restore.
+#[tokio::test]
+async fn restore_publishes_memory_changed() {
+    use eva_kernel::bus::Published;
+    use eva_protocol::wire::events::{Event, MemoryChanged, MemoryOp};
+
+    let h = common::start().await;
+    seed(&h).await;
+    let mut session = h.client_session().await;
+    let mut events = h.kernel.shared().bus().subscribe();
+
+    let res = restore_id(&mut session, 1).await;
+    assert!(res.is_err(), "a live row is not restorable: {res:?}");
+    assert!(
+        events.try_recv().is_err(),
+        "a refused restore publishes nothing"
+    );
+
+    restore_id(&mut session, 5).await.expect("restore");
+    let published: Vec<Published> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+    assert!(
+        matches!(
+            published.as_slice(),
+            [Published {
+                event: Event::MemoryChanged(MemoryChanged { ids, op: MemoryOp::Restore }),
+                surface: None,
+            }] if ids == &[MemoryId(5)]
+        ),
+        "{published:?}"
+    );
+}

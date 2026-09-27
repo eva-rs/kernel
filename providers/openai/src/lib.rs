@@ -13,7 +13,11 @@ mod stream;
 use std::{
     collections::BTreeMap,
     net::IpAddr,
-    sync::{Arc, PoisonError, RwLock},
+    sync::{
+        Arc, PoisonError, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 use eva::data;
@@ -29,7 +33,7 @@ use eva_protocol::types::{
     model::{ModelDecl, ProviderDecl},
 };
 
-pub use config::{ApiKey, CapsOverride, Config, Dialect, ModelOverride, OPENROUTER_BASE_URL};
+pub use config::{CapsOverride, Config, Dialect, ModelOverride, OPENROUTER_BASE_URL};
 pub use error::classify;
 pub use models::declare;
 pub use request::{normalize_schema, render};
@@ -49,20 +53,35 @@ impl BuildError {
     }
 }
 
+/// Сборка идёт на старте ядра: висящая сеть не должна держать его минутами.
+const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
+const LISTING_RETRY_MIN: Duration = Duration::from_secs(5);
+const LISTING_RETRY_MAX: Duration = Duration::from_secs(300);
+
 pub struct OpenAiProvider {
     config: Config,
+    /// Ключ прочитан один раз при сборке: файл секрета не перечитывается на каждый запрос.
+    api_key: Option<String>,
     base: Url,
     client: reqwest::Client,
     models: RwLock<Arc<BTreeMap<ModelId, ModelDecl>>>,
+    /// Каталог не прочитан, но повтор может помочь; снимает первый удачный `refresh`.
+    awaiting_listing: AtomicBool,
 }
 
 impl OpenAiProvider {
-    /// Собирает клиент и реестр. `openrouter` без `GET /models` не стартует —
-    /// каталог и есть источник окон и цен; `plain` живёт на поправках конфига.
+    /// Собирает клиент и реестр. Недоступный каталог сборку не валит: реестр
+    /// стартует с поправок конфига, каталог дочитывает [`Self::settle`]. Ошибка —
+    /// только у `openrouter` с отказом, который повтор не исправит (ключ, путь).
     pub async fn connect(config: Config) -> Result<Self, BuildError> {
         let provider = Self::unlisted(config)?;
         match provider.fetch_listing().await {
             Ok(listing) => provider.install(Some(&listing)),
+            Err(e) if retryable(&e) => {
+                log::warn!(base_url = provider.base.as_str(), error:% = e; "models listing unavailable, config models only until it answers");
+                provider.awaiting_listing.store(true, Ordering::Release);
+                provider.install(None);
+            }
             Err(e) if provider.config.dialect == Dialect::Plain => {
                 log::warn!(base_url = provider.base.as_str(), error:% = e; "models endpoint unavailable, config models only");
                 provider.install(None);
@@ -70,6 +89,32 @@ impl OpenAiProvider {
             Err(e) => return Err(BuildError::new(format!("GET /models: {e}"))),
         }
         Ok(provider)
+    }
+
+    /// Дочитывает каталог, не прочитанный на [`Self::connect`]: повторы с растущей
+    /// паузой до первого ответа. `true` — реестр сменился и реестр моделей ядра
+    /// пора пересобрать; `false` — дочитывать нечего или сервер отказал насовсем.
+    pub async fn settle(&self) -> bool {
+        let mut pause = LISTING_RETRY_MIN;
+        while self.awaiting_listing.load(Ordering::Acquire) {
+            match self.refresh().await {
+                Ok(()) => {
+                    log::info!(base_url = self.base.as_str(), models = self.registry().len(); "models listing loaded");
+                    return true;
+                }
+                Err(e) if retryable(&e) => {
+                    log::warn!(base_url = self.base.as_str(), error:% = e, retry_in:? = pause; "models listing still unavailable");
+                }
+                Err(e) => {
+                    log::error!(base_url = self.base.as_str(), error:% = e; "models listing refused, config models only");
+                    self.awaiting_listing.store(false, Ordering::Release);
+                    return false;
+                }
+            }
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(LISTING_RETRY_MAX);
+        }
+        false
     }
 
     /// Без сети: реестр из готового ответа `GET /models` (или только из конфига).
@@ -82,6 +127,18 @@ impl OpenAiProvider {
     fn unlisted(config: Config) -> Result<Self, BuildError> {
         let base = Url::parse(config.base_url.trim_end_matches('/'))
             .map_err(|e| BuildError::new(format!("base_url: {e}")))?;
+        // ключ читается до сборки клиента: ошибка конфига не зависит от процессного провайдера rustls
+        let api_key = match &config.api_key {
+            // файл секрета обычно кончается переводом строки, в заголовок он не годится
+            Some(secret) => Some(
+                secret
+                    .read()
+                    .map_err(|e| BuildError::new(format!("api_key: {e:#}")))?
+                    .trim_end()
+                    .to_owned(),
+            ),
+            None => None,
+        };
         let mut client = reqwest::Client::builder()
             .connect_timeout(*config.timeout)
             .read_timeout(*config.timeout);
@@ -95,9 +152,11 @@ impl OpenAiProvider {
             .map_err(|e| BuildError::new(format!("http client: {e}")))?;
         Ok(Self {
             config,
+            api_key,
             base,
             client,
             models: RwLock::default(),
+            awaiting_listing: AtomicBool::new(false),
         })
     }
 
@@ -105,6 +164,7 @@ impl OpenAiProvider {
     pub async fn refresh(&self) -> Result<(), ProviderError> {
         let listing = self.fetch_listing().await?;
         self.install(Some(&listing));
+        self.awaiting_listing.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -139,8 +199,8 @@ impl OpenAiProvider {
 
     fn authorized(&self, request: RequestBuilder) -> RequestBuilder {
         let mut request = request;
-        if let Some(key) = &self.config.api_key {
-            request = request.bearer_auth(key.expose());
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
         }
         if let Some(referer) = &self.config.referer {
             request = request.header("HTTP-Referer", referer.as_str());
@@ -167,7 +227,9 @@ impl OpenAiProvider {
     }
 
     async fn fetch_listing(&self) -> Result<Value, ProviderError> {
-        let response = self.send(self.client.get(self.url("models"))).await?;
+        let response = self
+            .send(self.client.get(self.url("models")).timeout(LISTING_TIMEOUT))
+            .await?;
         response
             .json()
             .await
@@ -229,6 +291,14 @@ impl Provider for OpenAiProvider {
             "count_tokens is not supported: ProviderDecl.count_tokens is false",
         ))
     }
+}
+
+/// Ключ, путь и тело запроса повтор не исправит; сеть, 5xx и мусор вместо JSON — может.
+fn retryable(error: &ProviderError) -> bool {
+    !matches!(
+        error.kind,
+        ProviderErrorKind::Auth | ProviderErrorKind::NotFound | ProviderErrorKind::Invalid
+    )
 }
 
 /// Порядок по `index`: сервер не обязан держать порядок входов.

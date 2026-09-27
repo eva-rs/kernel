@@ -1,23 +1,21 @@
 //! Сторона ядра: handshake (`06 §2`) и диспетчер операций на каждую сессию.
 
 use std::{
-    collections::HashMap,
-    net::IpAddr,
+    collections::BTreeMap,
+    net::{IpAddr, Ipv6Addr},
     pin::pin,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
 use futures::{SinkExt as _, StreamExt as _};
-use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore},
-    time::Instant,
-};
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use eva_core::{Caller, SessionMaker};
 use eva_protocol::wire::{
     Capabilities, ErrorCode, Frame, RpcError,
-    frame::{Request, Response},
+    frame::{Notify, Request, Response},
     handshake::{Hello, ProtoVersion, Warning, Welcome},
     method,
 };
@@ -43,16 +41,16 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// Соединений до `welcome` на сервер.
 const MAX_HANDSHAKES: usize = 64;
 
-/// Соединений до `welcome` с одного IP.
-const MAX_HANDSHAKES_PER_IP: usize = 8;
+/// Соединений до `welcome` из одной сети пира (`Net`).
+const MAX_HANDSHAKES_PER_NET: usize = 8;
 
-/// Байт, которые пир может прислать до `welcome`: `hello` с capabilities
-/// в него укладывается, а кадр в `max_frame` без токена — нет.
-const PREAUTH_READ: usize = 1 << 20;
+/// Байт кадрирования сверх `max_hello` до `welcome`: префикс длины uds,
+/// заголовок ws-кадра.
+const HELLO_FRAMING: u64 = 64;
 
-/// Проверка `hello` ядром: токен → `welcome` (бит `kind` в нём задаёт
-/// caller сессии), зарезервированные имена, вытеснение прежней сессии того
-/// же модуля. Отказ уходит модулю ответом на `hello`, соединение закрывается.
+/// Проверка `hello` ядром: токен → `welcome` (`module` и `kind` в нём задают
+/// caller сессии), вытеснение прежней сессии того же модуля. Отказ уходит
+/// модулю ответом на `hello`, соединение закрывается.
 pub trait Authenticator: Send + Sync + 'static {
     fn authenticate(&self, hello: &Hello)
     -> impl Future<Output = Result<Welcome, RpcError>> + Send;
@@ -64,7 +62,7 @@ pub struct Accepted {
     pub peer: Peer,
     pub hello: Hello,
     pub welcome: Welcome,
-    /// Из `welcome.kind` и `hello.module`; прав больше провод не несёт.
+    /// Из `welcome.kind` и `welcome.module`; прав больше провод не несёт.
     pub caller: Caller,
 }
 
@@ -133,12 +131,23 @@ where
     /// даже с недоставленным `welcome` — уже закрытой: заведённое им
     /// состояние прибирает владелец по закрытию, как у любой сессии.
     async fn accept_by(&self, mut conn: Conn, deadline: Instant) -> Result<Accepted, RpcError> {
-        let cfg = &self.inner.cfg;
-        // До `welcome` пир не доказал права на кадры в `max_frame`.
-        conn.meter
-            .cap_reads(u64::try_from(PREAUTH_READ).unwrap_or(u64::MAX));
+        let heard = self.hear(&mut conn, deadline).await;
+        self.settle(conn, heard).await
+    }
 
-        let (id, hello, unknown) = match self.read_hello(&mut conn, deadline).await {
+    /// Первый кадр под бюджетом чтения: до `welcome` пир не доказал права
+    /// на кадры в `max_frame`.
+    async fn hear(&self, conn: &mut Conn, deadline: Instant) -> Heard {
+        let max = u64::try_from(self.inner.cfg.max_hello()).unwrap_or(u64::MAX);
+        conn.meter.cap_reads(max.saturating_add(HELLO_FRAMING));
+        self.read_hello(conn, deadline).await
+    }
+
+    /// `authenticate`, окно и `welcome`. Прерывать нельзя: `authenticate`
+    /// заводит состояние сессии, которое прибирает только владелец `Accepted`.
+    async fn settle(&self, mut conn: Conn, heard: Heard) -> Result<Accepted, RpcError> {
+        let cfg = &self.inner.cfg;
+        let (id, hello, unknown) = match heard {
             Ok(hello) => hello,
             Err((id, error)) => return Err(reject(conn, id, error).await),
         };
@@ -147,7 +156,6 @@ where
             Ok(welcome) => welcome,
             Err(error) => {
                 log::info!(
-                    module = codec::shown(hello.module.as_str()).as_str(),
                     remote = conn.remote.as_str(),
                     code:% = error.code,
                     error = codec::shown(&error.message).as_str();
@@ -166,12 +174,13 @@ where
                 message: String::from("unknown capability, ignored"),
             }));
 
-        let caller = Caller::from_token(welcome.kind, hello.module.clone());
+        let caller = Caller::from_token(welcome.kind, welcome.module.clone());
         let resume = hello.resume.as_ref().map(|r| &r.session_id);
         let window = self
             .inner
             .windows
-            .open(&welcome.session_id, &hello.module, resume);
+            .open(&welcome.session_id, &welcome.module, resume);
+        welcome.resumed = window.resumed();
 
         let reply = codec::encode(&welcome)
             .map_err(|e| RpcError::new(ErrorCode::Internal, e))
@@ -199,16 +208,17 @@ where
 
         match delivered {
             Ok(()) => log::info!(
-                module:% = hello.module,
+                module:% = welcome.module,
                 session:% = welcome.session_id,
                 kind:% = welcome.kind,
                 remote = remote.as_str(),
-                resumed = hello.resume.is_some();
+                resume = hello.resume.is_some(),
+                resumed = welcome.resumed;
                 "module session opened"
             ),
             Err(error) => {
                 log::info!(
-                    module:% = hello.module,
+                    module:% = welcome.module,
                     session:% = welcome.session_id,
                     remote = remote.as_str(),
                     error:% = error;
@@ -228,11 +238,7 @@ where
 
     /// Первый кадр — `request hello` поддерживаемой версии; иначе `id` для
     /// ответа (если запрос был) и причина закрытия.
-    async fn read_hello(
-        &self,
-        conn: &mut Conn,
-        deadline: Instant,
-    ) -> Result<HelloRequest, (Option<u64>, RpcError)> {
+    async fn read_hello(&self, conn: &mut Conn, deadline: Instant) -> Heard {
         let cfg = &self.inner.cfg;
 
         let raw = match tokio::time::timeout_at(deadline, conn.rx.next()).await {
@@ -241,6 +247,15 @@ where
                 return Err((None, error));
             }
             Ok(None) => return Err((None, codec::unavailable("closed before hello"))),
+            // Отказ по существу, а не обрыв: иначе модуль с крупным каталогом
+            // тулов переподключался бы вечно.
+            Ok(Some(Err(_))) if conn.meter.exhausted() => {
+                let error = RpcError::invalid_params(format_args!(
+                    "hello exceeds max_hello of {} bytes",
+                    cfg.max_hello()
+                ));
+                return Err((None, error));
+            }
             Ok(Some(Err(e))) => return Err((None, codec::unavailable(e))),
             Ok(Some(Ok(raw))) => raw,
         };
@@ -286,8 +301,10 @@ where
     /// Цикл приёма: TLS/Upgrade и handshake — в своей задаче на соединение,
     /// принятые сессии — в `on_session`. TLS, Upgrade и `hello` укладываются
     /// в один `handshake_timeout`; соединений до `welcome` не больше
-    /// `MAX_HANDSHAKES` (и `MAX_HANDSHAKES_PER_IP` с одного адреса), лишние
-    /// закрываются сразу — иначе молчащие сокеты без токена выбрали бы дескрипторы.
+    /// `MAX_HANDSHAKES` (и `MAX_HANDSHAKES_PER_NET` из одной сети). Сверх
+    /// лимита новичок вытесняет старейшее соединение, ещё не приславшее
+    /// `hello`: молчащие сокеты без токена лишь задерживают модули, а не
+    /// запирают им вход.
     pub async fn serve<F>(
         &self,
         listener: Listener,
@@ -321,18 +338,33 @@ where
             let on_session = on_session.clone();
             tokio::spawn(async move {
                 let deadline = Instant::now() + *server.inner.cfg.handshake_timeout;
-                let conn = match tokio::time::timeout_at(deadline, raw.upgrade()).await {
-                    Ok(Ok(conn)) => conn,
-                    Ok(Err(e)) => {
-                        log::debug!(error:% = e; "transport handshake failed");
-                        return;
-                    }
-                    Err(_) => {
-                        log::debug!("transport handshake timed out");
-                        return;
-                    }
+                let hear = async {
+                    let mut conn = match tokio::time::timeout_at(deadline, raw.upgrade()).await {
+                        Ok(Ok(conn)) => conn,
+                        Ok(Err(e)) => {
+                            log::debug!(error:% = e; "transport handshake failed");
+                            return None;
+                        }
+                        Err(_) => {
+                            log::debug!("transport handshake timed out");
+                            return None;
+                        }
+                    };
+                    let heard = server.hear(&mut conn, deadline).await;
+                    Some((conn, heard))
                 };
-                let accepted = server.accept_by(conn, deadline).await;
+                let (conn, heard) = tokio::select! {
+                    () = pass.evicted() => {
+                        log::debug!(ip:? = pass.ip; "silent connection evicted before hello");
+                        return;
+                    }
+                    heard = hear => match heard {
+                        Some(heard) => heard,
+                        None => return,
+                    },
+                };
+                pass.spoke();
+                let accepted = server.settle(conn, heard).await;
                 drop(pass);
                 if let Ok(accepted) = accepted {
                     on_session(accepted);
@@ -342,38 +374,88 @@ where
     }
 }
 
-/// Места для соединений до `welcome`: всего и на один IP.
+/// Сеть пира для лимита до `welcome`: IPv4 — адрес, IPv6 — префикс /64,
+/// который обычно целиком у одного хоста.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Net(IpAddr);
+
+impl Net {
+    fn of(ip: IpAddr) -> Self {
+        match ip.to_canonical() {
+            IpAddr::V4(v4) => Self(IpAddr::V4(v4)),
+            IpAddr::V6(v6) => {
+                let prefix = u128::from(v6) & !u128::from(u64::MAX);
+                Self(IpAddr::V6(Ipv6Addr::from(prefix)))
+            }
+        }
+    }
+}
+
+/// Места для соединений до `welcome`: всего и на одну сеть.
 struct Gate {
-    total: Arc<Semaphore>,
-    per_ip: Mutex<HashMap<IpAddr, usize>>,
+    state: Mutex<GateState>,
+}
+
+#[derive(Default)]
+struct GateState {
+    next: u64,
+    /// Места по возрасту: первое — старейшее.
+    seats: BTreeMap<u64, Seat>,
+}
+
+struct Seat {
+    net: Option<Net>,
+    evict: CancellationToken,
+    /// `hello` ещё не пришёл: место можно отдать новичку.
+    silent: bool,
 }
 
 impl Gate {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            total: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
-            per_ip: Mutex::default(),
+            state: Mutex::default(),
         })
     }
 
-    fn per_ip(&self) -> MutexGuard<'_, HashMap<IpAddr, usize>> {
-        self.per_ip.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, GateState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Место новичку; при исчерпанном лимите — за счёт старейшего молчащего:
+    /// из его же сети, если она выбрала свою долю, иначе любого.
     fn admit(self: &Arc<Self>, ip: Option<IpAddr>) -> Option<Pass> {
-        let permit = self.total.clone().try_acquire_owned().ok()?;
-        if let Some(ip) = ip {
-            let mut per_ip = self.per_ip();
-            let count = per_ip.entry(ip).or_default();
-            if *count >= MAX_HANDSHAKES_PER_IP {
-                return None;
+        let net = ip.map(Net::of);
+        let kin = |seat: &Seat| net.is_some() && seat.net == net;
+        let mut state = self.lock();
+        let crowded =
+            state.seats.values().filter(|&seat| kin(seat)).count() >= MAX_HANDSHAKES_PER_NET;
+        if crowded || state.seats.len() >= MAX_HANDSHAKES {
+            let victim = state
+                .seats
+                .iter()
+                .find(|(_, seat)| seat.silent && (!crowded || kin(seat)))
+                .map(|(&key, _)| key)?;
+            if let Some(seat) = state.seats.remove(&victim) {
+                seat.evict.cancel();
             }
-            *count += 1;
         }
+
+        let key = state.next;
+        state.next += 1;
+        let evict = CancellationToken::new();
+        state.seats.insert(
+            key,
+            Seat {
+                net,
+                evict: evict.clone(),
+                silent: true,
+            },
+        );
         Some(Pass {
             gate: self.clone(),
+            key,
             ip,
-            _permit: permit,
+            evict,
         })
     }
 }
@@ -381,31 +463,44 @@ impl Gate {
 /// Место соединения в `Gate` до конца handshake.
 struct Pass {
     gate: Arc<Gate>,
+    key: u64,
     ip: Option<IpAddr>,
-    _permit: OwnedSemaphorePermit,
+    evict: CancellationToken,
 }
 
-impl Drop for Pass {
-    fn drop(&mut self) {
-        let Some(ip) = self.ip else {
-            return;
-        };
-        let mut per_ip = self.gate.per_ip();
-        if let Some(count) = per_ip.get_mut(&ip) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                per_ip.remove(&ip);
-            }
+impl Pass {
+    async fn evicted(&self) {
+        self.evict.cancelled().await;
+    }
+
+    /// Пир прислал `hello`: впереди `authenticate`, его не прерывают.
+    fn spoke(&self) {
+        if let Some(seat) = self.gate.lock().seats.get_mut(&self.key) {
+            seat.silent = false;
         }
     }
 }
 
-/// Ответ на `hello` ошибкой (если есть `id`) и закрытие.
+impl Drop for Pass {
+    fn drop(&mut self) {
+        self.gate.lock().seats.remove(&self.key);
+    }
+}
+
+/// Ответ на `hello` ошибкой и закрытие; без `id` причина уходит
+/// уведомлением `close`, ведь у uds нет close-кадра транспорта.
 async fn reject(mut conn: Conn, id: Option<u64>, error: RpcError) -> RpcError {
     let close = async {
-        if let Some(id) = id
-            && let Ok(raw) = codec::encode_frame(&Frame::Response(Response::err(id, error.clone())))
-        {
+        let frame = match id {
+            Some(id) => Some(Frame::Response(Response::err(id, error.clone()))),
+            None => codec::encode(&error).ok().map(|params| {
+                Frame::Notify(Notify {
+                    method: method::CLOSE.to_owned(),
+                    params,
+                })
+            }),
+        };
+        if let Some(raw) = frame.and_then(|frame| codec::encode_frame(&frame).ok()) {
             _ = conn.tx.send(Outbound::Frame(raw)).await;
         }
         _ = conn.tx.send(Outbound::Close(Some(error.clone()))).await;
@@ -417,6 +512,9 @@ async fn reject(mut conn: Conn, id: Option<u64>, error: RpcError) -> RpcError {
 
 /// Разобранный `hello`: id запроса, сам `hello` и незнакомые ключи capabilities.
 type HelloRequest = (u64, Hello, Vec<String>);
+
+/// `hello` либо `id` для ответа (если запрос был) и причина закрытия.
+type Heard = Result<HelloRequest, (Option<u64>, RpcError)>;
 
 /// Ключи capabilities как пришли: serde молча пропускает незнакомые поля,
 /// а модулю нужно знать, что ядро их не поняло (`06 §8`).
@@ -435,4 +533,65 @@ fn unknown_capabilities(params: &[u8]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn net(ip: &str) -> Net {
+        Net::of(ip.parse().unwrap())
+    }
+
+    fn ip(ip: &str) -> Option<IpAddr> {
+        Some(ip.parse().unwrap())
+    }
+
+    #[test]
+    fn ipv6_hosts_share_a_net_by_64() {
+        assert_eq!(net("2001:db8::1"), net("2001:db8::2"));
+        assert_eq!(net("2001:db8::1"), net("2001:db8::ffff:ffff:ffff:ffff"));
+        assert_ne!(net("2001:db8::1"), net("2001:db8:0:1::1"));
+        assert_ne!(net("192.0.2.1"), net("192.0.2.2"));
+        // IPv4 через dual-stack сокет — всё тот же адрес, а не одна /64 на всех.
+        assert_eq!(net("::ffff:192.0.2.1"), net("192.0.2.1"));
+        assert_ne!(net("::ffff:192.0.2.1"), net("::ffff:192.0.2.2"));
+    }
+
+    #[test]
+    fn crowded_net_evicts_its_own_oldest() {
+        let gate = Gate::new();
+        let other = gate.admit(ip("192.0.2.9")).unwrap();
+        let own: Vec<_> = (0..MAX_HANDSHAKES_PER_NET)
+            .map(|n| gate.admit(ip(&format!("2001:db8::{n}"))).unwrap())
+            .collect();
+        let newcomer = gate.admit(ip("2001:db8::ff")).unwrap();
+
+        assert!(own[0].evict.is_cancelled());
+        assert!(own[1..].iter().all(|pass| !pass.evict.is_cancelled()));
+        assert!(!other.evict.is_cancelled());
+        assert!(!newcomer.evict.is_cancelled());
+    }
+
+    #[test]
+    fn full_gate_evicts_the_oldest_silent_only() {
+        let gate = Gate::new();
+        let held: Vec<_> = (0..MAX_HANDSHAKES)
+            .map(|n| gate.admit(ip(&format!("10.0.{n}.1"))).unwrap())
+            .collect();
+        held[0].spoke();
+
+        let newcomer = gate.admit(ip("192.0.2.1")).unwrap();
+        assert!(
+            !held[0].evict.is_cancelled(),
+            "authenticating is not evicted"
+        );
+        assert!(held[1].evict.is_cancelled());
+
+        for pass in held.iter().chain([&newcomer]) {
+            pass.spoke();
+        }
+        assert!(gate.admit(ip("192.0.2.2")).is_none());
+        assert!(gate.admit(None).is_none());
+    }
 }

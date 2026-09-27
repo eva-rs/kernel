@@ -22,7 +22,7 @@ use eva_rpc::{ClientOptions, ConnectError, NoHandler, RpcClient, codec, config::
 
 use crate::{
     harness::{Harness, Via, config, hello, ms},
-    kernel::{CLIENT_TOKEN, FLOOD_ITEMS, SERVICE_TOKEN, chat, chat_id, item},
+    kernel::{CLIENT, CLIENT_TOKEN, FLOOD_ITEMS, SERVICE, SERVICE_TOKEN, chat, chat_id, item},
 };
 
 macro_rules! both {
@@ -64,16 +64,14 @@ both! {
 fn create_args(id: &str) -> create::Args {
     create::Args {
         id: id.into(),
-        name: Some(id.to_owned()),
+        name: id.to_owned(),
         rules: None,
-        ask: false,
-        builtin: false,
     }
 }
 
 async fn unary_ok(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
     let mut session = client.session();
 
     let create::Ok { surface } = session
@@ -97,7 +95,7 @@ async fn unary_ok(via: Via) {
 
 async fn spec_error(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
 
     let err = client
         .session()
@@ -116,7 +114,7 @@ async fn spec_error(via: Via) {
 
 async fn aux_error(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
 
     let err = client
         .session()
@@ -137,7 +135,7 @@ fn attach_args(chat: i64) -> attach::Args {
 
 async fn stream_items(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
     let mut session = client.session();
 
     let items: Vec<_> = session
@@ -183,7 +181,7 @@ async fn stream_items(via: Via) {
 
 async fn cancel_on_drop(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
 
     let mut items = client
         .session()
@@ -209,7 +207,7 @@ fn body(parts: Vec<Vec<u8>>) -> ByteStream {
 
 async fn upload(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
     let mut session = client.session();
 
     // Больше `blob_chunk`: клиент режет на несколько `stream_item`.
@@ -262,7 +260,7 @@ async fn upload(via: Via) {
 
 async fn unknown_method(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
 
     let empty: Payload = codec::encode(&serde_json::json!({})).unwrap();
     let err = client.peer().call("nope.op", empty).await.unwrap_err();
@@ -292,23 +290,11 @@ async fn bad_token(via: Via) {
         other => panic!("expected rejection, got {other:?}"),
     };
 
-    let err = rejected(
-        RpcClient::connect_with(&h.target, hello("mod", "stolen"), h.options(), NoHandler).await,
-    );
+    let err =
+        rejected(RpcClient::connect_with(&h.target, hello("stolen"), h.options(), NoHandler).await);
     assert_eq!(err.code, ErrorCode::Unauthorized);
 
-    let err = rejected(
-        RpcClient::connect_with(
-            &h.target,
-            hello("kernel", CLIENT_TOKEN),
-            h.options(),
-            NoHandler,
-        )
-        .await,
-    );
-    assert_eq!(err.code, ErrorCode::Unauthorized);
-
-    let mut old = hello("mod", CLIENT_TOKEN);
+    let mut old = hello(CLIENT_TOKEN);
     old.proto_version.major += 1;
     let err = rejected(RpcClient::connect_with(&h.target, old, h.options(), NoHandler).await);
     assert_eq!(err.code, ErrorCode::ProtoVersion);
@@ -317,14 +303,18 @@ async fn bad_token(via: Via) {
 async fn caller_from_welcome(via: Via) {
     let mut h = Harness::start(via).await;
 
-    let (client, accepted) = h.connect("phone", CLIENT_TOKEN).await;
+    // Имени модуля в `hello` нет: id и caller — из записи токена.
+    let (client, accepted) = h.connect(CLIENT_TOKEN).await;
     assert_eq!(client.caller(), &accepted.caller);
     assert!(client.caller().is_owner());
-    assert_eq!(client.caller().module().map(|m| m.as_str()), Some("phone"));
+    assert_eq!(client.welcome().module.as_str(), CLIENT);
+    assert_eq!(client.caller().module().map(|m| m.as_str()), Some(CLIENT));
 
-    let (service, accepted) = h.connect("bridge", SERVICE_TOKEN).await;
+    let (service, accepted) = h.connect(SERVICE_TOKEN).await;
     assert_eq!(service.caller(), &accepted.caller);
     assert!(!service.caller().is_owner());
+    assert_eq!(accepted.welcome.module.as_str(), SERVICE);
+    assert_eq!(service.caller().module().map(|m| m.as_str()), Some(SERVICE));
 
     // Токен решает, кто ты: чужого caller'а клиент не выдаст.
     let spoofed = service
@@ -346,7 +336,7 @@ async fn backpressure_per_stream(via: Via) {
         ..config()
     };
     let mut h = Harness::with(via, cfg).await;
-    let (client, accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, accepted) = h.connect(CLIENT_TOKEN).await;
     let mut session = client.session();
 
     session
@@ -412,7 +402,7 @@ async fn max_frame_closes(via: Via) {
     // Клиенту лимит больше, чем серверу: кадр уходит и рвёт соединение у сервера.
     let (client, _) = RpcClient::connect_with(
         &h.target,
-        hello("mod", CLIENT_TOKEN),
+        hello(CLIENT_TOKEN),
         ClientOptions::default(),
         NoHandler,
     )
@@ -421,7 +411,7 @@ async fn max_frame_closes(via: Via) {
     let accepted = h.accepted().await;
 
     let mut args = create_args("x");
-    args.name = Some("x".repeat(100 * 1024));
+    args.name = "x".repeat(100 * 1024);
     let err = client
         .session()
         .surfaces()
@@ -438,7 +428,7 @@ async fn max_frame_closes(via: Via) {
     assert_eq!(reason.code, ErrorCode::InvalidParams);
 
     // Свой лимит клиент проверяет до отправки: соединение живо.
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
     let too_big: Payload = codec::encode(&"x".repeat(100 * 1024)).unwrap();
     let err = client
         .peer()
@@ -451,7 +441,7 @@ async fn max_frame_closes(via: Via) {
 
 async fn supersede_ends_streams(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, accepted) = h.connect(CLIENT_TOKEN).await;
 
     let mut items = client
         .session()
@@ -494,10 +484,9 @@ async fn request_timeout_keeps_mutation(via: Via) {
         },
         ..ClientOptions::default()
     };
-    let (client, _) =
-        RpcClient::connect_with(&h.target, hello("mod", CLIENT_TOKEN), options, NoHandler)
-            .await
-            .unwrap();
+    let (client, _) = RpcClient::connect_with(&h.target, hello(CLIENT_TOKEN), options, NoHandler)
+        .await
+        .unwrap();
     let _accepted = h.accepted().await;
     let mut session = client.session();
 
@@ -541,10 +530,9 @@ async fn heartbeat_keeps_long_call(via: Via) {
         },
         ..ClientOptions::default()
     };
-    let (client, _) =
-        RpcClient::connect_with(&h.target, hello("mod", CLIENT_TOKEN), options, NoHandler)
-            .await
-            .unwrap();
+    let (client, _) = RpcClient::connect_with(&h.target, hello(CLIENT_TOKEN), options, NoHandler)
+        .await
+        .unwrap();
     let _accepted = h.accepted().await;
 
     let created = client
@@ -559,7 +547,7 @@ async fn heartbeat_keeps_long_call(via: Via) {
 
 async fn upload_of_small_pieces(via: Via) {
     let mut h = Harness::start(via).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
 
     // Куски по 4 KiB склеиваются в чанки `blob_chunk`: буфер получателя
     // в 64 кадра не переполняется.
@@ -598,10 +586,9 @@ async fn idle_stream_times_out(via: Via) {
         },
         ..ClientOptions::default()
     };
-    let (client, _) =
-        RpcClient::connect_with(&h.target, hello("mod", CLIENT_TOKEN), options, NoHandler)
-            .await
-            .unwrap();
+    let (client, _) = RpcClient::connect_with(&h.target, hello(CLIENT_TOKEN), options, NoHandler)
+        .await
+        .unwrap();
     let _accepted = h.accepted().await;
 
     let mut items = client
@@ -635,7 +622,7 @@ async fn heartbeat_keeps_stream(via: Via) {
         ..config()
     };
     let mut h = Harness::with(via, cfg).await;
-    let (client, _accepted) = h.connect("mod", CLIENT_TOKEN).await;
+    let (client, _accepted) = h.connect(CLIENT_TOKEN).await;
 
     let mut items = client
         .session()

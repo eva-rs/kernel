@@ -3,7 +3,9 @@
 use eva::{data, time::Timestamp};
 use rusqlite::{Connection, OptionalExtension as _, Row, named_params};
 
-use eva_protocol::types::{Effort, ModelId, ModuleId, SurfaceId, Thinking, surface::Builtin};
+use eva_protocol::types::{
+    ChatId, Effort, ModelId, ModuleId, SurfaceId, Thinking, surface::Builtin,
+};
 
 use crate::db::{
     DbResult,
@@ -140,6 +142,19 @@ impl Surfaces<'_> {
             (builtin_id(builtin), name, Text(builtin), Ts(now)),
         )?;
         Ok(())
+    }
+
+    /// Чаты, чей `trusted_chat` решает сам surface: ни чат, ни его папка trust не задают.
+    pub fn inheriting_chats(&self, id: &SurfaceId) -> DbResult<Vec<ChatId>> {
+        let mut stmt = self.0.prepare(
+            "SELECT c.id FROM chats c JOIN folders f ON f.id = c.folder_id
+             WHERE f.surface_id = ?1 AND f.trusted IS NULL AND c.trusted IS NULL
+             ORDER BY c.id",
+        )?;
+        let rows = stmt
+            .query_map([id.as_str()], |row| row.get(0).map(ChatId))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
     }
 
     /// Изменяемые колонки строки; `id`, `module`, `builtin`, `created_at` неизменны.

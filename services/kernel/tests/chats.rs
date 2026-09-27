@@ -516,16 +516,19 @@ async fn list_filters_and_pages_by_activity() {
         .expect("by surface");
     assert_eq!(found.len(), 1);
 
-    let list::Ok { found } = svc
+    let res = svc
         .chats()
         .list()
         .call(list::Args {
             surface: Some(SurfaceId::from(OTHER)),
             ..Default::default()
         })
-        .await
-        .expect("foreign filter");
-    assert!(found.is_empty(), "the visibility filter wins");
+        .await;
+    assert_eq!(
+        outcome(&res),
+        Outcome::Forbidden,
+        "a foreign filter: {res:?}"
+    );
 
     let list::Ok { found } = client
         .chats()
@@ -1361,7 +1364,93 @@ async fn database_failure_is_aux_db() {
         .get()
         .call(get::Args { chat: chat.into() })
         .await;
-    assert_eq!(outcome(&res), Outcome::Other, "{res:?}");
+    assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
     let res = update(&mut client, chat, update::Update::default()).await;
-    assert_eq!(outcome(&res), Outcome::Other, "{res:?}");
+    assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
+}
+
+/// Сервис не раздувает базу ядра строками до `max_frame`: заголовок, alias и
+/// пути чата ограничены (`handling::text`).
+#[tokio::test]
+async fn oversized_strings_are_invalid() {
+    let h = common::start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let huge = "x".repeat(100_000);
+
+    let cases = [
+        (
+            "title",
+            create::Args {
+                title: Some(huge.clone()),
+                ..create_args(SVC)
+            },
+        ),
+        (
+            "external_id",
+            create::Args {
+                external_id: Some(huge.clone()),
+                ..create_args(SVC)
+            },
+        ),
+        (
+            "project",
+            create::Args {
+                project: Some(huge.clone()),
+                ..create_args(SVC)
+            },
+        ),
+        (
+            "workdir",
+            create::Args {
+                workdir: Some(huge.clone()),
+                ..create_args(SVC)
+            },
+        ),
+    ];
+    for (what, args) in cases {
+        let res = svc.chats().create().call(args).await;
+        assert_eq!(outcome(&res), Outcome::Invalid, "create {what}: {res:?}");
+    }
+
+    let chat = new_chat(&mut svc, create_args(SVC)).await.id;
+    let res = svc
+        .chats()
+        .update()
+        .call(update::Args {
+            chat,
+            update: update::Update {
+                title: Patch::Change(Some("t".repeat(257))),
+                ..Default::default()
+            },
+        })
+        .await;
+    assert_eq!(outcome(&res), Outcome::Invalid, "update title: {res:?}");
+    let res = svc
+        .chats()
+        .update()
+        .call(update::Args {
+            chat,
+            update: update::Update {
+                title: Patch::Change(Some("т".repeat(256))),
+                workdir: Patch::Change(Some(huge)),
+                ..Default::default()
+            },
+        })
+        .await;
+    assert_eq!(outcome(&res), Outcome::Invalid, "update workdir: {res:?}");
+
+    let renamed = svc
+        .chats()
+        .update()
+        .call(update::Args {
+            chat,
+            update: update::Update {
+                title: Patch::Change(Some("т".repeat(256))),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("256 characters fit, whatever their bytes")
+        .chat;
+    assert_eq!(renamed.title.map(|t| t.chars().count()), Some(256));
 }
