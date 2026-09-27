@@ -1,5 +1,30 @@
 # Changelog
 
+## API на eva-api-builder — 2026-09-27
+
+Один список операций вместо нескольких сверяемых копий. Провод не изменился: те же методы, кадры, msgpack-тела и идемпотентность — выпущенные клиенты разницы не видят.
+
+### Библиотечное API (ломает Rust-код модулей)
+
+- Новый крейт `eva-kernel-macros` (`macros/`): `endpoints!` на `eva-api-builder` фреймворка — единственный список операций с флагами `mutating`, `stream`, `upload`. Из него трейты неймспейсов и X-макро `eva_core::for_each_op!`.
+- `CallStep` — `eva::handling::CallStep` (реэкспорт `eva_core::CallStep`). `StreamStep` и `UploadStep` удалены: поток и загрузка зовутся `.call(args)`.
+- Поток (`turns.attach`, `blobs.get`): `.open(args)` → `.call(args)`, `Ok = Items<Item, Err>`.
+- Загрузка (`blobs.put`): `.call(args, body)` → `.call(put::Args { meta, body })`; прежние поля `put::Args` теперь `put::Meta`, она и идёт в `params`.
+- `Items` и `ByteStream` — типы `eva_protocol::requests` (прежние пути в `eva_core` остались реэкспортом).
+
+### Внутри
+
+- `eva-rpc`: таблица диспетчера и `RpcSession` — колбэки над `for_each_op!`; `ops.rs` удалён.
+- `eva-sdk`: `LiveSession` собрана по тому же списку.
+- `eva-kernel`: `impls/` — строка `project!` на операцию над `CallStep` фреймворка.
+- Сигналы ловит `Supervisor` фреймворка: первый SIGINT/SIGTERM сворачивает компоненты штатно (модули, затем сброс WAL), второй обрывает компоненты. Код выхода в обоих случаях 0 (второй сигнал раньше выходил сразу с 1); процесс ждёт уже начатые блокирующие операции.
+- Фреймворк `eva` 5e911fc, toolchain rust 1.95.
+
+### Тесты
+
+- Удалены сверки копий списка: сверщик меток SDK и таблица «операция → вид» в `core/tests/namespaces.rs` (она повторяла список). Вид операции теперь задаёт только флаг в `macros/src/lib.rs`, тестом он не сверяется. Совпадение таблицы диспетчера с `NAMESPACES` по-прежнему проверяет `rpc/tests/it/methods.rs`.
+- `eva-protocol`: `params` `blobs.put` — голая `Meta`, как у выпущенных клиентов.
+
 ## M1 — 2026-09-26
 
 Библиотечный слой, транспорт модулей и SDK.

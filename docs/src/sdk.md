@@ -104,6 +104,8 @@ let chats::list::Ok { found } = kernel
     .await?;
 ```
 
+Поток и загрузка зовутся тем же `.call(args)`: у `blobs.get` и `turns.attach` `Ok` — поток `Items`, у `blobs.put` тело `ByteStream` едет в `Args` рядом с `Meta` ([Форма вызова](api.md#форма-вызова)). SDK шлёт `Meta` в `params` запроса, а тело — чанками потока.
+
 Если соединение оборвалось, а `run` жив:
 
 | Вызов | Поведение |

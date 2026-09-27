@@ -21,6 +21,7 @@
 | Крейт | Путь | Назначение |
 |---|---|---|
 | `eva-protocol` | [`protocol/`](protocol/README.md) | типы операций (`Args`/`Ok`/`Err`), ошибки, проводные кадры; без I/O |
+| `eva-kernel-macros` | [`macros/`](macros/README.md) | единственный список операций (`endpoints!` на `eva-api-builder`) |
 | `eva-core` | [`core/`](core/README.md) | библиотечное API: `Session`, трейты неймспейсов, `Caller`, трейт `Provider` |
 | `eva-rpc` | [`rpc/`](rpc/README.md) | msgpack-кадры поверх uds/ws/wss, сервер-диспетчер, клиентская `RpcSession` |
 | `eva-sdk` | [`sdk/`](sdk/README.md) | модуль ядра: подключение, реконнект, тулы, события, хуки |
@@ -34,6 +35,8 @@
 ```mermaid
 graph LR
   core --> protocol
+  core --> macros
+  macros --> builder[eva-api-builder]
   rpc --> core
   sdk --> rpc
   openai[providers/openai] --> core

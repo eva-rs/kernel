@@ -32,7 +32,8 @@ flowchart LR
 | Путь | Крейт | Содержит |
 |---|---|---|
 | `protocol/` | `eva-protocol` | Типы данных, операции `requests/<ns>.rs` (`Args`/`Ok`/`Err`), коды ошибок, wire-кадры; без I/O |
-| `core/` | `eva-core` | `Session`, шаги вызова, трейты неймспейсов, `Caller`, трейт `Provider` |
+| `macros/` | `eva-kernel-macros` | Список операций `endpoints!` на `eva-api-builder` фреймворка: трейты неймспейсов и X-макро `for_each_op!` |
+| `core/` | `eva-core` | `Session`, трейты неймспейсов и `for_each_op!` из списка операций, `Caller`, трейт `Provider` |
 | `rpc/` | `eva-rpc` | Кадры msgpack, транспорты uds/ws/wss, симметричный пир, серверный диспетчер, `RpcSession`, `ModuleProvider` |
 | `sdk/` | `eva-sdk` | `Module` → `Connected`, `Kernel = Session<LiveSession>` (переживает реконнект) |
 | `providers/openai`, `providers/mock` | `eva-provider-*` | `impl Provider` одного вендора |
@@ -44,6 +45,8 @@ flowchart LR
 ```mermaid
 flowchart BT
   core --> protocol
+  core --> macros
+  macros --> builder["eva-api-builder"]
   rpc --> core
   openai["providers/openai"] --> core
   mock["providers/mock"] --> core
@@ -72,9 +75,10 @@ let surfaces::get::Ok { surface } = session
 ```
 
 - `Session<S>` — неймспейс на домен, метод на операцию. 20 неймспейсов: `surfaces`, `folders`, `chats`, `turns`, `persons`, `memory`, `notes`, `tools`, `models`, `cron`, `sleep`, `agents`, `stats`, `modules`, `hands_grants`, `blobs`, `inference`, `fs`, `sqlite`, `kv`.
-- Форма операции: `Read`, `Mutating` (повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ), `Stream` (ответ — поток), `Upload` (тело — поток чанков).
+- Операции перечислены один раз — `endpoints!` в `macros/src/lib.rs`. Из списка получаются трейты неймспейсов, методы `Session` и X-макро `for_each_op!`, по которому собраны RPC-диспетчер, RPC-клиент и SDK. Шаг любой операции — `CallStep` фреймворка `eva`, вызов — `.call(args)`.
+- Вид операции — флаг в списке: без флага — чтение; `mutating` — повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ; `stream` — `Ok` есть поток `Items`; `upload` — `Args` несёт тело `ByteStream`.
 - RPC-метод — `<namespace>.<op>`; msgpack-RPC и будущие инструменты модели — обёртки над той же операцией, а не отдельные реализации. Контрактный тест проверяет, что вызов в процессе и через UDS даёт побайтно равные ответы.
-- Внутри `eva-kernel` код разложен по слоям: `handling/` — хендлер на операцию, `impls/` — namespace-трейты над хендлерами, `state/policy/` — авторизация, `db/` — весь SQL, `convert/` — строки БД в типы протокола, `subsystems/` — компоненты `Supervisor`.
+- Внутри `eva-kernel` код разложен по слоям: `handling/` — хендлер на операцию, `impls/` — namespace-трейты над хендлерами (строка `project!` на операцию), `state/policy/` — авторизация, `db/` — весь SQL, `convert/` — строки БД в типы протокола, `subsystems/` — компоненты `Supervisor`.
 
 Каталог операций — в главе [Библиотечное API](api.md), wire-формат — в [Протоколе модулей](protocol.md).
 
@@ -157,7 +161,7 @@ sequenceDiagram
   Note over K: фоном дочитывает каталоги моделей провайдеров
   Main->>L: bind слушателей modules.listen
   Main->>Sup: компоненты db и modules
-  Note over Sup: SIGINT/SIGTERM → штатная остановка
+  Note over Sup: 1-й SIGINT/SIGTERM — штатная остановка, 2-й — обрыв
 ```
 
 | Компонент | Секция | Что делает в M1 |

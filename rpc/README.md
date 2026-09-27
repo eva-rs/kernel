@@ -8,6 +8,8 @@ msgpack-RPC Евы: кадры поверх unix-сокета, WebSocket и WebS
 
 Слои снизу вверх: `transport` (`Conn`, сырые кадры) → `peer` (вызовы, потоки, загрузки, отмены, ping) → `server`/`client` (handshake и операции `<namespace>.<op>`) → `module` (ядро → модуль).
 
+Таблица диспетчера (`server/dispatch.rs`) и `RpcSession` (`client.rs`) — колбэки над `eva_core::for_each_op!`: RPC-метод, форма кадров и окно идемпотентности берутся из флага операции (`mutating`, `stream`, `upload`), своего списка операций здесь нет.
+
 ## Точки входа
 
 | Путь | Что |
@@ -73,7 +75,7 @@ let create::Ok { surface } = session
 nix develop -c cargo test -p eva-rpc
 ```
 
-`tests/it/` поднимает сервер над тестовым ядром (`kernel.rs`: несколько операций по-настоящему, остальное — заглушки) на uds и ws (`harness.rs`); каждый тест `loopback.rs` гоняется по обоим транспортам. Остальное: handshake, ping и идемпотентность сырыми кадрами (`protocol.rs`), пределы против чужого пира (`limits.rs`), RPC-метод у каждой операции (`methods.rs`), каждый `Err` каждой операции на проводе (`errors.rs`), ядро → модуль (`reverse.rs`), форма секции (`config.rs`), wss с тестовым CA из `tests/fixtures` (`tls.rs`).
+`tests/it/` поднимает сервер над тестовым ядром (`kernel.rs`: несколько операций по-настоящему, остальное — заглушки из `for_each_op!`) на uds и ws (`harness.rs`); каждый тест `loopback.rs` гоняется по обоим транспортам. Остальное: handshake, ping и идемпотентность сырыми кадрами (`protocol.rs`), пределы против чужого пира (`limits.rs`), RPC-метод у каждой операции (`methods.rs`), каждый `Err` каждой операции на проводе (`errors.rs`), ядро → модуль (`reverse.rs`), форма секции (`config.rs`), wss с тестовым CA из `tests/fixtures` (`tls.rs`).
 
 ## Документация
 

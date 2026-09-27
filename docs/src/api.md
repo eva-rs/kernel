@@ -52,6 +52,25 @@ while let Some(item) = items.next().await {
 }
 ```
 
+Загрузка — тот же `call`, тело едет в `Args`:
+
+```rust
+use eva_protocol::{requests::{ByteStream, blobs::put}, types::blob::Kind};
+
+let body: ByteStream = Box::pin(futures::stream::iter(chunks.into_iter().map(Ok)));
+let put::Ok { id, .. } = session.blobs().put().call(put::Args {
+    meta: put::Meta {
+        chat,
+        name: "photo.jpg".into(),
+        media_type: "image/jpeg".into(),
+        kind: Kind::Image,
+        size,
+        hash: None,
+    },
+    body,
+}).await?;
+```
+
 ## Ошибки
 
 `Response<O, E> = Result<O, Generic<E>>`. `Generic` отделяет честный отказ операции от беды подсистемы:

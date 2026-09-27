@@ -4,14 +4,15 @@
 
 ## Место в слоях
 
-Нижний слой воркспейса: от него зависят все остальные крейты, включая клиентов. Сам зависит только от фреймворка [eva](https://git.desu.church/VienDesu/eva) и крейтов `serde`, `serde_json`, `serde_with`, `serde_bytes`. Никакого I/O и рантайма: без `tokio`, сети, файлов и БД; не зависит от `eva-core` и выше. Строк конкретных вендоров и поверхностей здесь нет — их место в `providers/*`.
+Нижний слой воркспейса: от него зависят все остальные крейты, включая клиентов. Сам зависит только от фреймворка [eva](https://git.desu.church/VienDesu/eva) и крейтов `serde`, `serde_json`, `serde_with`, `serde_bytes`, `futures-core` (трейт `Stream`). Никакого I/O и рантайма: без `tokio`, сети, файлов и БД; не зависит от `eva-core` и выше. Строк конкретных вендоров и поверхностей здесь нет — их место в `providers/*`.
 
 ## Точки входа
 
 | Путь | Что |
 |---|---|
-| `requests/<ns>.rs` | модуль на операцию: `Args`, `Ok`, `Err` (поток — `Args`, `Item`, `Err`) |
+| `requests/<ns>.rs` | модуль на операцию: `Args`, `Ok`, `Err`; у потока `Ok = Items<Item, Err>`, у загрузки `Args { meta, body }` и по проводу — `Meta` |
 | `requests::{Patch, Limit, RunsLimit, Response}` | частичное обновление, границы страниц, `Result<O, Generic<E>>` |
+| `requests::{Items, ByteStream}` | поток к вызывающему (`Response<Item, Err>` поштучно) и тело загрузки (`Result<Bytes, Aux>`); только типы |
 | `errors::{Generic, Aux, HasCode}` | `Generic<E>` = `Spec(E)` \| `Aux(Aux)`: отказ операции против беды подсистемы |
 | `errors/<ns>.rs` | атомарные ошибки домена; код провода — `code!(T => Code)` |
 | `types/` | сущности и идентификаторы (`ids`), по файлу на домен |
@@ -49,7 +50,7 @@ assert!(update.rules.is_keep());
 nix develop -c cargo test -p eva-protocol
 ```
 
-`tests/msgpack.rs` — roundtrip проводных типов и терпимость к пиру новее; `tests/wire.rs` — roundtrip операций, `Patch`, различение `Aux`/`Spec`; `tests/errors.rs` — каждый `Aux` через msgpack и `RpcError` и его код; `tests/bytes.rs` — `Bytes` как msgpack `bin` и base64 в JSON.
+`tests/msgpack.rs` — roundtrip проводных типов, терпимость к пиру новее и `params` `blobs.put` как голая `Meta`; `tests/wire.rs` — roundtrip операций, `Patch`, различение `Aux`/`Spec`; `tests/errors.rs` — каждый `Aux` через msgpack и `RpcError` и его код; `tests/bytes.rs` — `Bytes` как msgpack `bin` и base64 в JSON.
 
 ## Документация
 

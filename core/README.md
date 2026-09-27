@@ -19,7 +19,7 @@
 | `OpKind` | `Read`, `Mutating` (окно идемпотентности), `Stream`, `Upload` |
 | `Caller` | `Kernel`, `Client { module }`, `Service { module }`; `from_token(kind, module)` |
 | `Provider`, `GenSink` | трейт провайдера (`decl`, `models`, `generate`, `embed`, `count_tokens`) и приёмник потока `GenItem` |
-| `prelude` | шаги и все трейты неймспейсов одним `use` |
+| `prelude` | `CallStep` и все трейты неймспейсов одним `use` |
 
 Неймспейсы: `surfaces`, `folders`, `chats`, `turns`, `persons`, `memory`, `notes`, `tools`, `models`, `cron`, `sleep`, `agents`, `stats`, `modules`, `hands_grants`, `blobs`, `inference`, `fs`, `sqlite`, `kv`.
 

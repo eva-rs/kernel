@@ -15,10 +15,10 @@ SDK модулей Евы: подключение к ядру, ожидание 
 | `Module::handshake(conn, token)` | поверх готового `Conn` (тесты), без реконнекта |
 | `Module::capabilities()` | что уйдёт в `hello` |
 | `Connected` | `kernel()`, `module()` (id из `welcome`), `welcome()`, `caller()`, `run(shutdown)` |
-| `Kernel` | `Session<LiveSession>`: все неймспейсы, вызов идёт через текущее соединение |
+| `Kernel` | `Session<LiveSession>`: все неймспейсы (собраны по `eva_core::for_each_op!`), вызов идёт через текущее соединение; поток и загрузка — тот же `call` |
 | `ModuleConfig` | секция `module`; `ModuleConfig::register(app)` для `eva::cli::App` |
 | `ToolCtx`, `ToolError` | контекст вызова тула (`kernel`, `turn`, `call_id`, `progress`); `respond`/`fatal` |
-| `prelude` | шаги, трейты неймспейсов, `Kernel`, `Module`, `Connected` |
+| `prelude` | `CallStep`, трейты неймспейсов, `Kernel`, `Module`, `Connected`, `ToolCtx`, `ToolError` |
 
 Секция `module`:
 
