@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::{
     errors,
+    requests::Items,
     types::{
         ChatId, Effort, EventId, MessageId, ModelId, PendingId, Thinking,
         content::Block,
@@ -59,6 +60,8 @@ pub mod attach {
     }
 
     pub type Item = TurnItem;
+
+    pub type Ok = Items<Item, Err>;
 
     #[data(error)]
     pub enum Err {

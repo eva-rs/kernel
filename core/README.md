@@ -4,7 +4,7 @@
 
 ## Место в слоях
 
-Зависит только от `eva-protocol`, фреймворка [eva](https://git.desu.church/VienDesu/eva) и трейтов `futures`. Без рантайма, транспорта, SQL и конкретных провайдеров: не зависит от `eva-rpc`, `eva-sdk`, `providers/*` и `eva-kernel` — они зависят от него.
+Зависит только от `eva-protocol`, `eva-kernel-macros` (список операций), фреймворка [eva](https://git.desu.church/VienDesu/eva) и трейтов `futures`. Без рантайма, транспорта, SQL и конкретных провайдеров: не зависит от `eva-rpc`, `eva-sdk`, `providers/*` и `eva-kernel` — они зависят от него.
 
 ## Точки входа
 
@@ -12,8 +12,9 @@
 |---|---|
 | `Session<S>` | неймспейсы (`session.surfaces()`, `.chats()`, …) плюс `caller()` |
 | `SessionMaker` | выдаёт `Session` для `Caller`: ядро, RPC-клиент, тестовый мок |
-| `CallStep` / `StreamStep` / `UploadStep` | шаг операции: `call(args)`, `open(args)` → `Items`, `call(args, body)` |
-| `service::<ns>::<Ns>` | трейт неймспейса; рядом `OPS` — операции и их `OpKind` |
+| `CallStep` | шаг операции (`eva::handling::CallStep`): `call(args)` → `Response<Ok, Err>`; у потока `Ok` — `Items`, у загрузки `Args` несёт `body: ByteStream` |
+| `service::<ns>::<Ns>` | трейт неймспейса из списка операций |
+| `for_each_op!` | X-макро списка операций: по нему собраны RPC-диспетчер, клиент и SDK |
 | `NAMESPACES` | все операции: RPC-метод — `<namespace>.<op>` |
 | `OpKind` | `Read`, `Mutating` (окно идемпотентности), `Stream`, `Upload` |
 | `Caller` | `Kernel`, `Client { module }`, `Service { module }`; `from_token(kind, module)` |
@@ -46,7 +47,7 @@ let surfaces::get::Ok { surface } = session
 nix develop -c cargo test -p eva-core
 ```
 
-`tests/namespaces.rs` сверяет `NAMESPACES` с эталонной таблицей операций и форм шага: мутация, помеченная `Read`, после реконнекта исполнилась бы дважды.
+`tests/namespaces.rs`: RPC-метод raw-операции идёт без `r#`, glob-импорт `prelude` открывает методы неймспейсов у `Session`.
 
 ## Документация
 

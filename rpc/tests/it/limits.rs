@@ -209,8 +209,8 @@ async fn transport_connect_has_a_deadline() {
     );
 }
 
-fn put(size: usize) -> put::Args {
-    put::Args {
+fn put(size: usize) -> put::Meta {
+    put::Meta {
         chat: chat_id(1),
         name: "file.bin".to_owned(),
         media_type: "application/octet-stream".to_owned(),

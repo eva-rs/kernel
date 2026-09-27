@@ -5,7 +5,7 @@ mod common;
 use std::{sync::atomic::Ordering, time::Duration};
 
 use eva_core::{
-    CallStep as _, StreamStep as _,
+    CallStep as _,
     service::{chats::Chats as _, tools::Tools as _, turns::Turns as _},
 };
 use eva_protocol::{
@@ -76,7 +76,7 @@ async fn later_milestones_answer_unavailable() {
     let res = client
         .turns()
         .attach()
-        .open(turns::attach::Args {
+        .call(turns::attach::Args {
             chat: ChatId(1),
             since_seq: None,
         })

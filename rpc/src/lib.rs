@@ -14,8 +14,6 @@ pub mod peer;
 pub mod server;
 pub mod transport;
 
-mod ops;
-
 pub use client::{ClientOptions, ConnectError, RpcClient, RpcSession};
 pub use config::{ClientTls, Config, Listen};
 pub use module::{ModuleClient, ModuleHandler, ModuleProvider, NoHandler, Progress};

@@ -1,6 +1,5 @@
 //! Хендлеры `turns.*` (`11 §3`).
 
-use eva_core::Items;
 use eva_protocol::{
     errors::Aux,
     requests::{
@@ -26,7 +25,7 @@ pub async fn Start<C: Components>(
 pub async fn Attach<C: Components>(
     state: &mut State<C>,
     args: attach::Args,
-) -> Response<Items<attach::Item, attach::Err>, attach::Err> {
+) -> Response<attach::Ok, attach::Err> {
     let _ = (state, args);
     Err(Aux::Unavailable("M2_PENDING: turns.attach arrives with M2: turn engine".into()).into())
 }

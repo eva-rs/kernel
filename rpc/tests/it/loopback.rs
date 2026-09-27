@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures::{StreamExt as _, stream};
 
 use eva_core::{
-    ByteStream, CallStep as _, Caller, SessionMaker as _, StreamStep as _, UploadStep as _,
+    ByteStream, CallStep as _, Caller, SessionMaker as _,
     service::{blobs::Blobs as _, surfaces::Surfaces as _, turns::Turns as _},
 };
 use eva_protocol::{
@@ -141,7 +141,7 @@ async fn stream_items(via: Via) {
     let items: Vec<_> = session
         .turns()
         .attach()
-        .open(attach_args(chat::FINITE))
+        .call(attach_args(chat::FINITE))
         .await
         .unwrap()
         .collect()
@@ -156,7 +156,7 @@ async fn stream_items(via: Via) {
     let items: Vec<_> = session
         .turns()
         .attach()
-        .open(attach_args(chat::BROKEN))
+        .call(attach_args(chat::BROKEN))
         .await
         .unwrap()
         .collect()
@@ -166,7 +166,7 @@ async fn stream_items(via: Via) {
     let Err(err) = session
         .turns()
         .attach()
-        .open(attach_args(chat::MISSING))
+        .call(attach_args(chat::MISSING))
         .await
     else {
         panic!("open of a missing chat must fail before the first item");
@@ -187,7 +187,7 @@ async fn cancel_on_drop(via: Via) {
         .session()
         .turns()
         .attach()
-        .open(attach_args(chat::ENDLESS))
+        .call(attach_args(chat::ENDLESS))
         .await
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));
@@ -215,19 +215,22 @@ async fn upload(via: Via) {
     let parts = vec![b"hello ".to_vec(), big.clone(), b"bye".to_vec()];
     let whole = parts.concat();
 
-    let args = |size: u64| put::Args {
-        chat: chat_id(1),
-        name: "file.bin".to_owned(),
-        media_type: "application/octet-stream".to_owned(),
-        kind: BlobKind::File,
-        size,
-        hash: None,
+    let args = |size: u64, body: ByteStream| put::Args {
+        meta: put::Meta {
+            chat: chat_id(1),
+            name: "file.bin".to_owned(),
+            media_type: "application/octet-stream".to_owned(),
+            kind: BlobKind::File,
+            size,
+            hash: None,
+        },
+        body,
     };
 
     let ok = session
         .blobs()
         .put()
-        .call(args(whole.len() as u64), body(parts.clone()))
+        .call(args(whole.len() as u64, body(parts.clone())))
         .await
         .unwrap();
     assert_eq!(ok.size, whole.len() as u64);
@@ -236,7 +239,7 @@ async fn upload(via: Via) {
     let err = session
         .blobs()
         .put()
-        .call(args(1), body(parts))
+        .call(args(1, body(parts)))
         .await
         .unwrap_err();
     let expected = errors::blobs::SizeMismatch {
@@ -252,7 +255,7 @@ async fn upload(via: Via) {
     let err = session
         .blobs()
         .put()
-        .call(args(4), failing)
+        .call(args(4, failing))
         .await
         .unwrap_err();
     assert_eq!(err, Generic::Aux(Aux::Unavailable("disk gone".to_owned())));
@@ -350,7 +353,7 @@ async fn backpressure_per_stream(via: Via) {
     let mut items = session
         .turns()
         .attach()
-        .open(attach_args(chat::FLOOD))
+        .call(attach_args(chat::FLOOD))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(800)).await;
@@ -447,7 +450,7 @@ async fn supersede_ends_streams(via: Via) {
         .session()
         .turns()
         .attach()
-        .open(attach_args(chat::ENDLESS))
+        .call(attach_args(chat::ENDLESS))
         .await
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));
@@ -559,8 +562,8 @@ async fn upload_of_small_pieces(via: Via) {
         .session()
         .blobs()
         .put()
-        .call(
-            put::Args {
+        .call(put::Args {
+            meta: put::Meta {
                 chat: chat_id(1),
                 name: "small.bin".to_owned(),
                 media_type: "application/octet-stream".to_owned(),
@@ -568,8 +571,8 @@ async fn upload_of_small_pieces(via: Via) {
                 size: whole.len() as u64,
                 hash: None,
             },
-            body(parts),
-        )
+            body: body(parts),
+        })
         .await
         .unwrap();
     assert_eq!(ok.size, whole.len() as u64);
@@ -595,7 +598,7 @@ async fn idle_stream_times_out(via: Via) {
         .session()
         .turns()
         .attach()
-        .open(attach_args(chat::ENDLESS))
+        .call(attach_args(chat::ENDLESS))
         .await
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));
@@ -628,7 +631,7 @@ async fn heartbeat_keeps_stream(via: Via) {
         .session()
         .turns()
         .attach()
-        .open(attach_args(chat::ENDLESS))
+        .call(attach_args(chat::ENDLESS))
         .await
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));

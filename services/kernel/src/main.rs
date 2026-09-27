@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use eva::{
     cli::{App, NoArgs},
     component_configs::ComponentConfigs,
-    supervisor::{Handle, SlaveRx, Supervisor},
+    supervisor::{SlaveRx, Supervisor},
 };
 use tokio::sync::watch;
 
@@ -45,45 +45,7 @@ async fn entrypoint(_: NoArgs, cfgs: ComponentConfigs) -> eyre::Result<()> {
                 }
             }
         });
-    let handles = supervisor.iter().map(|(_, h)| h.clone()).collect();
-    tokio::spawn(drain_on_signal(handles));
     supervisor.wait_for_completion().await
-}
-
-/// Первый SIGINT/SIGTERM сворачивает компоненты штатно, второй обрывает
-/// процесс: `Supervisor` закреплённой версии `eva` сигналов не слушает.
-async fn drain_on_signal(handles: Vec<Handle>) {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let mut term = match signal(SignalKind::terminate()) {
-        Ok(term) => term,
-        Err(error) => {
-            log::error!(error:%; "failed to listen for SIGTERM");
-            return;
-        }
-    };
-    let mut draining = false;
-    loop {
-        let signal = tokio::select! {
-            res = tokio::signal::ctrl_c() => match res {
-                Ok(()) => "SIGINT",
-                Err(error) => {
-                    log::error!(error:%; "failed to listen for SIGINT");
-                    return;
-                }
-            },
-            _ = term.recv() => "SIGTERM",
-        };
-        if draining {
-            log::warn!(signal; "second shutdown signal, exiting now");
-            std::process::exit(1);
-        }
-        log::info!(signal; "shutdown signal received, draining components");
-        draining = true;
-        for handle in &handles {
-            _ = handle.request_shutdown().await;
-        }
-    }
 }
 
 /// Миграции и сид прошли в `Kernel::start`; компонент держит базу до

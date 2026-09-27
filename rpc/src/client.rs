@@ -9,13 +9,13 @@ use std::{
     time::Duration,
 };
 
-use eva::{data, url::Url};
+use eva::{data, fut::Fut, url::Url};
 use futures::{SinkExt as _, Stream, StreamExt as _};
 use serde::{Serialize, de::DeserializeOwned};
 
 use eva_core::{
-    ByteStream, CallStep, Caller, Items, Session, SessionMaker, StreamStep, UploadStep,
-    service::{AuxFut, RespFut},
+    ByteStream, CallStep, Caller, Items, Session, SessionMaker,
+    service::{AuxFut, op_name},
 };
 use eva_protocol::{
     errors::{Aux, Generic},
@@ -32,7 +32,6 @@ use crate::{
     codec,
     config::{ClientTls, Config},
     module::{ModuleHandler, ModuleService, NoHandler},
-    ops::for_each_op,
     peer::{IdSeq, Peer, RemoteStream},
     transport::{self, Conn, Outbound},
 };
@@ -341,15 +340,6 @@ struct Target {
     method: String,
 }
 
-impl Target {
-    fn new(inner: &Arc<ClientInner>, ns: &str, op: &str) -> Self {
-        Self {
-            inner: inner.clone(),
-            method: crate::ops::method(ns, op),
-        }
-    }
-}
-
 /// Шаг чтения и мутации.
 pub struct Unary<A, O, E> {
     target: Target,
@@ -362,10 +352,9 @@ where
     O: DeserializeOwned + Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
-    type Ok = O;
-    type Err = E;
+    type Output = OpResponse<O, E>;
 
-    fn call(&mut self, args: A) -> impl RespFut<O, E> {
+    fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
         let client = self.target.inner.clone();
         let method = self.target.method.clone();
         let params = codec::encode(&args);
@@ -377,22 +366,21 @@ where
     }
 }
 
-/// Шаг потока к вызывающему.
+/// Шаг потока к вызывающему: `Ok` — элементы из кадров потока.
 pub struct Streaming<A, T, E> {
     target: Target,
     _types: PhantomData<fn(A) -> (T, E)>,
 }
 
-impl<A, T, E> StreamStep<A> for Streaming<A, T, E>
+impl<A, T, E> CallStep<A> for Streaming<A, T, E>
 where
     A: Serialize,
     T: DeserializeOwned + Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
-    type Item = T;
-    type Err = E;
+    type Output = OpResponse<Items<T, E>, E>;
 
-    fn open(&mut self, args: A) -> impl RespFut<Items<T, E>, E> {
+    fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
         let inner = self.target.inner.clone();
         let method = self.target.method.clone();
         let params = codec::encode(&args);
@@ -439,25 +427,27 @@ impl<T: DeserializeOwned, E: DeserializeOwned> Stream for Decoded<T, E> {
     }
 }
 
-/// Шаг загрузки: тело чанками после запроса.
-pub struct Uploading<A, O, E> {
+/// Шаг загрузки: `split` делит `Args` на `Meta` для `params` и тело, которое
+/// уходит чанками после запроса.
+pub struct Uploading<A, M, O, E> {
     target: Target,
-    _types: PhantomData<fn(A) -> (O, E)>,
+    split: fn(A) -> (M, ByteStream),
+    _types: PhantomData<fn() -> (O, E)>,
 }
 
-impl<A, O, E> UploadStep<A> for Uploading<A, O, E>
+impl<A, M, O, E> CallStep<A> for Uploading<A, M, O, E>
 where
-    A: Serialize,
+    M: Serialize,
     O: DeserializeOwned + Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
-    type Ok = O;
-    type Err = E;
+    type Output = OpResponse<O, E>;
 
-    fn call(&mut self, args: A, body: ByteStream) -> impl RespFut<O, E> {
+    fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
+        let (meta, body) = (self.split)(args);
         let client = self.target.inner.clone();
         let method = self.target.method.clone();
-        let params = codec::encode(&args);
+        let params = codec::encode(&meta);
         async move {
             let params = params.map_err(|e| invalid("arguments", e))?;
             let raw = client
@@ -471,67 +461,61 @@ where
 }
 
 macro_rules! step {
-    (read $ns:ident $op:ident) => {
-        step!(@unary $ns $op);
-    };
-    (mut $ns:ident $op:ident) => {
-        step!(@unary $ns $op);
-    };
-    (@unary $ns:ident $op:ident) => {
-        fn $op(
-            &mut self,
-        ) -> impl CallStep<
-            eva_protocol::requests::$ns::$op::Args,
-            Ok = eva_protocol::requests::$ns::$op::Ok,
-            Err = eva_protocol::requests::$ns::$op::Err,
-        > {
-            Unary {
-                target: self.target(stringify!($ns), stringify!($op)),
-                _types: PhantomData,
-            }
+    ([] $target:ident $segment:ident $endpoint:ident) => {
+        Unary {
+            target: $target,
+            _types: PhantomData,
         }
     };
-    (stream $ns:ident $op:ident) => {
-        fn $op(
-            &mut self,
-        ) -> impl StreamStep<
-            eva_protocol::requests::$ns::$op::Args,
-            Item = eva_protocol::requests::$ns::$op::Item,
-            Err = eva_protocol::requests::$ns::$op::Err,
-        > {
-            Streaming {
-                target: self.target(stringify!($ns), stringify!($op)),
-                _types: PhantomData,
-            }
+    ([mutating] $target:ident $segment:ident $endpoint:ident) => {
+        step!([] $target $segment $endpoint)
+    };
+    ([stream] $target:ident $segment:ident $endpoint:ident) => {
+        Streaming {
+            target: $target,
+            _types: PhantomData,
         }
     };
-    (upload $ns:ident $op:ident) => {
-        fn $op(
-            &mut self,
-        ) -> impl UploadStep<
-            eva_protocol::requests::$ns::$op::Args,
-            Ok = eva_protocol::requests::$ns::$op::Ok,
-            Err = eva_protocol::requests::$ns::$op::Err,
-        > {
-            Uploading {
-                target: self.target(stringify!($ns), stringify!($op)),
-                _types: PhantomData,
-            }
+    ([upload] $target:ident $segment:ident $endpoint:ident) => {{
+        use ::eva_protocol::requests::$segment::$endpoint as op;
+
+        Uploading {
+            target: $target,
+            split: |op::Args { meta, body }| (meta, body),
+            _types: PhantomData,
         }
-    };
+    }};
 }
 
 macro_rules! client_impls {
-    ($($ns:ident: $Trait:ident { $($kind:tt $op:ident),* $(,)? }),* $(,)?) => {$(
-        impl eva_core::service::$ns::$Trait for RpcSession {
-            $(step!($kind $ns $op);)*
-        }
-    )*};
+    ($(
+        $segment:ident {$(
+            $accessor:ident : $Trait:ident {$(
+                $(#[$flag:ident])*
+                $method:ident = $endpoint:ident {
+                    args: $Args:ty,
+                    ok: $Ok:ty,
+                    err: $Err:ty,
+                    output: $Output:ty,
+                }
+            )*}
+        )*}
+    )*) => {$($(
+        impl eva_core::service::$segment::$Trait for RpcSession {$(
+            fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
+                let target = self.target(stringify!($segment), stringify!($endpoint));
+                step!([$($flag)*] target $segment $endpoint)
+            }
+        )*}
+    )*)*};
 }
 
 impl RpcSession {
-    fn target(&self, ns: &'static str, op: &'static str) -> Target {
-        Target::new(&self.inner, ns, eva_core::service::op_name(op))
+    fn target(&self, segment: &str, endpoint: &'static str) -> Target {
+        Target {
+            inner: self.inner.clone(),
+            method: format!("{segment}.{}", op_name(endpoint)),
+        }
     }
 
     pub fn caller(&self) -> &Caller {
@@ -539,4 +523,4 @@ impl RpcSession {
     }
 }
 
-for_each_op!(client_impls);
+eva_core::for_each_op!(client_impls);

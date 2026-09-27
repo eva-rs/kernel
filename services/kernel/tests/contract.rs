@@ -632,7 +632,7 @@ async fn modules_part<M: SessionMaker>(r: &mut Run<'_, M>) {
 
 async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: ChatId) {
     const NOTE: &[u8] = b"a note from the bridge";
-    let put = |chat, size| blobs::put::Args {
+    let put = |chat, size| blobs::put::Meta {
         chat,
         name: String::from("note.txt"),
         media_type: String::from("text/plain"),
@@ -645,7 +645,10 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
         .await
         .blobs()
         .put()
-        .call(put(bridge, NOTE.len() as u64), body(NOTE))
+        .call(blobs::put::Args {
+            meta: put(bridge, NOTE.len() as u64),
+            body: body(NOTE),
+        })
         .await;
     let own = r.ok("blobs.put own", res).id;
     let res = r
@@ -653,7 +656,10 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
         .await
         .blobs()
         .put()
-        .call(put(tea, NOTE.len() as u64), body(NOTE))
+        .call(blobs::put::Args {
+            meta: put(tea, NOTE.len() as u64),
+            body: body(NOTE),
+        })
         .await;
     let foreign = r.ok("blobs.put by client", res).id;
     let res = r
@@ -661,7 +667,10 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
         .await
         .blobs()
         .put()
-        .call(put(tea, 3), body(NOTE))
+        .call(blobs::put::Args {
+            meta: put(tea, 3),
+            body: body(NOTE),
+        })
         .await;
     r.check("blobs.put size mismatch", &res, Outcome::Spec);
 
@@ -675,7 +684,7 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
         .await
         .blobs()
         .get()
-        .open(blobs::get::Args { id: own, offset: 2 })
+        .call(blobs::get::Args { id: own, offset: 2 })
         .await;
     let items = match res {
         Ok(items) => Ok(items.collect::<Vec<_>>().await),
@@ -962,8 +971,8 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
             let blob = owner
                 .blobs()
                 .put()
-                .call(
-                    blobs::put::Args {
+                .call(blobs::put::Args {
+                    meta: blobs::put::Meta {
                         chat,
                         name: String::from("a.txt"),
                         media_type: String::from("text/plain"),
@@ -971,8 +980,8 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
                         size: 3,
                         hash: None,
                     },
-                    body(b"abc"),
-                )
+                    body: body(b"abc"),
+                })
                 .await
                 .expect("owner uploads a blob")
                 .id;
@@ -1110,7 +1119,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                 let res = k
                     .blobs()
                     .get()
-                    .open(blobs::get::Args {
+                    .call(blobs::get::Args {
                         id: blob_id,
                         offset: 0,
                     })
@@ -1177,8 +1186,8 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     let blob = k
                         .blobs()
                         .put()
-                        .call(
-                            blobs::put::Args {
+                        .call(blobs::put::Args {
+                            meta: blobs::put::Meta {
                                 chat: ok.chat.id,
                                 name: String::from("b.txt"),
                                 media_type: String::from("text/plain"),
@@ -1186,8 +1195,8 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                                 size: 3,
                                 hash: None,
                             },
-                            body(b"xyz"),
-                        )
+                            body: body(b"xyz"),
+                        })
                         .await
                         .expect("the service uploads into its own chat")
                         .id;

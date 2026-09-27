@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "macros",
   "protocol",
   "core",
   "rpc",
@@ -17,8 +18,10 @@ edition = "2024"
 
 [workspace.dependencies]
 eva = { git = "https://git.desu.church/VienDesu/eva.git" }
+eva-api-builder = { git = "https://git.desu.church/VienDesu/eva.git" }
 eva-hands = { git = "https://git.desu.church/eva/hands.git", default-features = false }
 
+eva-kernel-macros = { path = "macros" }
 eva-protocol = { path = "protocol" }
 eva-core = { path = "core" }
 eva-rpc = { path = "rpc" }

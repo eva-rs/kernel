@@ -8,16 +8,16 @@ use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Serialize, de::DeserializeOwned};
 
 use eva_core::{
-    ByteStream, CallStep, Caller, IsSession, OpKind, Session, SessionMaker, StreamStep, UploadStep,
+    ByteStream, CallStep, Caller, IsSession, Items, OpKind, Session, SessionMaker, service::op_name,
 };
 use eva_protocol::{
     errors::HasCode,
+    requests::Response,
     wire::{ErrorCode, RpcError, frame::Payload},
 };
 
 use crate::{
     codec,
-    ops::{self, for_each_op},
     peer::{Call, Kind, Outgoing, Service},
     server::window::{self, Begin, Lease},
 };
@@ -69,41 +69,47 @@ impl<S> Table<S> {
     }
 }
 
+/// Маршрут по флагу операции: `mutating` идёт через окно идемпотентности,
+/// `stream` отдаёт `Items` кадрами потока, у `upload` по проводу `Meta`, а
+/// `Args` собирается из неё и чанков тела.
 macro_rules! route {
-    (read $ns:ident $op:ident) => {
-        route!(@unary Read $ns $op)
+    ([] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
+        route!(@unary Read $accessor $method)
     };
-    (mut $ns:ident $op:ident) => {
-        route!(@unary Mutating $ns $op)
+    ([mutating] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
+        route!(@unary Mutating $accessor $method)
     };
-    (@unary $kind:ident $ns:ident $op:ident) => {
+    (@unary $kind:ident $accessor:ident $method:ident) => {
         Route {
             kind: OpKind::$kind,
             run: Run::Unary(|mut session, params| {
                 Box::pin(async move {
-                    let result = unary(session.$ns().$op(), params).await;
+                    let result = unary(session.$accessor().$method(), params).await;
                     result
                 })
             }),
         }
     };
-    (stream $ns:ident $op:ident) => {
+    ([stream] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
         Route {
             kind: OpKind::Stream,
             run: Run::Stream(|mut session, params| {
                 Box::pin(async move {
-                    let result = stream(session.$ns().$op(), params).await;
+                    let result = stream(session.$accessor().$method(), params).await;
                     result
                 })
             }),
         }
     };
-    (upload $ns:ident $op:ident) => {
+    ([upload] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
         Route {
             kind: OpKind::Upload,
             run: Run::Upload(|mut session, params, body| {
                 Box::pin(async move {
-                    let result = upload(session.$ns().$op(), params, body).await;
+                    use ::eva_protocol::requests::$segment::$endpoint as op;
+
+                    let args = |meta| op::Args { meta, body };
+                    let result = upload(session.$accessor().$method(), params, args).await;
                     result
                 })
             }),
@@ -112,24 +118,36 @@ macro_rules! route {
 }
 
 macro_rules! routes {
-    ($($ns:ident: $Trait:ident { $($kind:tt $op:ident),* $(,)? }),* $(,)?) => {
+    ($(
+        $segment:ident {$(
+            $accessor:ident : $Trait:ident {$(
+                $(#[$flag:ident])*
+                $method:ident = $endpoint:ident {
+                    args: $Args:ty,
+                    ok: $Ok:ty,
+                    err: $Err:ty,
+                    output: $Output:ty,
+                }
+            )*}
+        )*}
+    )*) => {
         fn routes<S: IsSession + 'static>() -> Vec<(String, Route<S>)> {
-            $(use eva_core::service::$ns::$Trait as _;)*
+            $($(use eva_core::service::$segment::$Trait as _;)*)*
 
-            vec![$($(
+            vec![$($($(
                 (
-                    ops::method(stringify!($ns), eva_core::service::op_name(stringify!($op))),
-                    route!($kind $ns $op),
+                    format!("{}.{}", stringify!($segment), op_name(stringify!($endpoint))),
+                    route!([$($flag)*] $accessor $method $segment $endpoint),
                 ),
-            )*)*]
+            )*)*)*]
         }
     };
 }
 
-for_each_op!(routes);
+eva_core::for_each_op!(routes);
 
 async fn unary<A, O, E>(
-    mut step: impl CallStep<A, Ok = O, Err = E>,
+    mut step: impl CallStep<A, Output = Response<O, E>>,
     params: Payload,
 ) -> Result<Payload, RpcError>
 where
@@ -145,7 +163,7 @@ where
 }
 
 async fn stream<A, T, E>(
-    mut step: impl StreamStep<A, Item = T, Err = E>,
+    mut step: impl CallStep<A, Output = Response<Items<T, E>, E>>,
     params: Payload,
 ) -> Result<Outgoing, RpcError>
 where
@@ -154,25 +172,25 @@ where
     E: Serialize + HasCode + fmt::Display + 'static,
 {
     let args = codec::decode(&params).map_err(codec::bad_params)?;
-    let items = step.open(args).await.map_err(|e| codec::typed(&e))?;
+    let items = step.call(args).await.map_err(|e| codec::typed(&e))?;
     Ok(Box::pin(items.map(|item| match item {
         Ok(item) => encode_ok(&item),
         Err(error) => Err(codec::typed(&error)),
     })))
 }
 
-async fn upload<A, O, E>(
-    mut step: impl UploadStep<A, Ok = O, Err = E>,
+async fn upload<M, A, O, E>(
+    mut step: impl CallStep<A, Output = Response<O, E>>,
     params: Payload,
-    body: ByteStream,
+    args: impl FnOnce(M) -> A,
 ) -> Result<Payload, RpcError>
 where
-    A: DeserializeOwned,
+    M: DeserializeOwned,
     O: Serialize,
     E: Serialize + HasCode + fmt::Display,
 {
-    let args = codec::decode(&params).map_err(codec::bad_params)?;
-    match step.call(args, body).await {
+    let meta = codec::decode(&params).map_err(codec::bad_params)?;
+    match step.call(args(meta)).await {
         Ok(ok) => encode_ok(&ok),
         Err(error) => Err(codec::typed(&error)),
     }

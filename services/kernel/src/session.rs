@@ -1,11 +1,12 @@
 //! Сессия ядра: `Session<C>(State<C>)` реализует все namespace-трейты
 //! (`impls/`), отдавая шаги поверх хендлеров.
 
-use eva_core::{CallStep, Items, StreamStep, UploadStep};
+use eva_core::CallStep;
+use eva_protocol::requests::Response;
 
 use crate::{
     components::Components,
-    handling::{IsEndpoint, ProvideState, ProvideStream, ProvideUpload, Upload},
+    handling::{IsEndpoint, ProvideState},
     state::State,
 };
 
@@ -16,33 +17,14 @@ impl<C: Components> Session<C> {
         Self(state)
     }
 
-    pub fn with_state<I, E, Ok, Err>(&mut self, handler: E) -> impl CallStep<I, Ok = Ok, Err = Err>
+    pub fn with_state<I, E, Ok, Err>(
+        &mut self,
+        handler: E,
+    ) -> impl CallStep<I, Output = Response<Ok, Err>>
     where
         I: Send,
         E: IsEndpoint<I, C, Ok = Ok, Err = Err>,
     {
         ProvideState::new(&mut self.0, handler)
-    }
-
-    pub fn with_stream<I, E, Item, Err>(
-        &mut self,
-        handler: E,
-    ) -> impl StreamStep<I, Item = Item, Err = Err>
-    where
-        I: Send,
-        E: IsEndpoint<I, C, Ok = Items<Item, Err>, Err = Err>,
-    {
-        ProvideStream::new(&mut self.0, handler)
-    }
-
-    pub fn with_upload<I, E, Ok, Err>(
-        &mut self,
-        handler: E,
-    ) -> impl UploadStep<I, Ok = Ok, Err = Err>
-    where
-        I: Send,
-        E: IsEndpoint<Upload<I>, C, Ok = Ok, Err = Err>,
-    {
-        ProvideUpload::new(&mut self.0, handler)
     }
 }

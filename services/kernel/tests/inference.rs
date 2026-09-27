@@ -10,7 +10,7 @@ use std::{
 
 use common::{CountingHands, FaultyDb, Outcome, SVC, outcome, service};
 use eva_core::{
-    ByteStream, CallStep as _, Caller, GenSink, Provider, SessionMaker as _, UploadStep as _,
+    ByteStream, CallStep as _, Caller, GenSink, Provider, SessionMaker as _,
     service::{self, blobs::Blobs as _, inference::Inference as _},
 };
 use eva_hands::Limits;
@@ -579,8 +579,8 @@ async fn put_blob(session: &mut Sess, chat: ChatId, name: &str, kind: Kind) -> B
     session
         .blobs()
         .put()
-        .call(
-            put::Args {
+        .call(put::Args {
+            meta: put::Meta {
                 chat,
                 name: name.to_owned(),
                 media_type: String::from("image/png"),
@@ -589,7 +589,7 @@ async fn put_blob(session: &mut Sess, chat: ChatId, name: &str, kind: Kind) -> B
                 hash: None,
             },
             body,
-        )
+        })
         .await
         .expect("blobs.put")
         .id

@@ -451,7 +451,7 @@ fn blob_args() -> blob_get::Args {
 async fn read_blob(
     mut kernel: Kernel,
 ) -> Response<Vec<Response<blob_get::Item, blob_get::Err>>, blob_get::Err> {
-    let items = kernel.blobs().get().open(blob_args()).await?;
+    let items = kernel.blobs().get().call(blob_args()).await?;
     Ok(items.collect().await)
 }
 
@@ -460,8 +460,8 @@ async fn put_blob(mut kernel: Kernel) -> Response<blob_put::Ok, blob_put::Err> {
     kernel
         .blobs()
         .put()
-        .call(
-            blob_put::Args {
+        .call(blob_put::Args {
+            meta: blob_put::Meta {
                 chat: ChatId(1),
                 name: "a.txt".to_owned(),
                 media_type: "text/plain".to_owned(),
@@ -470,7 +470,7 @@ async fn put_blob(mut kernel: Kernel) -> Response<blob_put::Ok, blob_put::Err> {
                 hash: None,
             },
             body,
-        )
+        })
         .await
 }
 
@@ -521,7 +521,7 @@ async fn a_stream_cut_after_its_first_item_ends_unavailable() {
     let mut items = kernel
         .blobs()
         .get()
-        .open(blob_args())
+        .call(blob_args())
         .await
         .expect("opened");
     assert!(matches!(

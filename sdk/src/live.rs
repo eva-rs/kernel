@@ -19,7 +19,8 @@ use futures::StreamExt as _;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{sync::watch, time::Instant};
 
-use eva_core::{ByteStream, CallStep, Items, Session, StreamStep, UploadStep};
+use eva::fut::Fut;
+use eva_core::{CallStep, Items, Session, service::op_name};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::Response,
@@ -151,9 +152,9 @@ impl Link {
     }
 
     /// Вызов на текущем соединении; оборванный в полёте повторяется на новом.
-    async fn run<T, E, Fut>(&self, mut attempt: impl FnMut(Rpc, Peer) -> Fut) -> Response<T, E>
+    async fn run<T, E, R>(&self, mut attempt: impl FnMut(Rpc, Peer) -> R) -> Response<T, E>
     where
-        Fut: Future<Output = Response<T, E>>,
+        R: Future<Output = Response<T, E>>,
     {
         let deadline = Instant::now() + CALL_RECONNECT_WAIT;
         let mut live = self.open(None, deadline).await?;
@@ -246,24 +247,22 @@ impl std::fmt::Debug for LiveSession {
     }
 }
 
-struct LiveRead<A, O, E, F> {
+struct LiveRead<F> {
     link: Arc<Link>,
     op: F,
-    _types: PhantomData<fn(A) -> (O, E)>,
 }
 
-impl<A, O, E, F, Fut> CallStep<A> for LiveRead<A, O, E, F>
+impl<A, O, E, F, R> CallStep<A> for LiveRead<F>
 where
     A: Clone + Send + 'static,
     O: Send + 'static,
     E: Send + 'static,
-    F: Fn(Rpc, A) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Response<O, E>> + Send,
+    F: Fn(Rpc, A) -> R + Clone + Send + Sync + 'static,
+    R: Fut<Output = Response<O, E>>,
 {
-    type Ok = O;
-    type Err = E;
+    type Output = Response<O, E>;
 
-    fn call(&mut self, args: A) -> impl Future<Output = Response<O, E>> + Send {
+    fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
         let (link, op) = (self.link.clone(), self.op.clone());
         async move { link.run(move |session, _| op(session, args.clone())).await }
     }
@@ -281,10 +280,9 @@ where
     O: DeserializeOwned + Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
-    type Ok = O;
-    type Err = E;
+    type Output = Response<O, E>;
 
-    fn call(&mut self, args: A) -> impl Future<Output = Response<O, E>> + Send {
+    fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
         let (link, method) = (self.link.clone(), self.method.clone());
         let params = codec::encode(&args);
         async move {
@@ -299,24 +297,22 @@ fn invalid<E>(what: &str, e: impl std::fmt::Display) -> Generic<E> {
     Generic::Aux(Aux::Invalid(format!("{what}: {e}")))
 }
 
-struct LiveStream<A, T, E, F> {
+struct LiveStream<F> {
     link: Arc<Link>,
     op: F,
-    _types: PhantomData<fn(A) -> (T, E)>,
 }
 
-impl<A, T, E, F, Fut> StreamStep<A> for LiveStream<A, T, E, F>
+impl<A, T, E, F, R> CallStep<A> for LiveStream<F>
 where
     A: Clone + Send + 'static,
     T: Send + 'static,
     E: Send + 'static,
-    F: Fn(Rpc, A) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Response<Items<T, E>, E>> + Send,
+    F: Fn(Rpc, A) -> R + Clone + Send + Sync + 'static,
+    R: Fut<Output = Response<Items<T, E>, E>>,
 {
-    type Item = T;
-    type Err = E;
+    type Output = Response<Items<T, E>, E>;
 
-    fn open(&mut self, args: A) -> impl Future<Output = Response<Items<T, E>, E>> + Send {
+    fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
         let (link, op) = (self.link.clone(), self.op.clone());
         async move {
             link.run(move |session, peer| {
@@ -336,29 +332,27 @@ where
     }
 }
 
-struct LiveUpload<A, O, E, F> {
+struct LiveUpload<F> {
     link: Arc<Link>,
     op: F,
-    _types: PhantomData<fn(A) -> (O, E)>,
 }
 
-impl<A, O, E, F, Fut> UploadStep<A> for LiveUpload<A, O, E, F>
+impl<A, O, E, F, R> CallStep<A> for LiveUpload<F>
 where
     A: Send + 'static,
     O: Send + 'static,
     E: Send + 'static,
-    F: Fn(Rpc, A, ByteStream) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Response<O, E>> + Send,
+    F: Fn(Rpc, A) -> R + Clone + Send + Sync + 'static,
+    R: Fut<Output = Response<O, E>>,
 {
-    type Ok = O;
-    type Err = E;
+    type Output = Response<O, E>;
 
-    fn call(&mut self, args: A, body: ByteStream) -> impl Future<Output = Response<O, E>> + Send {
+    fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
         let (link, op) = (self.link.clone(), self.op.clone());
         async move {
             let deadline = Instant::now() + CALL_RECONNECT_WAIT;
             let live = link.open(None, deadline).await?;
-            let result = op(live.session, args, body).await;
+            let result = op(live.session, args).await;
             match cut(&result, &live.peer) {
                 Some(reason) => Err(lost(reason)),
                 None => result,
@@ -367,162 +361,61 @@ where
     }
 }
 
+/// Мутация идёт мимо сессии соединения (`$method`, не `$op`), чтобы её id запроса пережил реконнект.
 macro_rules! live_step {
-    (read $ns:ident $Trait:ident $op:ident) => {
-        fn $op(
-            &mut self,
-        ) -> impl CallStep<
-            eva_protocol::requests::$ns::$op::Args,
-            Ok = eva_protocol::requests::$ns::$op::Ok,
-            Err = eva_protocol::requests::$ns::$op::Err,
-        > {
-            LiveRead {
-                link: self.link.clone(),
-                op: |mut session: Rpc, args: eva_protocol::requests::$ns::$op::Args| async move {
-                    session.$ns().$op().call(args).await
-                },
-                _types: PhantomData,
-            }
+    ([] $link:expr, $method:expr, $op:expr) => {
+        LiveRead {
+            link: $link,
+            op: $op,
         }
     };
-    (mut $ns:ident $Trait:ident $op:ident) => {
-        fn $op(
-            &mut self,
-        ) -> impl CallStep<
-            eva_protocol::requests::$ns::$op::Args,
-            Ok = eva_protocol::requests::$ns::$op::Ok,
-            Err = eva_protocol::requests::$ns::$op::Err,
-        > {
-            LiveMut {
-                link: self.link.clone(),
-                method: format!(
-                    "{}.{}",
-                    stringify!($ns),
-                    eva_core::service::op_name(stringify!($op))
-                ),
-                _types: PhantomData,
-            }
+    ([mutating] $link:expr, $method:expr, $op:expr) => {
+        LiveMut {
+            link: $link,
+            method: $method,
+            _types: PhantomData,
         }
     };
-    (stream $ns:ident $Trait:ident $op:ident) => {
-        fn $op(
-            &mut self,
-        ) -> impl StreamStep<
-            eva_protocol::requests::$ns::$op::Args,
-            Item = eva_protocol::requests::$ns::$op::Item,
-            Err = eva_protocol::requests::$ns::$op::Err,
-        > {
-            LiveStream {
-                link: self.link.clone(),
-                op: |mut session: Rpc, args: eva_protocol::requests::$ns::$op::Args| async move {
-                    session.$ns().$op().open(args).await
-                },
-                _types: PhantomData,
-            }
+    ([stream] $link:expr, $method:expr, $op:expr) => {
+        LiveStream {
+            link: $link,
+            op: $op,
         }
     };
-    (upload $ns:ident $Trait:ident $op:ident) => {
-        fn $op(
-            &mut self,
-        ) -> impl UploadStep<
-            eva_protocol::requests::$ns::$op::Args,
-            Ok = eva_protocol::requests::$ns::$op::Ok,
-            Err = eva_protocol::requests::$ns::$op::Err,
-        > {
-            LiveUpload {
-                link: self.link.clone(),
-                op: |mut session: Rpc,
-                     args: eva_protocol::requests::$ns::$op::Args,
-                     body: ByteStream| async move {
-                    session.$ns().$op().call(args, body).await
-                },
-                _types: PhantomData,
-            }
+    ([upload] $link:expr, $method:expr, $op:expr) => {
+        LiveUpload {
+            link: $link,
+            op: $op,
         }
     };
 }
 
 macro_rules! live_impls {
-    ($($ns:ident: $Trait:ident { $($kind:ident $op:ident),* $(,)? }),* $(,)?) => {
-        $(
-            impl eva_core::service::$ns::$Trait for LiveSession {
-                $(live_step!($kind $ns $Trait $op);)*
+    ($(
+        $segment:ident {$(
+            $accessor:ident : $Trait:ident {$(
+                $(#[$flag:ident])*
+                $method:ident = $endpoint:ident {
+                    args: $Args:ty,
+                    ok: $Ok:ty,
+                    err: $Err:ty,
+                    output: $Output:ty,
+                }
+            )*}
+        )*}
+    )*) => {$($(
+        impl eva_core::service::$segment::$Trait for LiveSession {$(
+            fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
+                live_step!(
+                    [$($flag)*] self.link.clone(),
+                    format!("{}.{}", stringify!($segment), op_name(stringify!($endpoint))),
+                    |mut session: Rpc, args: $Args| async move {
+                        session.$accessor().$method().call(args).await
+                    }
+                )
             }
-        )*
-
-        /// Метки списка: сверяются с `NAMESPACES` ядра в тесте.
-        #[cfg(test)]
-        const LABELS: &[(&str, &[(&str, &str)])] = &[$(
-            (stringify!($ns), &[$((stringify!($kind), eva_core::service::op_name(stringify!($op)))),*]),
-        )*];
-    };
+        )*}
+    )*)*};
 }
 
-// Тот же список, что у `eva-rpc`: пропуск операции не скомпилируется, метка
-// задаёт форму шага и способ повтора после обрыва.
-live_impls! {
-    surfaces: Surfaces { mut create, read get, read list, mut update },
-    folders: Folders { mut create, mut update, mut delete, read list },
-    chats: Chats {
-        mut ingest, mut create, read get, read list, mut update, mut r#move,
-        mut delete, mut restore, read search, read history_read, mut compact,
-        mut notify,
-    },
-    turns: Turns {
-        mut start, stream attach, mut append_silent, mut delivered, mut cancel,
-        mut respond,
-    },
-    persons: Persons { mut resolve, read list, mut rename, mut merge, mut whitelist },
-    memory: Memory { read list, read get, read history, mut restore },
-    notes: Notes { read list },
-    tools: Tools { read catalog },
-    models: Models { read list },
-    cron: Cron { read list, read runs },
-    sleep: Sleep { read runs, read phase_runs },
-    agents: Agents { read list },
-    stats: Stats {
-        read tools_usage, read spend, read spend_series, read chat_spend, read health,
-    },
-    modules: Modules { read list, mut token_issue, mut token_revoke },
-    hands_grants: HandsGrants { read list, mut revoke },
-    blobs: Blobs { upload put, stream get, read stat },
-    inference: Inference { mut complete },
-    fs: Fs { read read, mut write, read list, read stat, mut remove },
-    sqlite: Sqlite { mut exec, read query, mut tx },
-    kv: Kv { read get, mut set, mut del, read list },
-}
-
-#[cfg(test)]
-mod tests {
-    use eva_core::{NAMESPACES, OpKind};
-
-    use super::LABELS;
-
-    #[test]
-    fn labels_match_the_library() {
-        let ours: Vec<(&str, Vec<(&str, OpKind)>)> = LABELS
-            .iter()
-            .map(|(ns, ops)| {
-                let ops = ops
-                    .iter()
-                    .map(|(label, op)| {
-                        let kind = match *label {
-                            "read" => OpKind::Read,
-                            "mut" => OpKind::Mutating,
-                            "stream" => OpKind::Stream,
-                            "upload" => OpKind::Upload,
-                            other => panic!("unknown label {other}"),
-                        };
-                        (*op, kind)
-                    })
-                    .collect();
-                (*ns, ops)
-            })
-            .collect();
-        let library: Vec<(&str, Vec<(&str, OpKind)>)> = NAMESPACES
-            .iter()
-            .map(|(ns, ops)| (*ns, ops.iter().map(|op| (op.name, op.kind)).collect()))
-            .collect();
-        assert_eq!(ours, library);
-    }
-}
+eva_core::for_each_op!(live_impls);

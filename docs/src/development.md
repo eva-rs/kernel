@@ -5,7 +5,8 @@
 | Путь | Крейт | Содержит |
 |---|---|---|
 | `protocol/` | `eva-protocol` | типы данных, операции `requests/<ns>.rs` (`Args`/`Ok`/`Err`), доменные ошибки `errors/<ns>.rs`, wire-кадры и handshake; без I/O |
-| `core/` | `eva-core` | `Session`, шаги операций, трейты неймспейсов (`service/<ns>.rs`), `Caller`, трейт `Provider`, `prelude` |
+| `macros/` | `eva-kernel-macros` | список операций `endpoints!`: трейты неймспейсов и X-макро `for_each_op!` |
+| `core/` | `eva-core` | `Session`, `CallStep`, трейты неймспейсов и `for_each_op!` из списка операций, `Caller`, трейт `Provider`, `prelude` |
 | `rpc/` | `eva-rpc` | кадры msgpack, транспорты uds/ws/wss, симметричный пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
 | `sdk/` | `eva-sdk` | `Module` → `Connected`: SDK для модулей |
 | `providers/openai/`, `providers/mock/` | `eva-provider-*` | `impl Provider` одного вендора |
@@ -95,15 +96,15 @@ nix develop -c cargo test --workspace
 
 ```mermaid
 flowchart LR
-    A["protocol<br/>requests/ns.rs"] --> B["core<br/>service/ns.rs"]
-    B --> C["rpc<br/>ops.rs"]
+    A["protocol<br/>requests/ns.rs"] --> B["macros<br/>lib.rs"]
+    B -. for_each_op! .-> C["rpc<br/>без правок"]
     B --> D["kernel<br/>db · convert · policy · handling · impls"]
     D --> E["tests/contract.rs<br/>tests/k3_policy_all.rs"]
 ```
 
 1. **protocol.** В `protocol/src/requests/<ns>.rs` — модуль операции с `Args`, `Ok`, `Err` (все `#[data]`) и `code!(Err => [...])`, сопоставляющим вариант ошибки коду провода. Новые доменные ошибки — в `protocol/src/errors/<ns>.rs` со своим `code!`.
-2. **core.** Добавить имя в `service_trait!` в `core/src/service/<ns>.rs` с меткой формы: без метки — чтение, `mut` — мутация, `stream` — поток, `upload` — загрузка. Отсюда метод трейта и строка `NAMESPACES`; добавить строку `("<ns>.<op>", <OpKind>)` в `TABLE` в `core/tests/namespaces.rs` на то же место, что и в `service_trait!` (порядок сверяется).
-3. **rpc.** Добавить операцию с той же меткой в `for_each_op!` в `rpc/src/ops.rs`: из него собираются клиентская сессия (пропуск не скомпилируется) и таблица диспетчера; сверку с `NAMESPACES` держит `rpc/tests/it/methods.rs`. SDK получает метод автоматически.
+2. **macros.** Добавить операцию в `endpoints!` в `macros/src/lib.rs` на её место в неймспейсе, с флагом вида: без флага — чтение, `mutating` — мутация, `stream` — поток (`Ok = Items<Item, Err>`), `upload` — загрузка (`Args { meta, body }`). Отсюда метод трейта неймспейса, строка `NAMESPACES` и строка `for_each_op!`.
+3. **rpc.** Правок нет: клиентская сессия и таблица диспетчера — колбэки над `eva_core::for_each_op!`, форму задаёт флаг (`mutating` — окно идемпотентности, `stream` — `Items` кадрами потока, `upload` — `Meta` в `params` и тело чанками). Сверку с `NAMESPACES` держит `rpc/tests/it/methods.rs`. SDK получает метод автоматически.
 4. **kernel:**
    - запросы — в `db/<ns>.rs`;
    - преобразование строк — в `convert/`;
@@ -116,7 +117,7 @@ flowchart LR
 
 ## Vendor lint
 
-`services/kernel/tests/vendor_lint.rs` обходит крейты `protocol`, `core`, `rpc`, `sdk`, `services/kernel` — код, тесты, SQL, манифесты, снапшоты — и падает на любом вхождении (без учёта регистра) имён вендоров и поверхностей из списка-запрета: `anthropic`, `openai`, `openrouter`, `claude`, `gemini`, `mistral`, `ollama`, `telegram`, `whatsapp`, `discord`, `slack`. Такие строки допустимы только в `providers/*`. Ядро различает провайдеров и поверхности по данным (`kind`, id), а не по именам в коде.
+`services/kernel/tests/vendor_lint.rs` обходит крейты `protocol`, `macros`, `core`, `rpc`, `sdk`, `services/kernel` — код, тесты, SQL, манифесты, снапшоты — и падает на любом вхождении (без учёта регистра) имён вендоров и поверхностей из списка-запрета: `anthropic`, `openai`, `openrouter`, `claude`, `gemini`, `mistral`, `ollama`, `telegram`, `whatsapp`, `discord`, `slack`. Такие строки допустимы только в `providers/*`. Ядро различает провайдеров и поверхности по данным (`kind`, id), а не по именам в коде.
 
 ## Снапшот-тесты
 

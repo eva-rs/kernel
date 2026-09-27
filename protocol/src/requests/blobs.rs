@@ -4,6 +4,7 @@ use eva::data;
 
 use crate::{
     errors,
+    requests::{ByteStream, Items},
     types::{
         BlobId, Bytes, ChatId,
         blob::{Kind, Meta},
@@ -13,9 +14,15 @@ use crate::{
 pub mod put {
     use super::*;
 
-    /// Тело — поток чанков транспорта.
-    #[data]
+    /// По проводу — `Meta`, тело — поток чанков транспорта.
+    #[data(not(Debug, serde, schemars, Clone, PartialEq))]
     pub struct Args {
+        pub meta: Meta,
+        pub body: ByteStream,
+    }
+
+    #[data]
+    pub struct Meta {
         pub chat: ChatId,
         pub name: String,
         pub media_type: String,
@@ -66,6 +73,8 @@ pub mod get {
         },
         Chunk(Bytes),
     }
+
+    pub type Ok = Items<Item, Err>;
 
     #[data(error)]
     pub enum Err {

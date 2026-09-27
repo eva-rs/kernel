@@ -6,7 +6,7 @@ use crate::{components::Components, handling::turns as h, session::Session};
 #[rustfmt::skip]
 impl<C: Components> Turns for Session<C> { project! {
     fn start() = h::Start;
-    stream fn attach() = h::Attach;
+    fn attach() = h::Attach;
     fn append_silent() = h::AppendSilent;
     fn delivered() = h::Delivered;
     fn cancel() = h::Cancel;

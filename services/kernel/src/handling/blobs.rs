@@ -8,11 +8,10 @@
 use std::path::{Path, PathBuf};
 
 use eva::time::Timestamp;
-use eva_core::Items;
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
-        Response,
+        ByteStream, Response,
         blobs::{get, put, stat},
     },
     types::{BlobId, Bytes},
@@ -27,7 +26,7 @@ use crate::{
         Db as _, DbResult, Queries as _,
         blobs::{BLOB_FLOOR, BlobRow, Source},
     },
-    handling::{Upload, text},
+    handling::text,
     shared::Shared,
     state::{Policy, State},
 };
@@ -114,7 +113,7 @@ async fn load<C: Components, E: From<errors::blobs::NotFound>>(
 #[fastrace::trace]
 pub async fn Put<C: Components>(
     state: &mut State<C>,
-    args: Upload<put::Args>,
+    args: put::Args,
 ) -> Response<put::Ok, put::Err> {
     let State {
         shared,
@@ -123,14 +122,17 @@ pub async fn Put<C: Components>(
         db_conn,
         ..
     } = state;
-    let Upload { args, mut body } = args;
     let put::Args {
-        chat,
-        name,
-        media_type,
-        kind,
-        size,
-        hash,
+        meta:
+            put::Meta {
+                chat,
+                name,
+                media_type,
+                kind,
+                size,
+                hash,
+            },
+        mut body,
     } = args;
     let policy = Policy::new(caller);
     let now = world.now();
@@ -316,7 +318,7 @@ async fn commit<C: Components>(
 /// Приём тела с проверкой по ходу: перебор заявленного размера рвёт приём.
 async fn receive(
     path: &Path,
-    body: &mut eva_core::ByteStream,
+    body: &mut ByteStream,
     declared: u64,
 ) -> Response<(u64, blake3::Hash), put::Err> {
     if let Some(dir) = path.parent() {
@@ -396,7 +398,7 @@ fn expires(now: Timestamp, keep: std::time::Duration) -> Timestamp {
 pub async fn Get<C: Components>(
     state: &mut State<C>,
     args: get::Args,
-) -> Response<Items<get::Item, get::Err>, get::Err> {
+) -> Response<get::Ok, get::Err> {
     let get::Args { id, offset } = args;
     let row = load::<C, get::Err>(state, id).await?;
     state.db_conn.release();

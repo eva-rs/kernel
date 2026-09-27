@@ -1,33 +1,18 @@
 //! `impl <Namespace> for Session<C>`: строка `project!` на операцию.
 //! Операция трейта без строки — ошибка компиляции.
 
-/// `fn get() = h::Get;` → шаг `with_state`; `stream fn`/`upload fn` — через
-/// `with_stream`/`with_upload`. Модуль операции должен быть в области видимости.
+/// `fn get() = h::Get;` → шаг `with_state`. Модуль операции должен быть в
+/// области видимости.
 macro_rules! project {
     () => {};
     (fn $method:ident() = $handler:expr; $($tail:tt)*) => {
         fn $method(
             &mut self,
-        ) -> impl ::eva_core::CallStep<$method::Args, Ok = $method::Ok, Err = $method::Err> {
+        ) -> impl ::eva_core::CallStep<
+            $method::Args,
+            Output = ::eva_protocol::requests::Response<$method::Ok, $method::Err>,
+        > {
             self.with_state($handler)
-        }
-
-        project!($($tail)*);
-    };
-    (stream fn $method:ident() = $handler:expr; $($tail:tt)*) => {
-        fn $method(
-            &mut self,
-        ) -> impl ::eva_core::StreamStep<$method::Args, Item = $method::Item, Err = $method::Err> {
-            self.with_stream($handler)
-        }
-
-        project!($($tail)*);
-    };
-    (upload fn $method:ident() = $handler:expr; $($tail:tt)*) => {
-        fn $method(
-            &mut self,
-        ) -> impl ::eva_core::UploadStep<$method::Args, Ok = $method::Ok, Err = $method::Err> {
-            self.with_upload($handler)
         }
 
         project!($($tail)*);

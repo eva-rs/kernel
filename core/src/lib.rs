@@ -22,8 +22,6 @@ pub mod service;
 
 pub use caller::Caller;
 pub use eva_protocol as protocol;
+pub use eva_protocol::requests::{ByteStream, Items};
 pub use provider::{GenSink, Provider};
-pub use service::{
-    ByteStream, CallStep, IsSession, Items, NAMESPACES, Op, OpKind, Session, SessionMaker,
-    StreamStep, UploadStep,
-};
+pub use service::{CallStep, IsSession, NAMESPACES, Op, OpKind, Session, SessionMaker};

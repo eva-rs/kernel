@@ -226,7 +226,10 @@ impl Ctx<'_> {
             .await
             .blobs()
             .put()
-            .call(put_args(chat), body(b"abc"))
+            .call(blobs::put::Args {
+                meta: put_args(chat),
+                body: body(b"abc"),
+            })
             .await
             .expect("target blob")
             .id
@@ -300,8 +303,8 @@ impl Ctx<'_> {
     }
 }
 
-fn put_args(chat: ChatId) -> blobs::put::Args {
-    blobs::put::Args {
+fn put_args(chat: ChatId) -> blobs::put::Meta {
+    blobs::put::Meta {
         chat,
         name: String::from("a.txt"),
         media_type: String::from("text/plain"),
@@ -676,7 +679,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .await
                 .turns()
                 .attach()
-                .open(turns::attach::Args {
+                .call(turns::attach::Args {
                     chat,
                     since_seq: None,
                 })
@@ -1050,7 +1053,10 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                     .await
                     .blobs()
                     .put()
-                    .call(put_args(chat), body(b"abc"))
+                    .call(blobs::put::Args {
+                        meta: put_args(chat),
+                        body: body(b"abc"),
+                    })
                     .await,
             )
         }
@@ -1061,7 +1067,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .await
                 .blobs()
                 .get()
-                .open(blobs::get::Args { id, offset: 0 })
+                .call(blobs::get::Args { id, offset: 0 })
                 .await
                 .map(drop);
             outcome(&res)

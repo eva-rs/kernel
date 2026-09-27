@@ -1,13 +1,18 @@
 //! Операции: по файлу на домен, по модулю на операцию.
 //!
-//! Модуль операции объявляет ровно три типа — `Args`, `Ok`, `Err` (поток —
-//! `Args`, `Item`, `Err`). Один и тот же модуль читают библиотека,
-//! RPC-сервер, RPC-клиент и тул модели, поэтому форма вызова у них одна.
+//! Модуль операции объявляет `Args`, `Ok`, `Err`. У потока к вызывающему
+//! `Ok = Items<Item, Err>`, `Item` — тип элемента; у загрузки `Args` несёт
+//! `body: ByteStream`, а по проводу идёт `Meta`. Один и тот же модуль читают
+//! библиотека, RPC-сервер, RPC-клиент и тул модели, поэтому форма вызова у
+//! них одна.
 
-use eva::data;
+use std::pin::Pin;
+
+use eva::{bytes::Bytes, data};
+use futures_core::Stream;
 use serde::{Deserialize, Deserializer};
 
-use crate::errors;
+use crate::errors::{self, Aux};
 
 pub mod agents;
 pub mod blobs;
@@ -32,6 +37,13 @@ pub mod turns;
 
 /// Результат операции: свой `Err` либо беда подсистемы.
 pub type Response<O, E> = errors::Result<O, E>;
+
+/// `Ok` потока к вызывающему: отказ до первого элемента — `Err` самого
+/// вызова, `Err` внутри потока — последний элемент, drop — отмена.
+pub type Items<T, E> = Pin<Box<dyn Stream<Item = Response<T, E>> + Send>>;
+
+/// Тело загрузки: чанки от вызывающего; обрыв источника — `Aux`.
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, Aux>> + Send>>;
 
 /// Сколько записей вернуть. Валидация — в типе, не в хендлере.
 #[eva::int(u16, 1..=200)]

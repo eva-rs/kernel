@@ -20,28 +20,30 @@ let surfaces::get::Ok { surface } = session
 - `session.<ns>()` — трейт неймспейса, `.<op>()` — шаг операции. Без `use eva_core::prelude::*` (или `eva_sdk::prelude::*`) методы неймспейсов не резолвятся.
 - Операция `chats.move` в Rust — `session.chats().r#move()`.
 
-Каждая операция — модуль `eva_protocol::requests::<ns>::<op>` ровно с тремя типами:
+Каждая операция — модуль `eva_protocol::requests::<ns>::<op>` с тремя типами:
 
 | Тип | Что это |
 |---|---|
-| `Args` | Аргументы; на проводе — msgpack-карта с именами полей |
-| `Ok` | Успешный ответ; у потока вместо него `Item` — тип элемента |
+| `Args` | Аргументы; на проводе — msgpack-карта с именами полей. У загрузки — `{ meta: Meta, body: ByteStream }`: по проводу идёт `Meta`, у `Args` serde-формы нет |
+| `Ok` | Успешный ответ; у потока — `Items<Item, Err>`, `Item` — тип элемента |
 | `Err` | Собственные ошибки операции; пустой enum, если своих нет |
 
-Форма шага задаёт, как операцию зовут:
+Шаг любой операции — `CallStep<Args, Output = Response<Ok, Err>>`, вызов — `.call(args)`. Вид операции — флаг в списке операций (`macros/src/lib.rs`):
 
-| Вид | Шаг | Вызов | Итог |
-|---|---|---|---|
-| read | `CallStep` | `.call(args)` | `Response<Ok, Err>` |
-| mut | `CallStep` | `.call(args)` | `Response<Ok, Err>`; повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ |
-| stream | `StreamStep` | `.open(args)` | `Response<Items<Item, Err>, Err>`; отказ до первого элемента — `Err` из `open`, `Err` внутри потока — последний элемент, drop `Items` — отмена |
-| upload | `UploadStep` | `.call(args, body)` | `Response<Ok, Err>`; `body: ByteStream` — поток чанков `Result<Bytes, Aux>`, обрыв источника — `Aux` |
+| Вид | Флаг | Итог |
+|---|---|---|
+| read | — | `Response<Ok, Err>` |
+| mut | `mutating` | `Response<Ok, Err>`; повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ |
+| stream | `stream` | `Response<Items<Item, Err>, Err>`; отказ до первого элемента — `Err` самого вызова, `Err` внутри потока — последний элемент, drop `Items` — отмена |
+| upload | `upload` | `Response<Ok, Err>`; `body: ByteStream` — поток чанков `Result<Bytes, Aux>`, обрыв источника — `Aux` |
+
+`Items` и `ByteStream` — типы `eva_protocol::requests` (реэкспорт в `eva_core`).
 
 ```rust
 use futures::StreamExt as _;
 use eva_protocol::requests::blobs;
 
-let mut items = session.blobs().get().open(blobs::get::Args { id, offset: 0 }).await?;
+let mut items = session.blobs().get().call(blobs::get::Args { id, offset: 0 }).await?;
 while let Some(item) = items.next().await {
     match item? {
         blobs::get::Item::Meta { size, .. } => log::info!(size; "blob"),

@@ -13,14 +13,14 @@ use std::{
 use futures::{StreamExt as _, stream};
 use tokio::sync::Notify;
 
-use eva::time::Timestamp;
+use eva::{fut::Fut, time::Timestamp};
 use eva_core::{
-    ByteStream, CallStep, Caller, Items, Session, SessionMaker, StreamStep, UploadStep,
+    CallStep, Caller, Items, Session, SessionMaker,
     service::{
-        AuxFut, RespFut, agents::Agents, blobs::Blobs, chats::Chats, cron::Cron, folders::Folders,
-        fs::Fs, hands_grants::HandsGrants, inference::Inference, kv::Kv, memory::Memory,
-        models::Models, modules::Modules, notes::Notes, persons::Persons, sleep::Sleep,
-        sqlite::Sqlite, stats::Stats, surfaces::Surfaces, tools::Tools, turns::Turns,
+        AuxFut, agents::Agents, blobs::Blobs, chats::Chats, cron::Cron, folders::Folders, fs::Fs,
+        hands_grants::HandsGrants, inference::Inference, kv::Kv, memory::Memory, models::Models,
+        modules::Modules, notes::Notes, persons::Persons, sleep::Sleep, sqlite::Sqlite,
+        stats::Stats, surfaces::Surfaces, tools::Tools, turns::Turns,
     },
 };
 use eva_protocol::{
@@ -127,46 +127,15 @@ pub fn item(n: i64) -> TurnItem {
 /// Шаг из замыкания.
 pub struct Call<F>(F);
 
-impl<A, O, E, F, Fut> CallStep<A> for Call<F>
+impl<A, O, F, R> CallStep<A> for Call<F>
 where
-    F: FnMut(A) -> Fut + Send + Sync,
-    Fut: Future<Output = Response<O, E>> + Send,
+    F: FnMut(A) -> R + Send + Sync,
+    R: Fut<Output = O>,
 {
-    type Ok = O;
-    type Err = E;
+    type Output = O;
 
-    fn call(&mut self, args: A) -> impl RespFut<O, E> {
+    fn call(&mut self, args: A) -> impl Fut<Output = O> {
         (self.0)(args)
-    }
-}
-
-pub struct Open<F>(F);
-
-impl<A, T, E, F, Fut> StreamStep<A> for Open<F>
-where
-    F: FnMut(A) -> Fut + Send + Sync,
-    Fut: Future<Output = Response<Items<T, E>, E>> + Send,
-{
-    type Item = T;
-    type Err = E;
-
-    fn open(&mut self, args: A) -> impl RespFut<Items<T, E>, E> {
-        (self.0)(args)
-    }
-}
-
-pub struct Upload<F>(F);
-
-impl<A, O, E, F, Fut> UploadStep<A> for Upload<F>
-where
-    F: FnMut(A, ByteStream) -> Fut + Send + Sync,
-    Fut: Future<Output = Response<O, E>> + Send,
-{
-    type Ok = O;
-    type Err = E;
-
-    fn call(&mut self, args: A, body: ByteStream) -> impl RespFut<O, E> {
-        (self.0)(args, body)
     }
 }
 
@@ -181,33 +150,27 @@ pub fn fail<A, O, E>() -> Fail<A, O, E> {
 }
 
 impl<A, O: Send, E: Send> CallStep<A> for Fail<A, O, E> {
-    type Ok = O;
-    type Err = E;
+    type Output = Response<O, E>;
 
-    fn call(&mut self, _: A) -> impl RespFut<O, E> {
-        async { stubbed() }
-    }
-}
-
-impl<A, T: Send, E: Send> StreamStep<A> for Fail<A, T, E> {
-    type Item = T;
-    type Err = E;
-
-    fn open(&mut self, _: A) -> impl RespFut<Items<T, E>, E> {
+    fn call(&mut self, _: A) -> impl Fut<Output = Self::Output> {
         async { stubbed() }
     }
 }
 
 macro_rules! stub {
     ($($m:ident => $($seg:ident)::+),* $(,)?) => {$(
-        fn $m(&mut self) -> impl CallStep<$($seg)::+::Args, Ok = $($seg)::+::Ok, Err = $($seg)::+::Err> {
+        fn $m(
+            &mut self,
+        ) -> impl CallStep<$($seg)::+::Args, Output = Response<$($seg)::+::Ok, $($seg)::+::Err>> {
             fail()
         }
     )*};
 }
 
 impl Surfaces for TestSession {
-    fn create(&mut self) -> impl CallStep<create::Args, Ok = create::Ok, Err = create::Err> {
+    fn create(
+        &mut self,
+    ) -> impl CallStep<create::Args, Output = Response<create::Ok, create::Err>> {
         let state = self.state.clone();
         Call(move |args: create::Args| {
             let state = state.clone();
@@ -231,7 +194,7 @@ impl Surfaces for TestSession {
         })
     }
 
-    fn get(&mut self) -> impl CallStep<get::Args, Ok = get::Ok, Err = get::Err> {
+    fn get(&mut self) -> impl CallStep<get::Args, Output = Response<get::Ok, get::Err>> {
         let state = self.state.clone();
         Call(move |args: get::Args| {
             let found = state
@@ -255,7 +218,7 @@ impl Surfaces for TestSession {
         })
     }
 
-    fn list(&mut self) -> impl CallStep<list::Args, Ok = list::Ok, Err = list::Err> {
+    fn list(&mut self) -> impl CallStep<list::Args, Output = Response<list::Ok, list::Err>> {
         Call(|_: list::Args| async { Err(Generic::Aux(Aux::forbidden("owner only"))) })
     }
 
@@ -263,9 +226,11 @@ impl Surfaces for TestSession {
 }
 
 impl Turns for TestSession {
-    fn attach(&mut self) -> impl StreamStep<attach::Args, Item = attach::Item, Err = attach::Err> {
+    fn attach(
+        &mut self,
+    ) -> impl CallStep<attach::Args, Output = Response<attach::Ok, attach::Err>> {
         let state = self.state.clone();
-        Open(move |args: attach::Args| {
+        Call(move |args: attach::Args| {
             let state = state.clone();
             async move {
                 let not_found = || {
@@ -321,9 +286,9 @@ impl Drop for DropFlag {
 }
 
 impl Blobs for TestSession {
-    fn put(&mut self) -> impl UploadStep<put::Args, Ok = put::Ok, Err = put::Err> {
+    fn put(&mut self) -> impl CallStep<put::Args, Output = Response<put::Ok, put::Err>> {
         let state = self.state.clone();
-        Upload(move |args: put::Args, mut body: ByteStream| {
+        Call(move |put::Args { meta, mut body }| {
             let state = state.clone();
             async move {
                 let delay = *state.put_delay.lock().unwrap();
@@ -333,10 +298,10 @@ impl Blobs for TestSession {
                     bytes.extend_from_slice(&chunk.map_err(Generic::Aux)?);
                 }
                 let actual = bytes.len() as u64;
-                if actual != args.size {
+                if actual != meta.size {
                     return Err(Generic::Spec(
                         errors::blobs::SizeMismatch {
-                            declared: args.size,
+                            declared: meta.size,
                             actual,
                         }
                         .into(),
@@ -352,17 +317,7 @@ impl Blobs for TestSession {
         })
     }
 
-    fn get(
-        &mut self,
-    ) -> impl StreamStep<
-        requests::blobs::get::Args,
-        Item = requests::blobs::get::Item,
-        Err = requests::blobs::get::Err,
-    > {
-        fail()
-    }
-
-    stub! { stat => requests::blobs::stat }
+    stub! { get => requests::blobs::get, stat => requests::blobs::stat }
 }
 
 impl Folders for TestSession {

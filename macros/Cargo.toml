@@ -1,0 +1,14 @@
+[package]
+name = "eva-kernel-macros"
+version.workspace = true
+edition.workspace = true
+description = "Eva kernel: the operation list — namespace traits and the for_each_op X-macro."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+eva-api-builder.workspace = true
+
+[lints]
+workspace = true

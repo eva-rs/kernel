@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use common::{Harness, Outcome, outcome};
 use eva::{bytes::Bytes, time::Clock as _};
 use eva_core::{
-    CallStep as _, UploadStep as _,
+    CallStep as _,
     service::{blobs::Blobs as _, chats::Chats as _, stats::Stats as _},
 };
 use eva_protocol::{
@@ -47,8 +47,8 @@ async fn blobs_answer_aux_db() {
     let blob = client
         .blobs()
         .put()
-        .call(
-            blobs::put::Args {
+        .call(blobs::put::Args {
+            meta: blobs::put::Meta {
                 chat,
                 name: String::from("a.txt"),
                 media_type: String::from("text/plain"),
@@ -56,10 +56,10 @@ async fn blobs_answer_aux_db() {
                 size: 3,
                 hash: None,
             },
-            Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
+            body: Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
                 b"abc",
             ))])),
-        )
+        })
         .await
         .expect("put before the failure")
         .id;
@@ -87,8 +87,8 @@ async fn blobs_answer_aux_db() {
     let res = client
         .blobs()
         .put()
-        .call(
-            blobs::put::Args {
+        .call(blobs::put::Args {
+            meta: blobs::put::Meta {
                 chat,
                 name: String::from("b.txt"),
                 media_type: String::from("text/plain"),
@@ -96,10 +96,10 @@ async fn blobs_answer_aux_db() {
                 size: 3,
                 hash: None,
             },
-            Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
+            body: Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
                 b"xyz",
             ))])),
-        )
+        })
         .await;
     assert_eq!(outcome(&res), Outcome::Db, "put: {res:?}");
 }

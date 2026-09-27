@@ -1,119 +1,78 @@
 //! `Session`, неймспейсы и шаги вызова.
+//!
+//! Трейты неймспейсов (`service::<ns>::<Ns>`) и X-макро `for_each_op!`
+//! порождены списком операций в `eva-kernel-macros`; шаг операции —
+//! `CallStep<Args, Output = Response<Ok, Err>>`.
 
-use std::pin::Pin;
-
-use eva::{auto_impl, bytes::Bytes, handling, trait_set};
-use futures_core::Stream;
+use eva::{auto_impl, handling, trait_set};
 
 use eva_protocol::{errors::Aux, requests::Response};
 
 use crate::Caller;
 
-/// Трейт неймспейса из списка операций.
-///
-/// Метка перед именем задаёт форму шага: без метки — чтение
-/// (`CallStep`), `mut` — мутация (`CallStep`, окно идемпотентности),
-/// `stream` — поток к вызывающему (`StreamStep`), `upload` — поток от
-/// вызывающего (`UploadStep`). `method => module` задаёт другое имя модуля
-/// операций. Рядом с трейтом появляется `OPS` — описание операций для
-/// диспетчера и тестов покрытия.
-macro_rules! service_trait {
-    (
-        $(#[$meta:meta])*
-        pub trait $Trait:ident($($reqs:ident)::+) {
-            $($body:tt)*
-        }
-    ) => {
-        service_trait!(@parse [$(#[$meta])*] $Trait [$($reqs)::+] [] $($body)*);
-    };
+pub use eva::handling::CallStep;
 
-    (@parse $meta:tt $Trait:ident $reqs:tt $acc:tt) => {
-        service_trait!(@emit $meta $Trait $acc);
-    };
-    (@parse $meta:tt $Trait:ident $reqs:tt $acc:tt mut $($rest:tt)*) => {
-        service_trait!(@op $meta $Trait $reqs $acc [CallStep Ok Mutating] $($rest)*);
-    };
-    (@parse $meta:tt $Trait:ident $reqs:tt $acc:tt stream $method:ident $($rest:tt)*) => {
-        service_trait!(@op $meta $Trait $reqs $acc [StreamStep Item Stream] $method $($rest)*);
-    };
-    (@parse $meta:tt $Trait:ident $reqs:tt $acc:tt upload $method:ident $($rest:tt)*) => {
-        service_trait!(@op $meta $Trait $reqs $acc [UploadStep Ok Upload] $method $($rest)*);
-    };
-    (@parse $meta:tt $Trait:ident $reqs:tt $acc:tt $method:ident $($rest:tt)*) => {
-        service_trait!(@op $meta $Trait $reqs $acc [CallStep Ok Read] $method $($rest)*);
-    };
+eva_kernel_macros::endpoints!(for_each_op);
 
-    (@op $meta:tt $Trait:ident $reqs:tt [$($acc:tt)*] $shape:tt $method:ident => $module:ident $(, $($rest:tt)*)?) => {
-        service_trait!(@parse $meta $Trait $reqs [$($acc)* [$method $module $reqs $shape]] $($($rest)*)?);
-    };
-    (@op $meta:tt $Trait:ident $reqs:tt [$($acc:tt)*] $shape:tt $method:ident $(, $($rest:tt)*)?) => {
-        service_trait!(@parse $meta $Trait $reqs [$($acc)* [$method $method $reqs $shape]] $($($rest)*)?);
-    };
-
-    (@emit [$($meta:tt)*] $Trait:ident [$([
-        $method:ident $module:ident [$($path:ident)::+] [$Step:ident $Assoc:ident $kind:ident]
-    ])*]) => {
-        $($meta)*
-        #[::eva::auto_impl(&mut, Box)]
-        pub trait $Trait: Send + Sync {$(
-            fn $method(
-                &mut self,
-            ) -> impl $crate::service::$Step<
-                $($path)::+::$module::Args,
-                $Assoc = $($path)::+::$module::$Assoc,
-                Err = $($path)::+::$module::Err,
-            >;
+/// Из списка операций: `IsSession`, проекции `Session`, `traits` для `prelude`
+/// и `NAMESPACES`.
+macro_rules! domains {
+    ($(
+        $segment:ident {$(
+            $accessor:ident : $Trait:ident {$(
+                $(#[$flag:ident])*
+                $method:ident = $endpoint:ident {
+                    args: $Args:ty,
+                    ok: $Ok:ty,
+                    err: $Err:ty,
+                    output: $Output:ty,
+                }
+            )*}
         )*}
+    )*) => {
+        trait_set! {
+            pub trait IsSession = Send + Sync $($(+ $segment::$Trait)*)*;
+        }
 
-        /// Операции неймспейса в порядке объявления.
-        pub const OPS: &[$crate::service::Op] = &[$(
-            $crate::service::Op {
-                name: $crate::service::op_name(stringify!($module)),
-                kind: $crate::service::OpKind::$kind,
-            },
+        impl<S: IsSession> Session<S> {$($(
+            pub const fn $accessor(&mut self) -> impl $segment::$Trait {
+                &mut self.session
+            }
+        )*)*}
+
+        /// Все трейты неймспейсов анонимно: glob-импорт открывает методы `Session`.
+        pub mod traits {
+            $($(pub use super::$segment::$Trait as _;)*)*
+        }
+
+        /// Все операции библиотеки: RPC-метод — `<namespace>.<op>`.
+        pub const NAMESPACES: &[(&str, &[Op])] = &[$(
+            (stringify!($segment), &[$($(
+                Op {
+                    name: op_name(stringify!($endpoint)),
+                    kind: op_kind!($($flag)*),
+                },
+            )*)*]),
         )*];
     };
 }
 
-/// Регистрирует неймспейсы сессии: сумма трейтов, проекции `Session` и
-/// `NAMESPACES`. Имя метода сессии совпадает с модулем `service/<name>.rs`.
-macro_rules! domains {
-    ($($method:ident: $($Trait:ident)::+),* $(,)?) => {
-        trait_set! {
-            pub trait IsSession = Send + Sync $(+ $($Trait)::+)*;
-        }
-
-        impl<S: IsSession> Session<S> {$(
-            pub const fn $method(&mut self) -> impl $($Trait)::+ {
-                &mut self.session
-            }
-        )*}
-
-        /// Все операции библиотеки: RPC-метод — `<namespace>.<op>`.
-        pub const NAMESPACES: &[(&str, &[Op])] = &[$((stringify!($method), $method::OPS)),*];
+macro_rules! op_kind {
+    () => {
+        OpKind::Read
+    };
+    (mutating) => {
+        OpKind::Mutating
+    };
+    (stream) => {
+        OpKind::Stream
+    };
+    (upload) => {
+        OpKind::Upload
     };
 }
 
-pub mod agents;
-pub mod blobs;
-pub mod chats;
-pub mod cron;
-pub mod folders;
-pub mod fs;
-pub mod hands_grants;
-pub mod inference;
-pub mod kv;
-pub mod memory;
-pub mod models;
-pub mod modules;
-pub mod notes;
-pub mod persons;
-pub mod sleep;
-pub mod sqlite;
-pub mod stats;
-pub mod surfaces;
-pub mod tools;
-pub mod turns;
+for_each_op!(domains);
 
 trait_set! {
     pub trait RespFut<O, E> = Future<Output = Response<O, E>> + Send;
@@ -141,40 +100,19 @@ impl<S: IsSession> Session<S> {
     }
 }
 
-domains! {
-    surfaces: surfaces::Surfaces,
-    folders: folders::Folders,
-    chats: chats::Chats,
-    turns: turns::Turns,
-    persons: persons::Persons,
-    memory: memory::Memory,
-    notes: notes::Notes,
-    tools: tools::Tools,
-    models: models::Models,
-    cron: cron::Cron,
-    sleep: sleep::Sleep,
-    agents: agents::Agents,
-    stats: stats::Stats,
-    modules: modules::Modules,
-    hands_grants: hands_grants::HandsGrants,
-    blobs: blobs::Blobs,
-    inference: inference::Inference,
-    fs: fs::Fs,
-    sqlite: sqlite::Sqlite,
-    kv: kv::Kv,
-}
-
-/// Форма шага операции.
+/// Форма операции — флаг в списке операций.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpKind {
     Read,
     /// Повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ.
     Mutating,
+    /// `Ok` — `Items`: поток к вызывающему.
     Stream,
+    /// `Args` несёт `ByteStream`: поток от вызывающего.
     Upload,
 }
 
-/// Описание операции: имя модуля операций и форма шага.
+/// Описание операции: имя модуля операций и форма.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Op {
     pub name: &'static str,
@@ -199,37 +137,6 @@ pub trait SessionMaker: Send + Sync {
     type Session: IsSession;
 
     fn make_session(&self, caller: Caller) -> impl AuxFut<Session<Self::Session>>;
-}
-
-/// Шаг вызова: `session.chats().get()` даёт его, `.call(args)` исполняет.
-pub trait CallStep<I>: Send + Sync {
-    type Ok;
-    type Err;
-
-    fn call(&mut self, args: I) -> impl RespFut<Self::Ok, Self::Err>;
-}
-
-/// Элементы потока; `Err` внутри потока — последний элемент.
-pub type Items<T, E> = Pin<Box<dyn Stream<Item = Response<T, E>> + Send>>;
-
-/// Шаг потока к вызывающему: отказ до первого элемента — `Err` из `open`,
-/// drop `Items` — отмена.
-pub trait StreamStep<I>: Send + Sync {
-    type Item;
-    type Err;
-
-    fn open(&mut self, args: I) -> impl RespFut<Items<Self::Item, Self::Err>, Self::Err>;
-}
-
-/// Тело загрузки: чанки от вызывающего; обрыв транспорта — `Aux`.
-pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, Aux>> + Send>>;
-
-/// Шаг потока от вызывающего: `Args` описывают тело, `body` его несёт.
-pub trait UploadStep<I>: Send + Sync {
-    type Ok;
-    type Err;
-
-    fn call(&mut self, args: I, body: ByteStream) -> impl RespFut<Self::Ok, Self::Err>;
 }
 
 /// Хендлер, чей `Output` — ответ операции.

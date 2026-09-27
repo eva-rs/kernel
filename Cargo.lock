@@ -857,7 +857,7 @@ dependencies = [
 [[package]]
 name = "eva"
 version = "0.1.0"
-source = "git+https://git.desu.church/VienDesu/eva.git#ebc08182934d76422918350a01df18c67928a91f"
+source = "git+https://git.desu.church/VienDesu/eva.git#5e911fc7c2884c1f8d047a2896afc084242388d9"
 dependencies = [
  "ahash",
  "auto_impl",
@@ -893,12 +893,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "eva-api-builder"
+version = "0.1.0"
+source = "git+https://git.desu.church/VienDesu/eva.git#5e911fc7c2884c1f8d047a2896afc084242388d9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "eva-core"
 version = "0.1.0"
 dependencies = [
  "eva",
+ "eva-kernel-macros",
  "eva-protocol",
- "futures-core",
  "futures-sink",
 ]
 
@@ -956,9 +966,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eva-kernel-macros"
+version = "0.1.0"
+dependencies = [
+ "eva-api-builder",
+]
+
+[[package]]
 name = "eva-macros"
 version = "0.1.0"
-source = "git+https://git.desu.church/VienDesu/eva.git#ebc08182934d76422918350a01df18c67928a91f"
+source = "git+https://git.desu.church/VienDesu/eva.git#5e911fc7c2884c1f8d047a2896afc084242388d9"
 dependencies = [
  "heck",
  "proc-macro-error",
@@ -973,6 +990,7 @@ name = "eva-protocol"
 version = "0.1.0"
 dependencies = [
  "eva",
+ "futures-core",
  "proptest",
  "rmp-serde",
  "serde",
@@ -1075,7 +1093,7 @@ dependencies = [
 [[package]]
 name = "eva-utils"
 version = "0.1.0"
-source = "git+https://git.desu.church/VienDesu/eva.git#ebc08182934d76422918350a01df18c67928a91f"
+source = "git+https://git.desu.church/VienDesu/eva.git#5e911fc7c2884c1f8d047a2896afc084242388d9"
 
 [[package]]
 name = "eventsource-stream"
