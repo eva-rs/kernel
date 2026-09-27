@@ -1098,6 +1098,22 @@ fn requests_roundtrip() {
     ));
 }
 
+/// `params` у `blobs.put` — поля `Meta` верхним уровнем: так пишут уже
+/// выпущенные клиенты.
+#[test]
+fn blobs_put_params_are_bare_meta() {
+    let wire = json!({
+        "chat": 1,
+        "name": "a.txt",
+        "media_type": "text/plain",
+        "kind": "file",
+        "size": 3,
+        "hash": null,
+    });
+    let meta: blobs::put::Meta = decode(&encode(&wire));
+    assert_eq!(decode::<Value>(&encode(&meta)), wire);
+}
+
 /// `Timestamp` рядом с `flatten`/untagged не живёт в msgpack: `blobs.stat` отдаёт `Meta` как есть.
 #[test]
 fn timestamps_survive() {

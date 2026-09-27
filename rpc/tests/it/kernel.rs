@@ -1,5 +1,5 @@
 //! Ядро для тестов транспорта: несколько операций по-настоящему, остальное —
-//! заглушки `stub!` (`11 §8`).
+//! заглушки; реализации трейтов неймспейсов порождает `for_each_op!` (`11 §8`).
 
 use std::{
     marker::PhantomData,
@@ -14,19 +14,11 @@ use futures::{StreamExt as _, stream};
 use tokio::sync::Notify;
 
 use eva::{fut::Fut, time::Timestamp};
-use eva_core::{
-    CallStep, Caller, Items, Session, SessionMaker,
-    service::{
-        AuxFut, agents::Agents, blobs::Blobs, chats::Chats, cron::Cron, folders::Folders, fs::Fs,
-        hands_grants::HandsGrants, inference::Inference, kv::Kv, memory::Memory, models::Models,
-        modules::Modules, notes::Notes, persons::Persons, sleep::Sleep, sqlite::Sqlite,
-        stats::Stats, surfaces::Surfaces, tools::Tools, turns::Turns,
-    },
-};
+use eva_core::{CallStep, Caller, Items, Session, SessionMaker, service::AuxFut};
 use eva_protocol::{
     errors::{self, Aux, Generic},
     requests::{
-        self, Response,
+        Response,
         blobs::put,
         surfaces::{create, get, list},
         turns::attach,
@@ -124,157 +116,163 @@ pub fn item(n: i64) -> TurnItem {
     }
 }
 
-/// Шаг из замыкания.
-pub struct Call<F>(F);
+/// Шаг настоящей операции над общим `State`.
+struct Real<F> {
+    state: Arc<State>,
+    op: F,
+}
 
-impl<A, O, F, R> CallStep<A> for Call<F>
+impl<A, O, F, R> CallStep<A> for Real<F>
 where
-    F: FnMut(A) -> R + Send + Sync,
+    F: Fn(Arc<State>, A) -> R + Send + Sync,
     R: Fut<Output = O>,
 {
     type Output = O;
 
     fn call(&mut self, args: A) -> impl Fut<Output = O> {
-        (self.0)(args)
+        (self.op)(self.state.clone(), args)
     }
 }
 
-fn stubbed<O, E>() -> Response<O, E> {
-    unimplemented!("operation is stubbed in this test kernel")
-}
+struct Fail<O, E>(PhantomData<fn() -> (O, E)>);
 
-pub struct Fail<A, O, E>(PhantomData<fn(A) -> (O, E)>);
-
-pub fn fail<A, O, E>() -> Fail<A, O, E> {
-    Fail(PhantomData)
-}
-
-impl<A, O: Send, E: Send> CallStep<A> for Fail<A, O, E> {
+impl<A: Send, O: Send, E: Send> CallStep<A> for Fail<O, E> {
     type Output = Response<O, E>;
 
-    fn call(&mut self, _: A) -> impl Fut<Output = Self::Output> {
-        async { stubbed() }
+    async fn call(&mut self, _: A) -> Self::Output {
+        unimplemented!("operation is stubbed in this test kernel")
     }
 }
 
-macro_rules! stub {
-    ($($m:ident => $($seg:ident)::+),* $(,)?) => {$(
-        fn $m(
-            &mut self,
-        ) -> impl CallStep<$($seg)::+::Args, Output = Response<$($seg)::+::Ok, $($seg)::+::Err>> {
-            fail()
+/// Операции, которые тестовое ядро исполняет; остальные — `Fail`.
+macro_rules! reply {
+    (surfaces create $session:ident) => {
+        real!($session surfaces_create)
+    };
+    (surfaces get $session:ident) => {
+        real!($session surfaces_get)
+    };
+    (surfaces list $session:ident) => {
+        real!($session surfaces_list)
+    };
+    (turns attach $session:ident) => {
+        real!($session turns_attach)
+    };
+    (blobs put $session:ident) => {
+        real!($session blobs_put)
+    };
+    ($segment:ident $endpoint:ident $session:ident) => {
+        Fail(PhantomData)
+    };
+}
+
+macro_rules! real {
+    ($session:ident $op:ident) => {
+        Real {
+            state: $session.state.clone(),
+            op: $op,
         }
-    )*};
+    };
 }
 
-impl Surfaces for TestSession {
-    fn create(
-        &mut self,
-    ) -> impl CallStep<create::Args, Output = Response<create::Ok, create::Err>> {
-        let state = self.state.clone();
-        Call(move |args: create::Args| {
-            let state = state.clone();
-            async move {
-                state.creates.fetch_add(1, Ordering::SeqCst);
-                let delay = *state.create_delay.lock().unwrap();
-                tokio::time::sleep(delay).await;
-
-                let mut surfaces = state.surfaces.lock().unwrap();
-                if surfaces.iter().any(|s| s.id == args.id) {
-                    let taken = errors::surfaces::Taken {
-                        surface: args.id,
-                        owner: Some("mod".into()),
-                    };
-                    return Err(Generic::Spec(taken.into()));
+macro_rules! test_session {
+    ($(
+        $segment:ident {$(
+            $accessor:ident : $Trait:ident {$(
+                $(#[$flag:ident])*
+                $method:ident = $endpoint:ident {
+                    args: $Args:ty,
+                    ok: $Ok:ty,
+                    err: $Err:ty,
+                    output: $Output:ty,
                 }
-                let surface = surface(args.id.as_str());
-                surfaces.push(surface.clone());
-                Ok(create::Ok { surface })
+            )*}
+        )*}
+    )*) => {$($(
+        impl eva_core::service::$segment::$Trait for TestSession {$(
+            fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
+                reply!($segment $endpoint self)
             }
-        })
-    }
-
-    fn get(&mut self) -> impl CallStep<get::Args, Output = Response<get::Ok, get::Err>> {
-        let state = self.state.clone();
-        Call(move |args: get::Args| {
-            let found = state
-                .surfaces
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|s| s.id == args.surface)
-                .cloned();
-            async move {
-                match found {
-                    Some(surface) => Ok(get::Ok { surface }),
-                    None => Err(Generic::Spec(
-                        errors::surfaces::NotFound {
-                            surface: args.surface,
-                        }
-                        .into(),
-                    )),
-                }
-            }
-        })
-    }
-
-    fn list(&mut self) -> impl CallStep<list::Args, Output = Response<list::Ok, list::Err>> {
-        Call(|_: list::Args| async { Err(Generic::Aux(Aux::forbidden("owner only"))) })
-    }
-
-    stub! { update => requests::surfaces::update }
+        )*}
+    )*)*};
 }
 
-impl Turns for TestSession {
-    fn attach(
-        &mut self,
-    ) -> impl CallStep<attach::Args, Output = Response<attach::Ok, attach::Err>> {
-        let state = self.state.clone();
-        Call(move |args: attach::Args| {
-            let state = state.clone();
-            async move {
-                let not_found = || {
-                    Generic::Spec(attach::Err::from(errors::chats::NotFound {
-                        chat: args.chat.into(),
-                    }))
-                };
-                let items: Items<TurnItem, attach::Err> = match args.chat.get() {
-                    chat::FINITE => Box::pin(stream::iter((0..3).map(|n| Ok(item(n))))),
-                    chat::ENDLESS => {
-                        let guard = DropFlag(state);
-                        Box::pin(
-                            stream::once(async { Ok(item(0)) })
-                                .chain(stream::pending())
-                                .map(move |item| {
-                                    let _ = &guard;
-                                    item
-                                }),
-                        )
-                    }
-                    chat::FLOOD => {
-                        let guard = DropFlag(state);
-                        Box::pin(stream::iter(0..FLOOD_ITEMS).map(move |n| {
-                            let _ = &guard;
-                            Ok(item(n))
-                        }))
-                    }
-                    chat::BROKEN => {
-                        Box::pin(stream::iter([Ok(item(0)), Ok(item(1)), Err(not_found())]))
-                    }
-                    _ => return Err(not_found()),
-                };
-                Ok(items)
-            }
-        })
-    }
+eva_core::for_each_op!(test_session);
 
-    stub! {
-        start => requests::turns::start,
-        append_silent => requests::turns::append_silent,
-        delivered => requests::turns::delivered,
-        cancel => requests::turns::cancel,
-        respond => requests::turns::respond,
+async fn surfaces_create(
+    state: Arc<State>,
+    args: create::Args,
+) -> Response<create::Ok, create::Err> {
+    state.creates.fetch_add(1, Ordering::SeqCst);
+    let delay = *state.create_delay.lock().unwrap();
+    tokio::time::sleep(delay).await;
+
+    let mut surfaces = state.surfaces.lock().unwrap();
+    if surfaces.iter().any(|s| s.id == args.id) {
+        let taken = errors::surfaces::Taken {
+            surface: args.id,
+            owner: Some("mod".into()),
+        };
+        return Err(Generic::Spec(taken.into()));
     }
+    let surface = surface(args.id.as_str());
+    surfaces.push(surface.clone());
+    Ok(create::Ok { surface })
+}
+
+async fn surfaces_get(state: Arc<State>, args: get::Args) -> Response<get::Ok, get::Err> {
+    let found = state
+        .surfaces
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.id == args.surface)
+        .cloned();
+    match found {
+        Some(surface) => Ok(get::Ok { surface }),
+        None => Err(Generic::Spec(
+            errors::surfaces::NotFound {
+                surface: args.surface,
+            }
+            .into(),
+        )),
+    }
+}
+
+async fn surfaces_list(_: Arc<State>, _: list::Args) -> Response<list::Ok, list::Err> {
+    Err(Generic::Aux(Aux::forbidden("owner only")))
+}
+
+async fn turns_attach(state: Arc<State>, args: attach::Args) -> Response<attach::Ok, attach::Err> {
+    let not_found = || {
+        Generic::Spec(attach::Err::from(errors::chats::NotFound {
+            chat: args.chat.into(),
+        }))
+    };
+    let items: Items<TurnItem, attach::Err> = match args.chat.get() {
+        chat::FINITE => Box::pin(stream::iter((0..3).map(|n| Ok(item(n))))),
+        chat::ENDLESS => {
+            let guard = DropFlag(state);
+            Box::pin(
+                stream::once(async { Ok(item(0)) })
+                    .chain(stream::pending())
+                    .map(move |item| {
+                        let _ = &guard;
+                        item
+                    }),
+            )
+        }
+        chat::FLOOD => {
+            let guard = DropFlag(state);
+            Box::pin(stream::iter(0..FLOOD_ITEMS).map(move |n| {
+                let _ = &guard;
+                Ok(item(n))
+            }))
+        }
+        chat::BROKEN => Box::pin(stream::iter([Ok(item(0)), Ok(item(1)), Err(not_found())])),
+        _ => return Err(not_found()),
+    };
+    Ok(items)
 }
 
 struct DropFlag(Arc<State>);
@@ -285,161 +283,32 @@ impl Drop for DropFlag {
     }
 }
 
-impl Blobs for TestSession {
-    fn put(&mut self) -> impl CallStep<put::Args, Output = Response<put::Ok, put::Err>> {
-        let state = self.state.clone();
-        Call(move |put::Args { meta, mut body }| {
-            let state = state.clone();
-            async move {
-                let delay = *state.put_delay.lock().unwrap();
-                tokio::time::sleep(delay).await;
-                let mut bytes = Vec::new();
-                while let Some(chunk) = body.next().await {
-                    bytes.extend_from_slice(&chunk.map_err(Generic::Aux)?);
-                }
-                let actual = bytes.len() as u64;
-                if actual != meta.size {
-                    return Err(Generic::Spec(
-                        errors::blobs::SizeMismatch {
-                            declared: meta.size,
-                            actual,
-                        }
-                        .into(),
-                    ));
-                }
-                state.uploads.lock().unwrap().push(bytes);
-                Ok(put::Ok {
-                    id: BlobId::from("b1"),
-                    size: actual,
-                    hash: format!("len:{actual}"),
-                })
+async fn blobs_put(
+    state: Arc<State>,
+    put::Args { meta, mut body }: put::Args,
+) -> Response<put::Ok, put::Err> {
+    let delay = *state.put_delay.lock().unwrap();
+    tokio::time::sleep(delay).await;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = body.next().await {
+        bytes.extend_from_slice(&chunk.map_err(Generic::Aux)?);
+    }
+    let actual = bytes.len() as u64;
+    if actual != meta.size {
+        return Err(Generic::Spec(
+            errors::blobs::SizeMismatch {
+                declared: meta.size,
+                actual,
             }
-        })
+            .into(),
+        ));
     }
-
-    stub! { get => requests::blobs::get, stat => requests::blobs::stat }
-}
-
-impl Folders for TestSession {
-    stub! {
-        create => requests::folders::create,
-        update => requests::folders::update,
-        delete => requests::folders::delete,
-        list => requests::folders::list,
-    }
-}
-
-impl Chats for TestSession {
-    stub! {
-        ingest => requests::chats::ingest,
-        create => requests::chats::create,
-        get => requests::chats::get,
-        list => requests::chats::list,
-        update => requests::chats::update,
-        r#move => requests::chats::r#move,
-        delete => requests::chats::delete,
-        restore => requests::chats::restore,
-        search => requests::chats::search,
-        history_read => requests::chats::history_read,
-        compact => requests::chats::compact,
-        notify => requests::chats::notify,
-    }
-}
-
-impl Persons for TestSession {
-    stub! {
-        resolve => requests::persons::resolve,
-        list => requests::persons::list,
-        rename => requests::persons::rename,
-        merge => requests::persons::merge,
-        whitelist => requests::persons::whitelist,
-    }
-}
-
-impl Memory for TestSession {
-    stub! {
-        list => requests::memory::list,
-        get => requests::memory::get,
-        history => requests::memory::history,
-        restore => requests::memory::restore,
-    }
-}
-
-impl Notes for TestSession {
-    stub! { list => requests::notes::list }
-}
-
-impl Tools for TestSession {
-    stub! { catalog => requests::tools::catalog }
-}
-
-impl Models for TestSession {
-    stub! { list => requests::models::list }
-}
-
-impl Cron for TestSession {
-    stub! { list => requests::cron::list, runs => requests::cron::runs }
-}
-
-impl Sleep for TestSession {
-    stub! { runs => requests::sleep::runs, phase_runs => requests::sleep::phase_runs }
-}
-
-impl Agents for TestSession {
-    stub! { list => requests::agents::list }
-}
-
-impl Stats for TestSession {
-    stub! {
-        tools_usage => requests::stats::tools_usage,
-        spend => requests::stats::spend,
-        spend_series => requests::stats::spend_series,
-        chat_spend => requests::stats::chat_spend,
-        health => requests::stats::health,
-    }
-}
-
-impl Modules for TestSession {
-    stub! {
-        list => requests::modules::list,
-        token_issue => requests::modules::token_issue,
-        token_revoke => requests::modules::token_revoke,
-    }
-}
-
-impl HandsGrants for TestSession {
-    stub! { list => requests::hands_grants::list, revoke => requests::hands_grants::revoke }
-}
-
-impl Inference for TestSession {
-    stub! { complete => requests::inference::complete }
-}
-
-impl Fs for TestSession {
-    stub! {
-        read => requests::fs::read,
-        write => requests::fs::write,
-        list => requests::fs::list,
-        stat => requests::fs::stat,
-        remove => requests::fs::remove,
-    }
-}
-
-impl Sqlite for TestSession {
-    stub! {
-        exec => requests::sqlite::exec,
-        query => requests::sqlite::query,
-        tx => requests::sqlite::tx,
-    }
-}
-
-impl Kv for TestSession {
-    stub! {
-        get => requests::kv::get,
-        set => requests::kv::set,
-        del => requests::kv::del,
-        list => requests::kv::list,
-    }
+    state.uploads.lock().unwrap().push(bytes);
+    Ok(put::Ok {
+        id: BlobId::from("b1"),
+        size: actual,
+        hash: format!("len:{actual}"),
+    })
 }
 
 pub const CLIENT_TOKEN: &str = "client-token";

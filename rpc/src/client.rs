@@ -461,27 +461,27 @@ where
 }
 
 macro_rules! step {
-    ([] $target:ident $segment:ident $endpoint:ident) => {
+    ([] $target:ident $Args:ty) => {
         Unary {
             target: $target,
             _types: PhantomData,
         }
     };
-    ([mutating] $target:ident $segment:ident $endpoint:ident) => {
-        step!([] $target $segment $endpoint)
+    ([mutating] $target:ident $Args:ty) => {
+        step!([] $target $Args)
     };
-    ([stream] $target:ident $segment:ident $endpoint:ident) => {
+    ([stream] $target:ident $Args:ty) => {
         Streaming {
             target: $target,
             _types: PhantomData,
         }
     };
-    ([upload] $target:ident $segment:ident $endpoint:ident) => {{
-        use ::eva_protocol::requests::$segment::$endpoint as op;
+    ([upload] $target:ident $Args:ty) => {{
+        type Args = $Args;
 
         Uploading {
             target: $target,
-            split: |op::Args { meta, body }| (meta, body),
+            split: |Args { meta, body }| (meta, body),
             _types: PhantomData,
         }
     }};
@@ -504,7 +504,7 @@ macro_rules! client_impls {
         impl eva_core::service::$segment::$Trait for RpcSession {$(
             fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
                 let target = self.target(stringify!($segment), stringify!($endpoint));
-                step!([$($flag)*] target $segment $endpoint)
+                step!([$($flag)*] target $Args)
             }
         )*}
     )*)*};

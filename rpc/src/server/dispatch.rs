@@ -73,10 +73,10 @@ impl<S> Table<S> {
 /// `stream` отдаёт `Items` кадрами потока, у `upload` по проводу `Meta`, а
 /// `Args` собирается из неё и чанков тела.
 macro_rules! route {
-    ([] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
+    ([] $accessor:ident $method:ident $Args:ty) => {
         route!(@unary Read $accessor $method)
     };
-    ([mutating] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
+    ([mutating] $accessor:ident $method:ident $Args:ty) => {
         route!(@unary Mutating $accessor $method)
     };
     (@unary $kind:ident $accessor:ident $method:ident) => {
@@ -90,7 +90,7 @@ macro_rules! route {
             }),
         }
     };
-    ([stream] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
+    ([stream] $accessor:ident $method:ident $Args:ty) => {
         Route {
             kind: OpKind::Stream,
             run: Run::Stream(|mut session, params| {
@@ -101,14 +101,14 @@ macro_rules! route {
             }),
         }
     };
-    ([upload] $accessor:ident $method:ident $segment:ident $endpoint:ident) => {
+    ([upload] $accessor:ident $method:ident $Args:ty) => {
         Route {
             kind: OpKind::Upload,
             run: Run::Upload(|mut session, params, body| {
                 Box::pin(async move {
-                    use ::eva_protocol::requests::$segment::$endpoint as op;
+                    type Args = $Args;
 
-                    let args = |meta| op::Args { meta, body };
+                    let args = |meta| Args { meta, body };
                     let result = upload(session.$accessor().$method(), params, args).await;
                     result
                 })
@@ -137,7 +137,7 @@ macro_rules! routes {
             vec![$($($(
                 (
                     format!("{}.{}", stringify!($segment), op_name(stringify!($endpoint))),
-                    route!([$($flag)*] $accessor $method $segment $endpoint),
+                    route!([$($flag)*] $accessor $method $Args),
                 ),
             )*)*)*]
         }

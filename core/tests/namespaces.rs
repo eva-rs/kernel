@@ -4,7 +4,7 @@ use eva_core::{NAMESPACES, Op, OpKind};
 
 /// RPC-метод — имя модуля без `r#`: `chats.move`, не `chats.r#move`.
 #[test]
-fn raw_identifiers_are_plain_on_the_wire() {
+fn raw_identifiers_are_plain_in_namespaces() {
     let raw: Vec<String> = NAMESPACES
         .iter()
         .flat_map(|(ns, ops)| ops.iter().map(move |op| format!("{ns}.{}", op.name)))

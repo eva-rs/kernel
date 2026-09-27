@@ -7,6 +7,7 @@ use std::{
 };
 
 use futures::StreamExt as _;
+use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpSocket, TcpStream, UnixStream},
@@ -16,7 +17,7 @@ use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use eva::{bytesize::ByteSize, url::Url};
 use eva_protocol::{
     requests::blobs::put,
-    types::{Bytes, blob::Kind as BlobKind},
+    types::Bytes,
     wire::{
         ErrorCode, Frame, RpcError,
         frame::{StreamEnd, StreamItem},
@@ -30,7 +31,7 @@ use eva_rpc::{
 
 use crate::{
     harness::{Harness, Raw, Via, config, hello, ms},
-    kernel::{CLIENT_TOKEN, chat_id},
+    kernel::CLIENT_TOKEN,
 };
 
 fn small_hello() -> Config {
@@ -209,15 +210,16 @@ async fn transport_connect_has_a_deadline() {
     );
 }
 
-fn put(size: usize) -> put::Meta {
-    put::Meta {
-        chat: chat_id(1),
-        name: "file.bin".to_owned(),
-        media_type: "application/octet-stream".to_owned(),
-        kind: BlobKind::File,
-        size: size as u64,
-        hash: None,
-    }
+/// `params` литералом, как их пишут выпущенные клиенты: поля `Meta` верхним уровнем.
+fn put(size: usize) -> Value {
+    json!({
+        "chat": 1,
+        "name": "file.bin",
+        "media_type": "application/octet-stream",
+        "kind": "file",
+        "size": size,
+        "hash": null,
+    })
 }
 
 async fn chunk(raw: &mut Raw, id: u64, seq: u64, bytes: usize) {

@@ -75,7 +75,6 @@ macro_rules! op_kind {
 for_each_op!(domains);
 
 trait_set! {
-    pub trait RespFut<O, E> = Future<Output = Response<O, E>> + Send;
     pub trait AuxFut<O> = Future<Output = Result<O, Aux>> + Send;
 
     pub trait IsService = SessionMaker;
