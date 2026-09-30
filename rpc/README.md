@@ -91,7 +91,7 @@ let (client, welcome) = RpcClient::answer(conn, Hello { token: None, ..hello }, 
 nix develop -c cargo test -p eva-rpc
 ```
 
-`tests/it/` поднимает сервер над тестовым ядром (`kernel.rs`: несколько операций по-настоящему, остальное — заглушки из `for_each_op!`) на uds и ws и набирает им сервисы на uds и tcp (`harness.rs`); каждый тест `loopback.rs` гоняется по обоим клиентским транспортам. Остальное: сервисное соединение под Noise (`service.rs`; сам Noise и PSK — юнит-тесты `transport/noise.rs`), handshake, ping и идемпотентность сырыми кадрами (`protocol.rs`), пределы против чужого пира (`limits.rs`), RPC-метод у каждой операции (`methods.rs`), каждый `Err` каждой операции на проводе (`errors.rs`), ядро → модуль у набранного сервиса (`reverse.rs`), форма секции (`config.rs`), wss с тестовым CA из `tests/fixtures` (`tls.rs`).
+`tests/it/` поднимает сервер над тестовым ядром (`kernel.rs`: несколько операций по-настоящему, остальное — заглушки из `for_each_op!`) на uds и ws и набирает им сервисы на uds и tcp (`harness.rs`); каждый тест `loopback.rs` гоняется по обоим клиентским транспортам. Остальное: сервисное соединение под Noise (`service.rs`; сам Noise и PSK — юнит-тесты `transport/noise.rs`), handshake, ping и идемпотентность сырыми кадрами (`protocol.rs`), пределы против чужого пира (`limits.rs`), RPC-метод у каждой операции (`methods.rs`), каждый `Err` каждой операции на проводе (`errors.rs`), ядро → модуль у набранного сервиса и у клиента по ws (`reverse.rs`), унаследованные сокеты по адресу у обоих слушателей (`activation.rs`), форма секции (`config.rs`), wss с тестовым CA из `tests/fixtures` (`tls.rs`).
 
 ## Документация
 

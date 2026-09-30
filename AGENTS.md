@@ -4,7 +4,7 @@
 
 ## Сборка
 
-- Только в devShell (у системного cargo нет линкера): `nix develop -c cargo <check|test|clippy|fmt> …` из корня; `-p <crate>` для одного крейта.
+- Только в devShell (у системного cargo нет линкера): `nix develop -c cargo <check|test|clippy|fmt> …` из корня.
 - Гейты перед сдачей: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 - Параллельные сборки ждут `Blocking waiting for file lock` — это норма. `cargo clean` не звать.
 - Манифесты и `Cargo.lock` менять только при прямой необходимости.
@@ -36,6 +36,7 @@
 
 - Фреймворк `eva`: `#[data]` на все типы данных, `eva::time`, `log` с kv (`log::info!(k = v; "msg")`), `eva::cli::App` + `Supervisor` в бинарях.
 - Без `unwrap`/`expect` на данных провода, БД и сети; паника — только инвариант.
+- Права и владельца файлов (сокеты, база) код не ставит — только NixOS-модуль во `flake.nix` (`UMask`, `StateDirectoryMode`, socket-юниты).
 - Идентификаторы, логи, промпты — английский; комментарии — русский, одна фраза «почему», только неочевидное, без истории.
 
 ## Коммиты

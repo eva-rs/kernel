@@ -19,6 +19,8 @@
       service = pkgs: pname: eva.lib.mkPackage {
         inherit pkgs pname;
         src = self;
+        # Контракт клиентов по wss поднимает TLS на сертификатах из tests/fixtures.
+        srcFilter = path: _: builtins.match ".*/tests/fixtures/.*" path != null;
         env = {
           cargoExtraArgs = "--locked --package ${pname}";
           EVA_COMMIT = commit;

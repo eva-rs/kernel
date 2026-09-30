@@ -23,7 +23,7 @@
 | `eva-protocol` | [`protocol/`](protocol/README.md) | типы операций (`Args`/`Ok`/`Err`), ошибки, проводные кадры; без I/O |
 | `eva-kernel-macros` | [`macros/`](macros/README.md) | единственный список операций (`endpoints!` на `eva-api-builder`) |
 | `eva-core` | [`core/`](core/README.md) | библиотечное API: `Session`, трейты неймспейсов, `Caller`, трейт `Provider` |
-| `eva-rpc` | [`rpc/`](rpc/README.md) | msgpack-кадры поверх uds/ws/wss, сервер-диспетчер, клиентская `RpcSession` |
+| `eva-rpc` | [`rpc/`](rpc/README.md) | msgpack-кадры: клиенты по uds/ws/wss, сервисы по uds/tcp под Noise (дозвон ядра); сервер-диспетчер, клиентская `RpcSession` |
 | `eva-sdk` | [`sdk/`](sdk/README.md) | модуль ядра: сервис слушает звонок ядра, клиент подключается сам; смена соединения, тулы, события, хуки |
 | `eva-provider-openai` | [`providers/openai/`](providers/openai/README.md) | OpenAI-совместимый Chat Completions |
 | `eva-provider-mock` | [`providers/mock/`](providers/mock/README.md) | сценарный провайдер для тестов и смоука |
@@ -114,7 +114,7 @@ services.eva-kernel = {
 };
 ```
 
-`settings` попадают в мирочитаемый Nix store, поэтому модуль отвергает сборку, если секрет стоит в `settings` формой `plaintext`, в `environment` переменной `EVA_…__PLAINTEXT` или если файл секрета, `extraConfigFiles` или `environmentFiles` лежит в сторе. Сокет клиентов по умолчанию — `/run/eva-kernel/modules.sock` с группой `eva`; сервисы машины слушают `/run/eva-<id>/module.sock` с той же группой, ядро в ней состоит.
+`settings` попадают в мирочитаемый Nix store, поэтому модуль отвергает сборку, если секрет стоит в `settings` формой `plaintext`, в `environment` переменной `EVA_…__PLAINTEXT` или если файл секрета, `extraConfigFiles` или `environmentFiles` лежит в сторе. Права файлов задаёт не код, а модуль: база (в ней ключи сервисов из `modules.add`), blob'ы и песочницы — только пользователю ядра (`StateDirectoryMode = 0700`, `UMask = 0077`); сокет клиентов `/run/eva-kernel/modules.sock` держит socket-юнит `eva-kernel.socket` с группой `eva`; сервисы машины слушают `/run/eva-<id>/module.sock` с той же группой, ядро в ней состоит. Подробно — [Быстрый старт](docs/src/quickstart.md#nixos).
 
 ## Документация
 
