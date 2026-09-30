@@ -56,7 +56,7 @@ llm:
 ./result/bin/eva-kernel --config eva.yaml
 ```
 
-Слушатель по умолчанию — `modules.sock` с группой `eva`. Если такой группы нет или процесс ядра в ней не состоит (chown сокета не пройдёт), ядро не стартует, поэтому в примере `listen` задан явно, без `group`.
+Слушатель по умолчанию — `modules.sock` в `state_dir`, как и в примере. Права файла сокета ядро не ставит: их задают umask процесса или менеджер служб, чей сокет с этим путём ядро берёт готовым ([NixOS](#nixos)).
 
 Путь Unix-сокета ограничен ядром ОС (на Linux — 108 байт вместе с завершающим нулём). Относительный `uds` склеивается с `state_dir`, и под длинным `state_dir` путь может не влезть: старт тогда падает с ошибкой `failed to listen on …`. Выход — короче `state_dir` или абсолютный `uds`.
 
@@ -161,7 +161,8 @@ export EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/secrets/openrouter
 Что задаёт модуль:
 
 - `StateDirectory = eva-kernel`: systemd передаёт `$STATE_DIRECTORY`, и `system.state_dir` по умолчанию становится `/var/lib/eva-kernel`.
-- `RuntimeDirectory = eva-kernel` (сохраняется между рестартами) и слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock"; group = "eva";}]`: сокет с правами `0660` и группой `eva`. Модуль объявляет `users.groups.eva` и даёт сервису `SupplementaryGroups = [ "eva" ]`, иначе процесс не смог бы отдать сокет этой группе. Локальному клиенту на той же машине нужно то же: `SupplementaryGroups = [ "eva" ]`. По этой же группе ядро дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock` с правами `0660` и группой `eva` — сам (`module.listen = {uds: /run/eva-<id>/module.sock, group: eva}`, юниту — `RuntimeDirectory = eva-<id>` и та же группа) или через socket-юнит (`SocketGroup = eva`, `SocketMode = 0660`; SDK принимает унаследованный сокет по `LISTEN_FDS`). Один файл ключа отдаётся обоим юнитам: ядру — `secrets."modules.services.<id>.key"`, модулю — `LoadCredential` в `module.key`. Если задать `settings.modules.listen`, список заменяется целиком.
+- `StateDirectoryMode = 0700` и `UMask = 0077`: база (в ней лежат ключи сервисов из `modules.add`), blob'ы и песочницы модулей доступны только пользователю ядра. Ядро само права файлов не ставит — ни базе, ни сокетам.
+- Слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock";}]`. Каждый абсолютный `uds` из `modules.listen` держит socket-юнит `eva-kernel.socket` (`SocketMode = 0660`, `SocketGroup = eva`): ядро берёт готовый сокет по адресу (`LISTEN_FDS`), а не привязывает свой, так что при `UMask = 0077` сокет всё же доступен группе `eva`. Относительный `uds` живёт в закрытом `StateDirectory` и socket-юнита не получает. Модуль объявляет `users.groups.eva` и даёт сервису `SupplementaryGroups = [ "eva" ]`. Локальному клиенту на той же машине нужно то же: `SupplementaryGroups = [ "eva" ]`. По этой же группе ядро дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock`, доступный группе `eva`, а права задаёт его окружение — юнит (`RuntimeDirectory = eva-<id>`, `Group = eva`, `UMask = 0007`; `module.listen = {uds: /run/eva-<id>/module.sock}`) или socket-юнит (`SocketGroup = eva`, `SocketMode = 0660`, `Accept = no`; SDK берёт унаследованный сокет по адресу). Один файл ключа отдаётся обоим юнитам: ядру — `secrets."modules.services.<id>.key"`, модулю — `LoadCredential` в `module.key`. Если задать `settings.modules.listen`, список заменяется целиком.
 - `TimeoutStopSec = 180`, `Restart = on-failure`, `RestartSec = 5`.
 
 Assertions — сборка системы отказывает, если секрет попал бы в мирочитаемый Nix store:

@@ -46,7 +46,7 @@ use eva_providers::{
 };
 use eva_rpc::{
     ClientOptions, ConnectError, ModuleHandler, Psk, RpcClient, ServiceListener,
-    config::{FileMode, Listen, ServiceListen, UdsListen},
+    config::{Listen, ServiceListen, UdsListen},
 };
 
 use eva_kernel::{
@@ -322,8 +322,6 @@ pub async fn bind_service_at(path: &Path, name: &str) -> ServiceListener {
     bind_keyed(
         &ServiceListen::Uds(UdsListen {
             path: path.to_path_buf(),
-            mode: FileMode::default(),
-            group: None,
         }),
         &key(name),
     )
@@ -335,8 +333,6 @@ pub fn sdk_service(dir: &Path, name: &str) -> eva_sdk::ServiceConfig {
     sdk_service_at(
         ServiceListen::Uds(UdsListen {
             path: service_socket(dir, name),
-            mode: FileMode::default(),
-            group: None,
         }),
         name,
     )
@@ -412,8 +408,6 @@ pub fn config(dir: &Path) -> Config {
         modules: ModulesConfig {
             listen: vec![Listen::Uds(UdsListen {
                 path: PathBuf::from(SOCKET),
-                mode: FileMode::default(),
-                group: None,
             })],
             ..ModulesConfig::default()
         },

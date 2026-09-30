@@ -1,7 +1,7 @@
 //! Сервисное соединение: ядро набирает модуль по uds и tcp под Noise, `hello`
 //! шлёт модуль, `welcome` — ядро.
 
-use std::{os::fd::OwnedFd, time::Duration};
+use std::time::Duration;
 
 use futures::stream;
 
@@ -16,10 +16,8 @@ use eva_protocol::{
     wire::ErrorCode,
 };
 use eva_rpc::{
-    ClientOptions, Conn, ConnectError, DialError, NoHandler, Psk, RpcClient, ServiceListen,
-    ServiceListener, TransportError,
-    config::{Config, FileMode, UdsListen},
-    transport::noise::MAX_PLAINTEXT,
+    ClientOptions, Conn, ConnectError, DialError, NoHandler, Psk, RpcClient, TransportError,
+    config::Config, transport::noise::MAX_PLAINTEXT,
 };
 
 use crate::{
@@ -261,6 +259,49 @@ async fn handshake_timeout_bounds_the_attempt() {
     module.abort();
 }
 
+/// Бюджет один на всё: поздний Noise съедает время, оставленное `hello`, а
+/// не открывает ему новый `handshake_timeout`.
+#[tokio::test(flavor = "multi_thread")]
+async fn late_noise_leaves_hello_the_rest_of_one_budget() {
+    let limit = Duration::from_secs(1);
+    let late = limit * 7 / 10;
+    let h = Harness::with(
+        Via::Uds,
+        Config {
+            handshake_timeout: eva::time::HumanDuration(limit),
+            ..config()
+        },
+    )
+    .await;
+    let listener = h.listen(Dial::Uds, KEY).await;
+    let address = listener.local_addr().unwrap();
+    let module = tokio::spawn(async move {
+        let incoming = listener.accept().await.unwrap();
+        tokio::time::sleep(late).await;
+        let conn = incoming.secure().await.unwrap();
+        tokio::time::sleep(limit * 5).await;
+        drop(conn);
+    });
+
+    let started = tokio::time::Instant::now();
+    let error = h
+        .server
+        .dial(&address, &Psk::derive(KEY), &service())
+        .await
+        .unwrap_err();
+    let took = started.elapsed();
+    assert!(
+        matches!(&error, DialError::Handshake(e) if e.code == ErrorCode::Timeout),
+        "{error:?}"
+    );
+    assert!(took >= late, "noise finished early: {took:?}");
+    assert!(
+        took < limit + Duration::from_millis(250),
+        "hello got a budget of its own: {took:?}"
+    );
+    module.abort();
+}
+
 /// Модуль не держит сокет, который молчит вместо Noise, дольше `handshake_timeout`.
 #[tokio::test(flavor = "multi_thread")]
 async fn module_side_noise_times_out() {
@@ -296,41 +337,4 @@ async fn unreachable_service_is_a_transport_error() {
             "{address}: {error:?}"
         );
     }
-}
-
-/// Сокет менеджера служб (socket activation): принимается как свой, но файл
-/// после закрытия остаётся менеджеру.
-#[tokio::test(flavor = "multi_thread")]
-async fn adopted_socket_is_served_and_kept() {
-    let h = Harness::start(Via::Uds).await;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("activated.sock");
-    let fd = OwnedFd::from(std::os::unix::net::UnixListener::bind(&path).unwrap());
-    let listen = ServiceListen::Uds(UdsListen {
-        path: path.clone(),
-        mode: FileMode::default(),
-        group: None,
-    });
-    let listener = ServiceListener::adopt(&listen, fd, Psk::derive(KEY), &h.config).unwrap();
-    let address = listener.local_addr().unwrap();
-    assert_eq!(address.path(), Some(path.as_path()));
-
-    let options = h.options();
-    let module = tokio::spawn(async move {
-        let conn = listener.accept().await.unwrap().secure().await.unwrap();
-        let answered = RpcClient::answer(conn, service_hello(), options, NoHandler).await;
-        drop(listener);
-        answered
-    });
-    let accepted = h
-        .server
-        .dial(&address, &Psk::derive(KEY), &service())
-        .await
-        .unwrap();
-    let (_module, welcome) = module.await.unwrap().unwrap();
-    assert_eq!(welcome.session_id, accepted.welcome.session_id);
-    assert!(
-        path.exists(),
-        "an adopted socket belongs to the service manager"
-    );
 }

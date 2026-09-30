@@ -32,7 +32,7 @@ use crate::{
     state::{Policy, State},
     subsystems::modules::{
         live::Source,
-        services::{Listed, Service, WEAK_KEY, trimmed},
+        services::{Listed, Loop, Service, WEAK_KEY, trimmed},
     },
 };
 
@@ -54,6 +54,11 @@ fn check_id(module: &ModuleId) -> AuxResult<()> {
     (!RESERVED.contains(&module.as_str()))
         .true_or(Aux::Invalid(format!("module id {module} is reserved")))?;
     check_name(module)
+}
+
+/// Адрес уже набирает другая запись реестра.
+fn dials_already(twin: &ModuleId, address: &impl std::fmt::Display) -> Aux {
+    Aux::Conflict(format!("module {twin} already dials {address}"))
 }
 
 /// Реестр сервисов для списков: конфиг и незатенённые строки `module_services`.
@@ -156,27 +161,31 @@ pub async fn Add<C: Components>(
             (len >= WEAK_KEY).true_or(Aux::Invalid(format!(
                 "key must be a high-entropy secret of at least {WEAK_KEY} characters: a guessable key is brute-forced offline from one captured handshake"
             )))?;
-            (key.0, false)
+            (key, false)
         }
         None => {
             let secret: [u8; 32] = world.rng().random();
-            (convert::blob::hex(&secret), true)
+            (ServiceKey(convert::blob::hex(&secret)), true)
         }
     };
+    let services = shared.services();
     // Конфиг сильнее: его id заняты без обращения к БД.
-    if shared.services().shadowed(&module, shared.tokens()) {
+    if services.shadowed(&module, shared.tokens()) {
         return Err(errors::modules::Taken { module }.spec());
     }
+    // Две петли на один модуль вытесняли бы друг друга без конца.
+    if let Some(twin) = services.dialing(&address) {
+        return Err(dials_already(twin, &address).into());
+    }
 
-    let services = shared.services();
     let _ops = services.ops().await;
     let row = ServiceRow {
         module: module.clone(),
         address: address.to_string(),
-        key: key.clone(),
         added_via,
         added_at: world.now(),
     };
+    let stored = key.clone();
     shared
         .db()
         .write(move |tx| -> Response<(), add::Err> {
@@ -187,22 +196,28 @@ pub async fn Add<C: Components>(
                 }
                 .spec());
             }
-            modules.insert_service(&row)?;
+            if let Some(twin) = modules.service_at(&row.address)? {
+                return Err(dials_already(&twin, &row.address).into());
+            }
+            modules.insert_service(&row, &stored)?;
             Ok(())
         })
         .await?;
 
     log::info!(module:% = module, address:% = address, generated, caller = caller.label(); "service module added");
-    services.start(
+    // Под `ops`: `modules.remove` того же id отзовёт уже этот номер.
+    let epoch = Some(shared.live().epoch(&module));
+    services.start(Loop {
         module,
-        Service {
+        service: Service {
             address,
-            psk: Psk::derive(trimmed(&key)),
+            psk: Psk::derive(trimmed(key.expose())),
             source: Source::RuntimeService,
         },
-    );
+        epoch,
+    });
     Ok(add::Ok {
-        key: generated.then_some(ServiceKey(key)),
+        key: generated.then_some(key),
     })
 }
 

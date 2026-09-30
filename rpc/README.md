@@ -25,9 +25,10 @@ msgpack-RPC Евы: кадры поверх unix-сокета, WebSocket и WebS
 | `ModuleClient` / `ModuleProvider` | сторона ядра: вызовы в модуль; провайдер модуля как `impl Provider` |
 | `ModuleHandler`, `NoHandler` | сторона модуля: обработчики `tools.call` и хуков, по умолчанию `unknown_method` |
 | `Listener`, `Conn` | слушатель клиентов из `config::Listen` и соединение; `Conn::pair` — для тестов |
-| `ServiceListener`, `Incoming` | слушатель сервиса из `config::ServiceListen` (`bind` или унаследованный fd — `adopt`); `Incoming::secure` — Noise responder |
+| `ServiceListener`, `Incoming` | слушатель сервиса из `config::ServiceListen` (`bind`, либо `open` — унаследованный сокет с тем же адресом или bind); `Incoming::secure` — Noise responder |
+| `Inherited`, `gate::{Gate, Pass}` | сокеты менеджера служб (`LISTEN_FDS`) по адресу для `Listener::open`/`ServiceListener::open`; места для соединений до доказательства прав — общие у слушателя клиентов ядра и слушателя сервиса SDK |
 | `Psk`, `transport::dial` | PSK из `SecretString` (`Psk::read`); connect и Noise initiator к `ServiceAddress` |
-| `config::{Config, Listen, ServiceListen, ClientTls}` | тайминги и лимиты; `{uds, mode, group}` \| `{ws}` \| `{wss, tls: {cert, key}}`; у сервиса `{uds, mode, group}` \| `{tcp}`; `extra_ca` клиента |
+| `config::{Config, Listen, ServiceListen, ClientTls}` | тайминги и лимиты; `{uds}` \| `{ws}` \| `{wss, tls: {cert, key}}`; у сервиса `{uds}` \| `{tcp: "ip:port"}`; права файла сокета код не ставит; `extra_ca` клиента |
 | `install_crypto_provider()` | ring провайдером rustls процесса; бинарь зовёт на старте |
 
 Адрес клиента: `uds:///path/to/modules.sock` (или `unix://`), `ws://host:port/v1/modules`, `wss://host:port/v1/modules`. Адрес сервиса (`ServiceAddress`): `uds:///<абсолютный путь>`, `tcp://<host>:<port>`.

@@ -17,7 +17,7 @@
 | `for_each_op!` | X-макро списка операций: по нему собраны RPC-диспетчер, клиент и SDK |
 | `NAMESPACES` | все операции: RPC-метод — `<namespace>.<op>` |
 | `OpKind` | `Read`, `Mutating` (окно идемпотентности), `Stream`, `Upload` |
-| `Caller` | `Kernel`, `Client { module }`, `Service { module }`; `from_token(kind, module)` |
+| `Caller` | `Kernel`, `Client { module }`, `Service { module }`; `from_kind(kind, module)`, `kind()`, `module()` |
 | `Provider`, `GenSink` | трейт провайдера (`decl`, `models`, `generate`, `embed`, `count_tokens`) и приёмник потока `GenItem` |
 | `prelude` | `CallStep` и все трейты неймспейсов одним `use` |
 

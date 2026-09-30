@@ -42,8 +42,19 @@ pub struct Service {
 /// Команда петлям дозвона компонента `modules`.
 #[derive(Debug)]
 pub enum Control {
-    Start(ModuleId, Service),
+    Start(Loop),
     Stop(ModuleId),
+}
+
+/// Петля дозвона записи.
+#[derive(Debug)]
+pub struct Loop {
+    pub module: ModuleId,
+    pub service: Service,
+    /// Номер отзыва имени на запуске петли; `None` у записи конфига — её не
+    /// снимает `modules.remove`. Отзыв после запуска гасит петлю: ни одна
+    /// её попытка сессией уже не станет.
+    pub epoch: Option<u64>,
 }
 
 /// Запись реестра для `modules.list` и `stats.health`.
@@ -72,13 +83,14 @@ pub struct Services {
 }
 
 impl Services {
-    /// Зарезервированное или невалидное имя, id и в `modules.tokens`,
-    /// нечитаемый или пустой ключ — ошибка старта с путём ключа.
+    /// Зарезервированное или невалидное имя, id и в `modules.tokens`, один
+    /// адрес у двух записей, нечитаемый или пустой ключ — ошибка старта с
+    /// путём ключа.
     pub fn load(
         services: &BTreeMap<ModuleId, ServiceEntry>,
         tokens: &BTreeMap<ModuleId, TokenEntry>,
     ) -> eyre::Result<Self> {
-        let mut config = BTreeMap::new();
+        let mut config: BTreeMap<ModuleId, Service> = BTreeMap::new();
         for (module, entry) in services {
             if RESERVED.contains(&module.as_str()) {
                 bail!("modules.services.{module}: {module} is a reserved module id");
@@ -89,6 +101,13 @@ impl Services {
             if tokens.contains_key(module) {
                 bail!(
                     "modules.services.{module} and modules.tokens.{module}: a module id is either a service or a client"
+                );
+            }
+            // Две петли на один модуль вытесняли бы друг друга без конца.
+            if let Some((twin, _)) = config.iter().find(|(_, s)| s.address == entry.address) {
+                bail!(
+                    "modules.services.{twin} and modules.services.{module} dial one address {}",
+                    entry.address
                 );
             }
             let read = entry
@@ -123,6 +142,14 @@ impl Services {
         &self.config
     }
 
+    /// Запись конфига, которая набирает `address`.
+    pub fn dialing(&self, address: &ServiceAddress) -> Option<&ModuleId> {
+        self.config
+            .iter()
+            .find(|(_, service)| service.address == *address)
+            .map(|(module, _)| module)
+    }
+
     /// Конфиг называет сервис: строка БД с тем же id инертна.
     pub fn configures(&self, module: &ModuleId) -> bool {
         self.config.contains_key(module)
@@ -152,12 +179,12 @@ impl Services {
     }
 
     /// Запускает петлю дозвона записи; без компонента — её запустит его старт.
-    pub fn start(&self, module: ModuleId, service: Service) {
+    pub fn start(&self, run: Loop) {
         let mut state = self.lock();
         // Провал попытки, заставшей прежний `remove`, к новой записи не относится.
-        state.errors.remove(&module);
+        state.errors.remove(&run.module);
         if let Some(dialer) = &state.dialer {
-            _ = dialer.send(Control::Start(module, service));
+            _ = dialer.send(Control::Start(run));
         }
     }
 

@@ -28,7 +28,10 @@ use eva_protocol::{
 };
 use eva_rpc::{ModuleHandler, NoHandler, Progress};
 
-use crate::harness::{Dial, Harness, Via, service_hello};
+use crate::{
+    harness::{Dial, Harness, Via, hello, service_hello},
+    kernel::CLIENT_TOKEN,
+};
 
 struct Module {
     events: mpsc::UnboundedSender<Publish>,
@@ -109,6 +112,14 @@ impl ModuleHandler for Module {
     }
 }
 
+/// Как модуль связан с ядром: набран им или звонит сам.
+#[derive(Debug, Clone, Copy)]
+enum Link {
+    Dialed(Dial),
+    /// Клиент хозяина тоже получает события и хуки.
+    Client(Via),
+}
+
 struct Connected {
     _h: Harness,
     _client: eva_rpc::RpcClient,
@@ -117,15 +128,25 @@ struct Connected {
     hung_dropped: Arc<Notify>,
 }
 
-async fn connect(dial: Dial) -> Connected {
-    let h = Harness::start(Via::Uds).await;
+async fn connect(link: Link) -> Connected {
     let (events_tx, events) = mpsc::unbounded_channel();
     let hung_dropped = Arc::new(Notify::new());
     let module = Module {
         events: events_tx,
         hung_dropped: hung_dropped.clone(),
     };
-    let (client, accepted) = h.dial_with(dial, service_hello(), module).await;
+    let (h, (client, accepted)) = match link {
+        Link::Dialed(dial) => {
+            let h = Harness::start(Via::Uds).await;
+            let pair = h.dial_with(dial, service_hello(), module).await;
+            (h, pair)
+        }
+        Link::Client(via) => {
+            let mut h = Harness::start(via).await;
+            let pair = h.connect_with(hello(CLIENT_TOKEN), module).await;
+            (h, pair)
+        }
+    };
     Connected {
         _h: h,
         _client: client,
@@ -177,8 +198,12 @@ fn request(model: &str) -> GenerateRequest {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_call_with_progress() {
-    for dial in [Dial::Uds, Dial::Tcp] {
-        let c = connect(dial).await;
+    for link in [
+        Link::Dialed(Dial::Uds),
+        Link::Dialed(Dial::Tcp),
+        Link::Client(Via::Ws),
+    ] {
+        let c = connect(link).await;
         let module = c.accepted.module();
 
         let items: Vec<_> = module
@@ -198,7 +223,7 @@ async fn tools_call_with_progress() {
                 "done x_send",
             )]))),
         ];
-        assert_eq!(items, expected);
+        assert_eq!(items, expected, "{link:?}");
 
         // Ошибка потока — `Fatal` тура: код доезжает до ядра.
         let items: Vec<_> = module
@@ -207,14 +232,14 @@ async fn tools_call_with_progress() {
             .unwrap()
             .collect()
             .await;
-        assert_eq!(items.len(), 1);
+        assert_eq!(items.len(), 1, "{link:?}");
         assert_eq!(items[0].as_ref().unwrap_err().code, ErrorCode::Internal);
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_call_cancel_reaches_the_module() {
-    let c = connect(Dial::Uds).await;
+    let c = connect(Link::Dialed(Dial::Uds)).await;
     let mut items = c
         .accepted
         .module()
@@ -255,7 +280,7 @@ async fn tools_call_without_handler() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hooks() {
-    let c = connect(Dial::Uds).await;
+    let c = connect(Link::Dialed(Dial::Uds)).await;
     let module = c.accepted.module();
 
     let decision = module
@@ -291,7 +316,12 @@ async fn hooks() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn events_keep_order() {
-    let mut c = connect(Dial::Tcp).await;
+    for link in [Link::Dialed(Dial::Tcp), Link::Client(Via::Ws)] {
+        events_in_order(connect(link).await).await;
+    }
+}
+
+async fn events_in_order(mut c: Connected) {
     let module = c.accepted.module();
 
     for seq in 0..20 {
@@ -318,7 +348,7 @@ async fn events_keep_order() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn module_provider() {
-    let c = connect(Dial::Uds).await;
+    let c = connect(Link::Dialed(Dial::Uds)).await;
     let provider = c.accepted.module().provider(ProviderCap {
         decl: ProviderDecl {
             local: false,

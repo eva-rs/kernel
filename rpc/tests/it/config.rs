@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use eva::bytesize::ByteSize;
-use eva_rpc::config::{Config, FileMode, Listen, ServiceListen, StreamBuffer};
+use eva_rpc::config::{Config, Listen, ServiceListen, StreamBuffer};
 
 #[test]
 fn defaults() {
@@ -45,25 +45,15 @@ fn defaults() {
 fn listen_by_address_key() {
     let listen: Vec<Listen> = serde_json::from_value(json!([
         {"uds": "/run/eva-kernel/modules.sock"},
-        {"uds": "/tmp/m.sock", "mode": "0600", "group": "eva"},
         {"ws": "127.0.0.1:9000"},
         {"wss": "0.0.0.0:9443", "tls": {"cert": "/etc/eva/cert.pem", "key": "/etc/eva/key.pem"}},
     ]))
     .unwrap();
 
-    let [
-        Listen::Uds(plain),
-        Listen::Uds(tuned),
-        Listen::Ws(ws),
-        Listen::Wss(wss),
-    ] = listen.as_slice()
-    else {
+    let [Listen::Uds(uds), Listen::Ws(ws), Listen::Wss(wss)] = listen.as_slice() else {
         panic!("wrong variants: {listen:?}");
     };
-    assert_eq!(plain.mode, FileMode(0o660));
-    assert_eq!(plain.group, None);
-    assert_eq!(tuned.mode, FileMode(0o600));
-    assert_eq!(tuned.group.as_deref(), Some("eva"));
+    assert_eq!(uds.path.to_str(), Some("/run/eva-kernel/modules.sock"));
     assert_eq!(ws.addr.port(), 9000);
     assert_eq!(wss.tls.key.to_str(), Some("/etc/eva/key.pem"));
 
@@ -74,18 +64,22 @@ fn listen_by_address_key() {
 #[test]
 fn service_listen_by_address_key() {
     let listen: Vec<ServiceListen> = serde_json::from_value(json!([
-        {"uds": "/run/eva-bridge/module.sock", "group": "eva"},
+        {"uds": "/run/eva-bridge/module.sock"},
         {"tcp": "0.0.0.0:7000"},
     ]))
     .unwrap();
     let [ServiceListen::Uds(uds), ServiceListen::Tcp(tcp)] = listen.as_slice() else {
         panic!("wrong variants: {listen:?}");
     };
-    assert_eq!(uds.mode, FileMode(0o660));
-    assert_eq!(uds.group.as_deref(), Some("eva"));
+    assert_eq!(uds.path.to_str(), Some("/run/eva-bridge/module.sock"));
     assert_eq!(tcp.addr.port(), 7000);
 
-    for other in [json!({"ws": "127.0.0.1:1"}), json!({"tcp": "host"})] {
+    // Слушатель привязывается к IP, а не к имени хоста.
+    for other in [
+        json!({"ws": "127.0.0.1:1"}),
+        json!({"tcp": "host"}),
+        json!({"tcp": "localhost:7000"}),
+    ] {
         assert!(
             serde_json::from_value::<ServiceListen>(other.clone()).is_err(),
             "{other}"

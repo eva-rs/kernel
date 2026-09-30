@@ -347,15 +347,6 @@ mod tests {
         psk.0.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// Та же HKDF с меткой рук: один секрет не должен давать им один PSK.
-    fn hands(secret: &str) -> String {
-        let mut okm = [0; 32];
-        Hkdf::<Sha256>::new(None, secret.as_bytes())
-            .expand(b"eva-hands psk v1", &mut okm)
-            .unwrap();
-        hex(&Psk(okm))
-    }
-
     #[test]
     fn psk_is_hkdf_of_the_trimmed_secret() {
         // Вектор посчитан openssl kdf HKDF и python hmac независимо от крейта.
@@ -363,11 +354,6 @@ mod tests {
         for secret in ["secret", "secret\n", "secret\r\n"] {
             assert_eq!(hex(&Psk::derive(secret)), expected, "{secret:?}");
         }
-        assert_eq!(
-            hands("secret"),
-            "648afb8bb6b1c846f46100e5101dcc73ba37efe8a6f14ea03ec93c0ebbf76be1"
-        );
-        assert_ne!(hex(&Psk::derive("secret")), hands("secret"));
         assert_ne!(hex(&Psk::derive("secret ")), expected);
         assert!(!format!("{:?}", Psk::derive("secret")).contains("4d92"));
     }

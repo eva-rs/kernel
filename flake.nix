@@ -58,6 +58,12 @@
           inStore = path: lib.hasPrefix "${builtins.storeDir}/" path;
           # Переопределение ключа конфига окружением (`00 §5`): `EVA_…__PLAINTEXT` — секрет.
           plaintextEnv = name: builtins.match "EVA_.*__PLAINTEXT" (lib.toUpper name) != null;
+          # Абсолютные uds-слушатели клиентов держит socket-юнит: права сокета — его
+          # дело, ядро берёт готовый сокет по адресу. Относительный путь лежит в
+          # закрытом StateDirectory, и группе он всё равно недоступен.
+          clientSockets = map (listen: listen.uds)
+            (builtins.filter (listen: listen ? uds && lib.hasPrefix "/" listen.uds)
+              (cfg.settings.modules.listen or [ ]));
         in
         {
           imports = [
@@ -65,17 +71,17 @@
               inherit self pname;
               description = "Eva kernel: memory, tools, chats, cron and sleep";
               settingsDefaults = {
-                # Группа сокета общая с модулями этой машины (`00 §5`, `06 §11`).
-                modules.listen = [{ uds = "/run/eva-kernel/modules.sock"; group = "eva"; }];
+                modules.listen = [{ uds = "/run/eva-kernel/modules.sock"; }];
               };
               extraServiceConfig = {
                 # На остановке ядро сворачивает идущие туры штатно (наговорённое
                 # сохраняется). Дефолтные 90 с systemd добили бы его раньше срока.
                 TimeoutStopSec = 180;
-                RuntimeDirectory = "eva-kernel";
-                RuntimeDirectoryPreserve = true;
-                # Отдать сокет группе `eva` процесс может, только состоя в ней; по ней же
-                # ядро дозванивается до сервисов машины: `/run/eva-<id>/module.sock`, 0660, группа `eva`.
+                # База хранит ключи сервисов как есть: она, blob'ы и песочницы модулей —
+                # только пользователю ядра.
+                StateDirectoryMode = "0700";
+                UMask = "0077";
+                # Сокеты сервисов машины — `/run/eva-<id>/module.sock`, 0660, группа `eva`.
                 SupplementaryGroups = [ "eva" ];
               };
             })
@@ -141,8 +147,22 @@
 
             users.groups.eva = { };
 
-            systemd.services.${pname}.serviceConfig.LoadCredential =
-              lib.mapAttrsToList (key: path: "${key}:${path}") cfg.secrets;
+            systemd.sockets.${pname} = lib.mkIf (clientSockets != [ ]) {
+              description = "Eva kernel client sockets";
+              wantedBy = [ "sockets.target" ];
+              socketConfig = {
+                ListenStream = clientSockets;
+                SocketMode = "0660";
+                SocketGroup = "eva";
+              };
+            };
+
+            systemd.services.${pname} = {
+              requires = lib.optional (clientSockets != [ ]) "${pname}.socket";
+              after = lib.optional (clientSockets != [ ]) "${pname}.socket";
+              serviceConfig.LoadCredential =
+                lib.mapAttrsToList (key: path: "${key}:${path}") cfg.secrets;
+            };
           };
         };
     in
@@ -164,7 +184,10 @@
             in
             {
               inherit (nixos.config.services.${pname}) settings;
-              inherit (nixos.config.systemd.services.${pname}.serviceConfig) LoadCredential SupplementaryGroups;
+              inherit (nixos.config.systemd.services.${pname}.serviceConfig)
+                LoadCredential SupplementaryGroups StateDirectoryMode UMask;
+              inherit (nixos.config.systemd.services.${pname}) requires;
+              sockets = nixos.config.systemd.sockets;
               inherit (nixos.config.users) groups;
               failed = map (a: a.message)
                 (builtins.filter (a: !a.assertion) nixos.config.assertions);
@@ -234,10 +257,19 @@
               };
             in
             assert byFile.failed == [ ];
-            assert byFile.settings.modules.listen
-              == [{ uds = "/run/eva-kernel/modules.sock"; group = "eva"; }];
+            assert byFile.settings.modules.listen == [{ uds = "/run/eva-kernel/modules.sock"; }];
             assert byFile.groups ? eva;
             assert builtins.elem "eva" byFile.SupplementaryGroups;
+            # База с ключами сервисов — только пользователю ядра; сокет клиентов
+            # группе `eva` отдаёт socket-юнит, а не процесс.
+            assert byFile.StateDirectoryMode == "0700";
+            assert byFile.UMask == "0077";
+            assert byFile.sockets.${pname}.socketConfig.ListenStream == [ "/run/eva-kernel/modules.sock" ];
+            assert byFile.sockets.${pname}.socketConfig.SocketMode == "0660";
+            assert byFile.sockets.${pname}.socketConfig.SocketGroup == "eva";
+            assert builtins.elem "${pname}.socket" byFile.requires;
+            # Относительный сокет живёт в закрытом StateDirectory: socket-юнит не нужен.
+            assert !((evalService { settings = nonSecret // { modules.listen = [{ uds = "modules.sock"; }]; }; }).sockets ? ${pname});
             assert byFile.settings.llm.providers.router.api_key
               == { file = "${credentialsDir}/llm.providers.router.api_key"; };
             assert byFile.settings.modules.tokens.phone

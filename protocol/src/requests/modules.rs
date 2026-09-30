@@ -45,7 +45,8 @@ pub mod add {
         pub key: Option<ServiceKey>,
     }
 
-    /// Зарезервированное или невалидное имя, негодный ключ — `Aux::Invalid`.
+    /// Зарезервированное или невалидное имя, негодный ключ — `Aux::Invalid`;
+    /// адрес, который уже набирает другая запись реестра, — `Aux::Conflict`.
     #[data(error)]
     pub enum Err {
         #[display("{_0}")]

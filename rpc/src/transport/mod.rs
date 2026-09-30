@@ -20,10 +20,14 @@ use tokio_rustls::TlsAcceptor;
 
 use eva_protocol::wire::RpcError;
 
-use crate::config::{ClientTls, Config, Listen, UdsListen};
+use crate::config::{ClientTls, Config, Listen};
 
-use self::meter::Meter;
+use self::{
+    activation::{Bound, Inherited},
+    meter::Meter,
+};
 
+pub mod activation;
 pub mod framed;
 pub(crate) mod meter;
 pub mod noise;
@@ -53,6 +57,9 @@ pub enum TransportError {
     /// Noise не сошёлся: чужой PSK, не тот пир, битое сообщение.
     #[display("noise: {_0}")]
     Noise(String),
+    /// Сокеты менеджера служб не сходятся с конфигом.
+    #[display("socket activation: {_0}")]
+    Activation(String),
 }
 
 impl TransportError {
@@ -193,6 +200,8 @@ pub async fn connect(target: &Url, cfg: &Config, tls: &ClientTls) -> Result<Conn
 pub struct Listener {
     kind: ListenerKind,
     cfg: Config,
+    /// Файл унаследованного сокета принадлежит менеджеру служб и на drop не удаляется.
+    inherited: bool,
 }
 
 enum ListenerKind {
@@ -211,28 +220,42 @@ enum ListenerKind {
 
 impl Listener {
     pub async fn bind(listen: &Listen, cfg: &Config) -> Result<Self, TransportError> {
-        let kind = match listen {
-            Listen::Uds(uds) => ListenerKind::Uds {
-                listener: bind_uds(uds)?,
-                path: uds.path.clone(),
-            },
-            Listen::Ws(ws) => ListenerKind::Ws {
-                listener: TcpListener::bind(ws.addr)
-                    .await
-                    .map_err(TransportError::io)?,
-            },
-            Listen::Wss(wss) => ListenerKind::Wss {
-                listener: TcpListener::bind(wss.addr)
-                    .await
-                    .map_err(TransportError::io)?,
-                acceptor: TlsAcceptor::from(tls::server_config(&wss.tls).await?),
-            },
+        Self::open(listen, &mut Inherited::default(), cfg).await
+    }
+
+    /// Унаследованный сокет с адресом `listen`, иначе свой bind.
+    pub async fn open(
+        listen: &Listen,
+        inherited: &mut Inherited,
+        cfg: &Config,
+    ) -> Result<Self, TransportError> {
+        let (kind, adopted) = match listen {
+            Listen::Uds(uds) => {
+                let (listener, adopted) = open_uds(&uds.path, inherited)?;
+                let path = uds.path.clone();
+                (ListenerKind::Uds { listener, path }, adopted)
+            }
+            Listen::Ws(ws) => {
+                let (listener, adopted) = open_tcp(ws.addr, inherited).await?;
+                (ListenerKind::Ws { listener }, adopted)
+            }
+            Listen::Wss(wss) => {
+                let (listener, adopted) = open_tcp(wss.addr, inherited).await?;
+                let acceptor = TlsAcceptor::from(tls::server_config(&wss.tls).await?);
+                (ListenerKind::Wss { listener, acceptor }, adopted)
+            }
         };
 
         Ok(Self {
             kind,
             cfg: cfg.clone(),
+            inherited: adopted,
         })
+    }
+
+    /// Сокет взят у менеджера служб, а не привязан процессом.
+    pub fn inherited(&self) -> bool {
+        self.inherited
     }
 
     /// Фактический адрес TCP-слушателя: порт `0` при bind выбирает система.
@@ -272,7 +295,9 @@ impl Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        if let ListenerKind::Uds { path, .. } = &self.kind {
+        if let ListenerKind::Uds { path, .. } = &self.kind
+            && !self.inherited
+        {
             _ = std::fs::remove_file(path);
         }
     }
@@ -324,10 +349,9 @@ impl RawConn {
     }
 }
 
-pub(crate) fn bind_uds(uds: &UdsListen) -> Result<UnixListener, TransportError> {
-    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
-
-    let UdsListen { path, mode, group } = uds;
+/// Свой bind: права и группу файла сокета задаёт umask процесса.
+pub(crate) fn bind_uds(path: &Path) -> Result<UnixListener, TransportError> {
+    use std::os::unix::fs::FileTypeExt as _;
 
     // Сокет прошлого запуска мешает bind; живой сокет другого процесса и
     // не-сокет не трогаем.
@@ -343,32 +367,40 @@ pub(crate) fn bind_uds(uds: &UdsListen) -> Result<UnixListener, TransportError> 
         std::fs::remove_file(path).map_err(TransportError::io)?;
     }
 
-    let listener = UnixListener::bind(path).map_err(TransportError::io)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode.0))
-        .map_err(TransportError::io)?;
-    if let Some(group) = group {
-        let gid = resolve_group(group)?;
-        std::os::unix::fs::chown(path, None, Some(gid)).map_err(TransportError::io)?;
-    }
-
-    Ok(listener)
+    UnixListener::bind(path).map_err(TransportError::io)
 }
 
-/// gid числом либо по имени из `/etc/group`.
-fn resolve_group(group: &str) -> Result<u32, TransportError> {
-    if let Ok(gid) = group.parse() {
-        return Ok(gid);
+/// Унаследованный слушатель по `path`, иначе свой bind; `true` — унаследован.
+pub(crate) fn open_uds(
+    path: &Path,
+    inherited: &mut Inherited,
+) -> Result<(UnixListener, bool), TransportError> {
+    match inherited.claim(Bound::Unix(path))? {
+        Some(fd) => {
+            let listener = std::os::unix::net::UnixListener::from(fd);
+            listener.set_nonblocking(true).map_err(TransportError::io)?;
+            let listener = UnixListener::from_std(listener).map_err(TransportError::io)?;
+            Ok((listener, true))
+        }
+        None => Ok((bind_uds(path)?, false)),
     }
+}
 
-    let table = std::fs::read_to_string("/etc/group").map_err(TransportError::io)?;
-    table
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split(':');
-            let name = fields.next()?;
-            let gid = fields.nth(1)?.parse().ok()?;
-            Some((name, gid))
-        })
-        .find_map(|(name, gid)| (name == group).then_some(gid))
-        .ok_or_else(|| TransportError::Io(format!("unknown group {group}")))
+/// Унаследованный слушатель по `addr`, иначе свой bind; `true` — унаследован.
+pub(crate) async fn open_tcp(
+    addr: SocketAddr,
+    inherited: &mut Inherited,
+) -> Result<(TcpListener, bool), TransportError> {
+    match inherited.claim(Bound::Tcp(addr))? {
+        Some(fd) => {
+            let listener = std::net::TcpListener::from(fd);
+            listener.set_nonblocking(true).map_err(TransportError::io)?;
+            let listener = TcpListener::from_std(listener).map_err(TransportError::io)?;
+            Ok((listener, true))
+        }
+        None => {
+            let listener = TcpListener::bind(addr).await.map_err(TransportError::io)?;
+            Ok((listener, false))
+        }
+    }
 }

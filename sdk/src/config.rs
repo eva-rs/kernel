@@ -11,8 +11,8 @@ use eva_rpc::{ClientTls, ConnectError, ServiceListen};
 /// Сервис: ядро набирает его по записи `modules.services.<id>`.
 #[data]
 pub struct ServiceConfig {
-    /// `{uds: /run/eva-<id>/module.sock, mode?, group?}` или `{tcp: "127.0.0.1:7001"}`;
-    /// при socket activation (`LISTEN_FDS`) — вид унаследованного сокета.
+    /// `{uds: /run/eva-<id>/module.sock}` или `{tcp: "127.0.0.1:7001"}`; при socket
+    /// activation (`LISTEN_FDS`) — адрес унаследованного сокета.
     pub listen: ServiceListen,
     /// Тот же секрет, что `key` записи реестра у ядра: `{plaintext: …}` или `{file: …}`.
     pub key: SecretString,

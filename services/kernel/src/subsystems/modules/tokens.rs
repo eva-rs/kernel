@@ -37,9 +37,9 @@ impl ConfigTokens {
             if let Err(e) = check_name(module) {
                 bail!("modules.tokens.{module}: {e}");
             }
-            if entry.kind.is_some() {
+            if entry.kind {
                 bail!(
-                    "modules.tokens.{module}.kind: tokens are for clients only; a service module goes to modules.services.{module} = {{address, key}}"
+                    "modules.tokens.{module}.kind: a token entry is always a client and takes no kind; a service module goes to modules.services.{module} = {{address, key}}"
                 );
             }
             let read = entry

@@ -4,7 +4,10 @@
 use eva::{data, time::Timestamp};
 use rusqlite::{Connection, OptionalExtension as _, Row, named_params};
 
-use eva_protocol::types::{ModelId, ModuleId, PersonId, module::State};
+use eva_protocol::types::{
+    ModelId, ModuleId, PersonId,
+    module::{ServiceKey, State},
+};
 
 use crate::db::{
     DbResult,
@@ -37,13 +40,12 @@ pub struct TokenRow {
     pub issued_at: Timestamp,
 }
 
-/// Сервис из `modules.add`; ключ — как есть: ядро само им дозванивается.
+/// Сервис из `modules.add` без ключа: спискам он не нужен.
 #[data]
 pub struct ServiceRow {
     pub module: ModuleId,
     /// `ServiceAddress` строкой.
     pub address: String,
-    pub key: String,
     /// Клиент, выполнивший `modules.add`.
     pub added_via: ModuleId,
     pub added_at: Timestamp,
@@ -231,15 +233,42 @@ impl Modules<'_> {
         Ok(rows)
     }
 
-    /// Сервисы `modules.add` по id.
+    /// Сервисы `modules.add` по id, без ключей.
     pub fn services(&self) -> DbResult<Vec<ServiceRow>> {
         let mut stmt = self.0.prepare(
-            "SELECT module, address, key, added_via, added_at FROM module_services ORDER BY module",
+            "SELECT module, address, added_via, added_at FROM module_services ORDER BY module",
         )?;
         let rows = stmt
             .query_map([], service_from_row)?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// Сервисы `modules.add` с ключами — для дозвона; ключ лежит как есть:
+    /// ядро само им дозванивается.
+    pub fn dialable(&self) -> DbResult<Vec<(ServiceRow, ServiceKey)>> {
+        let mut stmt = self.0.prepare(
+            "SELECT module, address, key, added_via, added_at FROM module_services ORDER BY module",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let key = ServiceKey(row.get("key")?);
+                Ok((service_from_row(row)?, key))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Сервис, который ядро уже набирает по `address` (строка `ServiceAddress`).
+    pub fn service_at(&self, address: &str) -> DbResult<Option<ModuleId>> {
+        Ok(self
+            .0
+            .query_row(
+                "SELECT module FROM module_services WHERE address = ?1",
+                [address],
+                |row| Ok(ModuleId(row.get("module")?)),
+            )
+            .optional()?)
     }
 
     pub fn service_exists(&self, module: &ModuleId) -> DbResult<bool> {
@@ -254,14 +283,14 @@ impl Modules<'_> {
             .is_some())
     }
 
-    pub fn insert_service(&self, row: &ServiceRow) -> DbResult<()> {
+    pub fn insert_service(&self, row: &ServiceRow, key: &ServiceKey) -> DbResult<()> {
         self.0.execute(
             "INSERT INTO module_services (module, address, key, added_via, added_at)
              VALUES (:module, :address, :key, :added_via, :added_at)",
             named_params! {
                 ":module": row.module.as_str(),
                 ":address": row.address,
-                ":key": row.key,
+                ":key": key.expose(),
                 ":added_via": row.added_via.as_str(),
                 ":added_at": Ts(row.added_at),
             },
@@ -337,7 +366,6 @@ fn service_from_row(row: &Row<'_>) -> rusqlite::Result<ServiceRow> {
     Ok(ServiceRow {
         module: ModuleId(row.get("module")?),
         address: row.get("address")?,
-        key: row.get("key")?,
         added_via: ModuleId(row.get("added_via")?),
         added_at: row.get::<_, Ts>("added_at")?.0,
     })

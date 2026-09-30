@@ -19,7 +19,8 @@ use eva_protocol::{
 };
 use eva_rpc::{
     Config, Psk, Service, TransportError,
-    config::{FileMode, TcpListen, UdsListen},
+    config::{TcpListen, UdsListen},
+    gate::MAX_PENDING_PER_NET,
     transport,
 };
 use eva_sdk::{
@@ -51,8 +52,6 @@ fn config(dir: &tempfile::TempDir, via: Via) -> ServiceConfig {
         listen: match via {
             Via::Uds => ServiceListen::Uds(UdsListen {
                 path: dir.path().join("module.sock"),
-                mode: FileMode::default(),
-                group: None,
             }),
             Via::Tcp => ServiceListen::Tcp(TcpListen {
                 addr: "127.0.0.1:0".parse().unwrap(),
@@ -351,6 +350,40 @@ async fn kernel_wait_is_bounded() {
         }
         other => panic!("expected a timeout, got {other:?}"),
     }
+}
+
+/// Поток молчащих сокетов не запирает ядро и не держит дескрипторы до
+/// `handshake_timeout`: сверх лимита на сеть новичок вытесняет старейший.
+#[tokio::test]
+async fn a_flood_of_silent_sockets_does_not_lock_the_kernel_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = ServiceConfig {
+        transport: Config {
+            handshake_timeout: HumanDuration(Duration::from_secs(60)),
+            ..Config::default()
+        },
+        ..config(&dir, Via::Tcp)
+    };
+    let (listening, address) = listen(Module::new(), &cfg).await;
+    let ServiceAddress::Tcp { host, port } = &address else {
+        panic!("tcp expected: {address}");
+    };
+    let mut flood = Vec::new();
+    for _ in 0..3 * MAX_PENDING_PER_NET {
+        let silent = tokio::net::TcpStream::connect((host.as_str(), *port))
+            .await
+            .unwrap();
+        flood.push(silent);
+    }
+
+    let _session = dial(&address, fake::welcome("s1", &[]), Surfaces::default()).await;
+    listening.kernel().await.expect("the kernel got through");
+
+    let mut buf = [0; 1];
+    let read = tokio::time::timeout(Duration::from_secs(5), flood[0].read(&mut buf))
+        .await
+        .expect("the oldest silent socket is evicted");
+    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
 }
 
 /// Сокет, молчащий вместо Noise, закрывается по `handshake_timeout` и не

@@ -11,7 +11,7 @@ SDK модулей Евы: сервис слушает и принимает я�
 | Путь | Что |
 |---|---|
 | `Module::new()` | билдер: `version`, `about`, `ask`, `group`, `tool` (+ `description`, `ends_turn`, `master_only`, `trusted_only`, `needs`, `parallel_safe`, `idempotent`, `timeout`), `on_event`, `hook`, `hooks_timeout`, `hooks_fail_mode`, `provider` |
-| `Module::listen(&ServiceConfig)` | сервис: bind или сокет от `LISTEN_FDS`, приём ядра в фоне → `Listening` |
+| `Module::listen(&ServiceConfig)` | сервис: bind или сокет от `LISTEN_FDS` с тем же адресом, приём ядра в фоне → `Listening` |
 | `Listening` | `kernel().await` (ждёт первого `welcome` до `kernel_wait`), `module()`, `welcome()`, `client()`, `address()`, `run(shutdown)`; новое соединение ядра вытесняет прежнее |
 | `Module::connect_config(&ClientConfig)` / `connect(url, token)` | клиент: ждёт ядро до `connect_wait`, отказ токена или версии — сразу ошибка → `Connected` |
 | `Module::handshake(conn, token)` | клиент поверх готового `Conn` (тесты), без реконнекта |
@@ -26,7 +26,7 @@ SDK модулей Евы: сервис слушает и принимает я�
 
 | Ключ | По умолчанию | Что |
 |---|---|---|
-| `listen` | — | `{uds: /run/eva-<id>/module.sock, mode: 0o660, group?}` или `{tcp: "127.0.0.1:7001"}` |
+| `listen` | — | `{uds: /run/eva-<id>/module.sock}` или `{tcp: "127.0.0.1:7001"}`; права файла сокета — окружения (umask, socket-юнит), не SDK |
 | `key` | — | `{file: /путь}` или `{plaintext: "…"}`; тот же секрет, что `key` записи `modules.services.<id>` у ядра |
 | `kernel_wait` | `180s` | сколько `kernel()` ждёт первого соединения ядра |
 | ключи `eva_rpc::Config` | как у ядра | плоско в той же секции; `max_hello` сервис не проверяет |

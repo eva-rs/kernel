@@ -24,7 +24,7 @@ use eva_protocol::{
         events::{Event, ModuleEvent},
     },
 };
-use eva_rpc::{Accepted, Listener, Psk, Server, config::Listen};
+use eva_rpc::{Accepted, Inherited, Listener, Psk, Server, config::Listen};
 
 use crate::{
     bus::Published,
@@ -37,7 +37,7 @@ use crate::{
     subsystems::modules::{
         dial::Dialer,
         live::{Attach, Entry, Source},
-        services::{Control, Service, Services, trimmed},
+        services::{Control, Loop, Service, Services, trimmed},
         tokens::ConfigTokens,
     },
 };
@@ -87,7 +87,8 @@ pub struct Listening<C: Components> {
 }
 
 /// Слушатели `modules.listen` (относительный путь сокета — от
-/// `system.state_dir`) и петли дозвона записей реестра.
+/// `system.state_dir`; сокет менеджера служб с тем же адресом берётся
+/// готовым) и петли дозвона записей реестра.
 pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening<C>> {
     let shared = kernel.shared().clone();
     let cfg = &shared.cfg().modules;
@@ -100,12 +101,13 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
     let mut tasks = JoinSet::new();
     let sessions = TaskTracker::new();
 
+    let mut inherited = Inherited::take().map_err(|e| eyre::eyre!("modules.listen: {e}"))?;
     for listen in &cfg.listen {
         let listen = resolve(listen, &shared.cfg().system.state_dir);
-        let listener = Listener::bind(&listen, &cfg.transport)
+        let listener = Listener::open(&listen, &mut inherited, &cfg.transport)
             .await
             .map_err(|e| eyre::eyre!("failed to listen on {}: {e}", describe(&listen)))?;
-        log::info!(address = describe(&listen); "modules listener bound");
+        log::info!(address = describe(&listen), inherited = listener.inherited(); "modules listener bound");
 
         let server = server.clone();
         let session_shared = shared.clone();
@@ -122,6 +124,9 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
                 .await;
         });
     }
+    inherited
+        .finish()
+        .map_err(|e| eyre::eyre!("modules.listen: {e}"))?;
 
     let dials = CancellationToken::new();
     let (control, commands) = mpsc::unbounded_channel();
@@ -132,12 +137,13 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
         let _ops = services.ops().await;
         let runtime = runtime_services(&shared).await?;
         services.attach(control.clone());
-        let config = services
-            .config()
-            .iter()
-            .map(|(module, service)| (module.clone(), service.clone()));
-        for (module, service) in config.chain(runtime) {
-            _ = control.send(Control::Start(module, service));
+        let config = services.config().iter().map(|(module, service)| Loop {
+            module: module.clone(),
+            service: service.clone(),
+            epoch: None,
+        });
+        for run in config.chain(runtime) {
+            _ = control.send(Control::Start(run));
         }
     }
     tasks.spawn(
@@ -164,18 +170,17 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
     })
 }
 
-/// Строки `module_services`, не затенённые конфигом; битая строка — в лог.
-async fn runtime_services<C: Components>(
-    shared: &Shared<C>,
-) -> eyre::Result<Vec<(ModuleId, Service)>> {
+/// Строки `module_services`, не затенённые конфигом; битая строка и строка
+/// с адресом записи конфига — в лог: конфиг сильнее.
+async fn runtime_services<C: Components>(shared: &Shared<C>) -> eyre::Result<Vec<Loop>> {
     let rows = shared
         .db()
         .reader()
         .await?
-        .run(|c| c.modules().services())
+        .run(|c| c.modules().dialable())
         .await?;
     let mut services = Vec::with_capacity(rows.len());
-    for row in rows {
+    for (row, key) in rows {
         if shared.services().shadowed(&row.module, shared.tokens()) {
             continue;
         }
@@ -186,12 +191,20 @@ async fn runtime_services<C: Components>(
                 continue;
             }
         };
+        if let Some(twin) = shared.services().dialing(&address) {
+            log::error!(module:% = row.module, config:% = twin, address:% = address; "module_services row dials the address of a modules.services entry, ignored");
+            continue;
+        }
         let service = Service {
             address,
-            psk: Psk::derive(trimmed(&row.key)),
+            psk: Psk::derive(trimmed(key.expose())),
             source: Source::RuntimeService,
         };
-        services.push((row.module, service));
+        services.push(Loop {
+            epoch: Some(shared.live().epoch(&row.module)),
+            module: row.module,
+            service,
+        });
     }
     Ok(services)
 }

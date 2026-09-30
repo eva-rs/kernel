@@ -5,10 +5,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use eva::{time::HumanDuration, url::Url};
-use eva_rpc::{
-    Config, Conn,
-    config::{FileMode, UdsListen},
-};
+use eva_rpc::{Config, Conn, config::UdsListen};
 use eva_sdk::{
     Backoff, ClientConfig, ConnectError, Module, SecretString, ServiceConfig, ServiceListen,
 };
@@ -134,7 +131,7 @@ fn backoff_doubles_and_caps() {
 #[test]
 fn service_section_takes_defaults() {
     let cfg: ServiceConfig = serde_json::from_value(json!({
-        "listen": {"uds": "/run/eva-x/module.sock", "group": "eva"},
+        "listen": {"uds": "/run/eva-x/module.sock"},
         "key": {"file": "/run/credentials/x.service/key"},
     }))
     .unwrap();
@@ -142,8 +139,6 @@ fn service_section_takes_defaults() {
         panic!("uds expected: {:?}", cfg.listen);
     };
     assert_eq!(uds.path.to_str(), Some("/run/eva-x/module.sock"));
-    assert_eq!(uds.mode.0, 0o660);
-    assert_eq!(uds.group.as_deref(), Some("eva"));
     assert_eq!(
         cfg.key,
         SecretString::File("/run/credentials/x.service/key".into())
@@ -203,11 +198,7 @@ async fn an_empty_or_unreadable_key_names_its_key() {
         SecretString::File(dir.path().join("missing")),
     ] {
         let cfg = ServiceConfig {
-            listen: ServiceListen::Uds(UdsListen {
-                path: path.clone(),
-                mode: FileMode::default(),
-                group: None,
-            }),
+            listen: ServiceListen::Uds(UdsListen { path: path.clone() }),
             key,
             kernel_wait: HumanDuration(Duration::from_secs(1)),
             transport: Config::default(),

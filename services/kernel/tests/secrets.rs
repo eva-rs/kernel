@@ -23,6 +23,7 @@ use eva_kernel::{
     subsystems::modules::{Registrations, tokens::ConfigTokens},
 };
 use eva_protocol::types::{ModuleId, module::ServiceAddress};
+use eva_rpc::{ServiceListen, ServiceListener, config::UdsListen};
 
 const CREDENTIALS: &str = "/run/credentials/eva-kernel.service";
 const KEY: &str = "bridge-key-0123456789abcdef0123456789";
@@ -214,23 +215,33 @@ fn reserved_ids_and_shared_tokens_fail_the_start() {
     );
 }
 
-/// Сервис с токеном — ошибка старта, а не молча клиент (`06 §11`).
+/// Ключ `kind` у токена — ошибка старта с любым значением, даже пустым: сервис
+/// с токеном молча стал бы клиентом с правами хозяина (`06 §11`).
 #[test]
 fn a_token_kind_fails_the_start_pointing_to_services() {
+    for kind in [json!("service"), json!("client"), json!(null)] {
+        let modules: ModulesConfig = serde_json::from_value(json!({
+            "tokens": {"bridge": {"token": {"plaintext": "bridge-token"}, "kind": kind}},
+        }))
+        .expect("the key parses to be refused by name");
+        let error = format!(
+            "{:#}",
+            Registrations::load(&modules)
+                .err()
+                .expect("the start is refused")
+        );
+        assert!(
+            error.contains("modules.tokens.bridge.kind")
+                && error.contains("modules.services.bridge"),
+            "{kind}: {error}"
+        );
+    }
+
     let modules: ModulesConfig = serde_json::from_value(json!({
-        "tokens": {"bridge": {"token": {"plaintext": "bridge-token"}, "kind": "service"}},
+        "tokens": {"bridge": {"token": {"plaintext": "bridge-token"}}},
     }))
-    .expect("the old form still parses");
-    let error = format!(
-        "{:#}",
-        Registrations::load(&modules)
-            .err()
-            .expect("the start is refused")
-    );
-    assert!(
-        error.contains("modules.tokens.bridge.kind") && error.contains("modules.services.bridge"),
-        "{error}"
-    );
+    .expect("a token entry");
+    Registrations::load(&modules).expect("no kind, no refusal");
 }
 
 #[test]
@@ -267,6 +278,60 @@ fn a_service_id_is_neither_reserved_nor_a_client() {
         ..ModulesConfig::default()
     };
     Registrations::load(&short).expect("a short key only warns");
+}
+
+/// Две записи на один адрес — две петли, которые вытесняли бы друг друга без
+/// конца, поэтому ошибка старта.
+#[test]
+fn two_services_on_one_address_fail_the_start() {
+    let error = registration_error(|cfg| {
+        cfg.services
+            .insert(ModuleId::from("bridge"), service(plaintext(KEY)));
+        cfg.services
+            .insert(ModuleId::from("mirror"), service(plaintext("another key")));
+    });
+    assert!(
+        error.contains("modules.services.bridge")
+            && error.contains("modules.services.mirror")
+            && error.contains("uds:///run/eva-bridge/module.sock"),
+        "{error}"
+    );
+}
+
+/// Один секрет у рук и у модуля даёт разные PSK: инициатор с ключом рук не
+/// проходит Noise модуля, а инициатор с ключом модуля проходит.
+#[tokio::test]
+async fn a_hands_key_does_not_open_a_module() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let listen = ServiceListen::Uds(UdsListen {
+        path: dir.path().join("module.sock"),
+    });
+    let cfg = eva_rpc::Config::default();
+    for secret in [KEY, "secret", "a longer secret both daemons were given"] {
+        let listener = ServiceListener::bind(&listen, eva_rpc::Psk::derive(secret), &cfg)
+            .await
+            .expect("the module listens");
+        let address = listener.local_addr().expect("uds address");
+        let path = address.path().expect("uds path").to_path_buf();
+
+        let hands = async {
+            let stream = tokio::net::UnixStream::connect(&path)
+                .await
+                .expect("connect");
+            eva_hands::transport::initiator_handshake(stream, &Psk::new(secret).derive32()).await
+        };
+        let module = async { listener.accept().await.expect("accept").secure().await };
+        let (hands, module) = tokio::join!(hands, module);
+        assert!(hands.is_err(), "{secret}: a hands key opened a module");
+        assert!(module.is_err(), "{secret}: the module took a hands key");
+
+        let psk = eva_rpc::Psk::derive(secret);
+        let kernel = eva_rpc::transport::dial(&address, &psk, &cfg);
+        let module = async { listener.accept().await.expect("accept").secure().await };
+        let (kernel, module) = tokio::join!(kernel, module);
+        kernel.expect("the module key opens the module");
+        module.expect("the module takes its own key");
+    }
 }
 
 /// Кривой `address` — ошибка разбора конфига, то есть старта.

@@ -4,7 +4,7 @@
 //!
 //! ```yaml
 //! module:
-//!   listen: { uds: /run/eva-echo/module.sock, group: eva }
+//!   listen: { uds: /run/eva-echo/module.sock }
 //!   key: { file: /run/credentials/eva-echo.service/key }
 //! ```
 //!

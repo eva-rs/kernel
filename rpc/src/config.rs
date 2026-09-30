@@ -1,10 +1,9 @@
 //! Транспортная часть секции `modules` (`06 §1`, `§11`): ядро встраивает эти
 //! типы в свой конфиг, SDK — в свой.
 
-use std::{fmt, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use eva::{bytesize::ByteSize, data, time::HumanDuration};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use eva_protocol::wire::handshake::ProtoVersion;
 
@@ -131,7 +130,7 @@ impl Default for StreamBuffer {
 #[eva::int(u16, 1..=4096)]
 pub enum SessionLimit {}
 
-/// Слушатель клиентов у ядра: `{uds: path, mode?, group?}`, `{ws: addr}` или
+/// Слушатель клиентов у ядра: `{uds: path}`, `{ws: addr}` или
 /// `{wss: addr, tls: {cert, key}}` — вид задаёт ключ адреса.
 #[data]
 #[serde(untagged)]
@@ -141,14 +140,12 @@ pub enum Listen {
     Wss(WssListen),
 }
 
+/// Права и группу файла сокета задаёт окружение — umask процесса или
+/// socket-юнит менеджера служб, — а не конфиг.
 #[data]
 pub struct UdsListen {
     #[serde(rename = "uds")]
     pub path: PathBuf,
-    #[serde(default)]
-    pub mode: FileMode,
-    /// Имя или gid группы сокета; ставится после bind.
-    pub group: Option<String>,
 }
 
 /// HTTP нужен только для Upgrade на пути `/v1/modules`.
@@ -165,8 +162,8 @@ pub struct WssListen {
     pub tls: TlsFiles,
 }
 
-/// Слушатель сервисного модуля, куда звонит ядро: `{uds: path, mode?, group?}`
-/// или `{tcp: addr}`; оба под Noise.
+/// Слушатель сервисного модуля, куда звонит ядро: `{uds: path}` или
+/// `{tcp: "ip:port"}`; оба под Noise.
 #[data]
 #[serde(untagged)]
 pub enum ServiceListen {
@@ -185,61 +182,6 @@ pub struct TcpListen {
 pub struct TlsFiles {
     pub cert: PathBuf,
     pub key: PathBuf,
-}
-
-/// Права файла сокета: число либо восьмеричная строка (`"0660"`).
-#[data(copy, not(serde))]
-pub struct FileMode(pub u32);
-
-impl Default for FileMode {
-    fn default() -> Self {
-        Self(0o660)
-    }
-}
-
-impl Serialize for FileMode {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u32(self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for FileMode {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl de::Visitor<'_> for Visitor {
-            type Value = FileMode;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a file mode: an integer or an octal string")
-            }
-
-            fn visit_u64<E: de::Error>(self, v: u64) -> Result<FileMode, E> {
-                u32::try_from(v)
-                    .ok()
-                    .filter(|&m| m <= 0o7777)
-                    .map(FileMode)
-                    .ok_or_else(|| E::invalid_value(de::Unexpected::Unsigned(v), &self))
-            }
-
-            fn visit_i64<E: de::Error>(self, v: i64) -> Result<FileMode, E> {
-                u64::try_from(v)
-                    .map_err(|_| E::invalid_value(de::Unexpected::Signed(v), &self))
-                    .and_then(|v| self.visit_u64(v))
-            }
-
-            fn visit_str<E: de::Error>(self, v: &str) -> Result<FileMode, E> {
-                let digits = v.strip_prefix("0o").unwrap_or(v);
-                u32::from_str_radix(digits, 8)
-                    .ok()
-                    .filter(|&m| m <= 0o7777)
-                    .map(FileMode)
-                    .ok_or_else(|| E::invalid_value(de::Unexpected::Str(v), &self))
-            }
-        }
-
-        deserializer.deserialize_any(Visitor)
-    }
 }
 
 /// TLS клиента `wss://`.

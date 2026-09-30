@@ -1,16 +1,9 @@
 //! Сторона ядра: handshake (`06 §2`) и диспетчер операций на каждую сессию.
 
-use std::{
-    collections::BTreeMap,
-    net::{IpAddr, Ipv6Addr},
-    pin::pin,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
-    time::Duration,
-};
+use std::{pin::pin, sync::Arc, time::Duration};
 
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
 
 use eva::data;
 use eva_core::{Caller, SessionMaker};
@@ -27,6 +20,7 @@ use eva_protocol::{
 use crate::{
     codec,
     config::Config,
+    gate::Gate,
     module::ModuleClient,
     peer::{IdSeq, Peer},
     transport::{Conn, Listener, Outbound, TransportError, noise::Psk, service},
@@ -41,12 +35,6 @@ mod window;
 
 /// Пауза после отказа `accept`: исчерпанные дескрипторы не крутят цикл вхолостую.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
-
-/// Соединений до `welcome` на сервер.
-const MAX_HANDSHAKES: usize = 64;
-
-/// Соединений до `welcome` из одной сети пира (`Net`).
-const MAX_HANDSHAKES_PER_NET: usize = 8;
 
 /// Байт кадрирования сверх `max_hello` до `welcome`: префикс длины uds,
 /// заголовок ws-кадра.
@@ -382,11 +370,7 @@ where
 
     /// Цикл приёма: TLS/Upgrade и handshake — в своей задаче на соединение,
     /// принятые сессии — в `on_session`. TLS, Upgrade и `hello` укладываются
-    /// в один `handshake_timeout`; соединений до `welcome` не больше
-    /// `MAX_HANDSHAKES` (и `MAX_HANDSHAKES_PER_NET` из одной сети). Сверх
-    /// лимита новичок вытесняет старейшее соединение, ещё не приславшее
-    /// `hello`: молчащие сокеты без токена лишь задерживают модули, а не
-    /// запирают им вход.
+    /// в один `handshake_timeout`; соединения до `hello` держит `Gate`.
     pub async fn serve<F>(
         &self,
         listener: Listener,
@@ -437,7 +421,7 @@ where
                 };
                 let (conn, heard) = tokio::select! {
                     () = pass.evicted() => {
-                        log::debug!(ip:? = pass.ip; "silent connection evicted before hello");
+                        log::debug!(ip:? = pass.ip(); "silent connection evicted before hello");
                         return;
                     }
                     heard = hear => match heard {
@@ -453,119 +437,6 @@ where
                 }
             });
         }
-    }
-}
-
-/// Сеть пира для лимита до `welcome`: IPv4 — адрес, IPv6 — префикс /64,
-/// который обычно целиком у одного хоста.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Net(IpAddr);
-
-impl Net {
-    fn of(ip: IpAddr) -> Self {
-        match ip.to_canonical() {
-            IpAddr::V4(v4) => Self(IpAddr::V4(v4)),
-            IpAddr::V6(v6) => {
-                let prefix = u128::from(v6) & !u128::from(u64::MAX);
-                Self(IpAddr::V6(Ipv6Addr::from(prefix)))
-            }
-        }
-    }
-}
-
-/// Места для соединений до `welcome`: всего и на одну сеть.
-struct Gate {
-    state: Mutex<GateState>,
-}
-
-#[derive(Default)]
-struct GateState {
-    next: u64,
-    /// Места по возрасту: первое — старейшее.
-    seats: BTreeMap<u64, Seat>,
-}
-
-struct Seat {
-    net: Option<Net>,
-    evict: CancellationToken,
-    /// `hello` ещё не пришёл: место можно отдать новичку.
-    silent: bool,
-}
-
-impl Gate {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::default(),
-        })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, GateState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Место новичку; при исчерпанном лимите — за счёт старейшего молчащего:
-    /// из его же сети, если она выбрала свою долю, иначе любого.
-    fn admit(self: &Arc<Self>, ip: Option<IpAddr>) -> Option<Pass> {
-        let net = ip.map(Net::of);
-        let kin = |seat: &Seat| net.is_some() && seat.net == net;
-        let mut state = self.lock();
-        let crowded =
-            state.seats.values().filter(|&seat| kin(seat)).count() >= MAX_HANDSHAKES_PER_NET;
-        if crowded || state.seats.len() >= MAX_HANDSHAKES {
-            let victim = state
-                .seats
-                .iter()
-                .find(|(_, seat)| seat.silent && (!crowded || kin(seat)))
-                .map(|(&key, _)| key)?;
-            if let Some(seat) = state.seats.remove(&victim) {
-                seat.evict.cancel();
-            }
-        }
-
-        let key = state.next;
-        state.next += 1;
-        let evict = CancellationToken::new();
-        state.seats.insert(
-            key,
-            Seat {
-                net,
-                evict: evict.clone(),
-                silent: true,
-            },
-        );
-        Some(Pass {
-            gate: self.clone(),
-            key,
-            ip,
-            evict,
-        })
-    }
-}
-
-/// Место соединения в `Gate` до конца handshake.
-struct Pass {
-    gate: Arc<Gate>,
-    key: u64,
-    ip: Option<IpAddr>,
-    evict: CancellationToken,
-}
-
-impl Pass {
-    async fn evicted(&self) {
-        self.evict.cancelled().await;
-    }
-
-    /// Пир прислал `hello`: впереди `authenticate`, его не прерывают.
-    fn spoke(&self) {
-        if let Some(seat) = self.gate.lock().seats.get_mut(&self.key) {
-            seat.silent = false;
-        }
-    }
-}
-
-impl Drop for Pass {
-    fn drop(&mut self) {
-        self.gate.lock().seats.remove(&self.key);
     }
 }
 
@@ -615,65 +486,4 @@ fn unknown_capabilities(params: &[u8]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn net(ip: &str) -> Net {
-        Net::of(ip.parse().unwrap())
-    }
-
-    fn ip(ip: &str) -> Option<IpAddr> {
-        Some(ip.parse().unwrap())
-    }
-
-    #[test]
-    fn ipv6_hosts_share_a_net_by_64() {
-        assert_eq!(net("2001:db8::1"), net("2001:db8::2"));
-        assert_eq!(net("2001:db8::1"), net("2001:db8::ffff:ffff:ffff:ffff"));
-        assert_ne!(net("2001:db8::1"), net("2001:db8:0:1::1"));
-        assert_ne!(net("192.0.2.1"), net("192.0.2.2"));
-        // IPv4 через dual-stack сокет — всё тот же адрес, а не одна /64 на всех.
-        assert_eq!(net("::ffff:192.0.2.1"), net("192.0.2.1"));
-        assert_ne!(net("::ffff:192.0.2.1"), net("::ffff:192.0.2.2"));
-    }
-
-    #[test]
-    fn crowded_net_evicts_its_own_oldest() {
-        let gate = Gate::new();
-        let other = gate.admit(ip("192.0.2.9")).unwrap();
-        let own: Vec<_> = (0..MAX_HANDSHAKES_PER_NET)
-            .map(|n| gate.admit(ip(&format!("2001:db8::{n}"))).unwrap())
-            .collect();
-        let newcomer = gate.admit(ip("2001:db8::ff")).unwrap();
-
-        assert!(own[0].evict.is_cancelled());
-        assert!(own[1..].iter().all(|pass| !pass.evict.is_cancelled()));
-        assert!(!other.evict.is_cancelled());
-        assert!(!newcomer.evict.is_cancelled());
-    }
-
-    #[test]
-    fn full_gate_evicts_the_oldest_silent_only() {
-        let gate = Gate::new();
-        let held: Vec<_> = (0..MAX_HANDSHAKES)
-            .map(|n| gate.admit(ip(&format!("10.0.{n}.1"))).unwrap())
-            .collect();
-        held[0].spoke();
-
-        let newcomer = gate.admit(ip("192.0.2.1")).unwrap();
-        assert!(
-            !held[0].evict.is_cancelled(),
-            "authenticating is not evicted"
-        );
-        assert!(held[1].evict.is_cancelled());
-
-        for pass in held.iter().chain([&newcomer]) {
-            pass.spoke();
-        }
-        assert!(gate.admit(ip("192.0.2.2")).is_none());
-        assert!(gate.admit(None).is_none());
-    }
 }

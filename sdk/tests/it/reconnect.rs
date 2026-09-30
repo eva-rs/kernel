@@ -23,7 +23,7 @@ use eva_protocol::{
 };
 use eva_rpc::{
     Call, Config, Kind, Listener, Outgoing, Service, codec,
-    config::{FileMode, Listen, UdsListen},
+    config::{Listen, UdsListen},
 };
 use eva_sdk::{Kernel, Module};
 
@@ -32,11 +32,7 @@ use crate::fake::{self, Surfaces};
 async fn listen(dir: &tempfile::TempDir) -> (Listener, Url) {
     let path = dir.path().join("modules.sock");
     let listener = Listener::bind(
-        &Listen::Uds(UdsListen {
-            path: path.clone(),
-            mode: FileMode::default(),
-            group: None,
-        }),
+        &Listen::Uds(UdsListen { path: path.clone() }),
         &Config::default(),
     )
     .await

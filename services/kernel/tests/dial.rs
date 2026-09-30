@@ -8,18 +8,18 @@ use std::time::Duration;
 
 use common::{Harness, bind_keyed, dialed};
 use eva_core::{CallStep as _, service::modules::Modules as _};
-use eva_kernel::subsystems::modules::dial::Backoff;
+use eva_kernel::subsystems::modules::dial::{Backoff, Pacing};
 use eva_protocol::{
     requests::modules::{add, list, remove},
     types::{
         ModuleId,
         module::{ModuleKind, ServiceAddress, ServiceKey, State},
     },
-    wire::{Capabilities, ErrorCode},
+    wire::{Capabilities, ErrorCode, RpcError},
 };
 use eva_rpc::{
     ConnectError, NoHandler, RpcClient, ServiceListener,
-    config::{FileMode, ServiceListen, TcpListen, UdsListen},
+    config::{ServiceListen, TcpListen, UdsListen},
 };
 
 const KEY: &str = "bridge-key-0123456789abcdef0123456789";
@@ -28,8 +28,6 @@ const WAIT: Duration = Duration::from_secs(5);
 fn uds(h: &Harness, name: &str) -> ServiceListen {
     ServiceListen::Uds(UdsListen {
         path: common::service_socket(h.dir.path(), name),
-        mode: FileMode::default(),
-        group: None,
     })
 }
 
@@ -207,4 +205,98 @@ fn backoff_doubles_to_a_minute_with_jitter_and_resets() {
 
     backoff.reset();
     assert!(backoff.pause() <= Duration::from_secs(1));
+}
+
+/// Отзыв имени гасит петлю сам, не дожидаясь команды `Stop`: попытка,
+/// начатая после отзыва, сессией не станет, и дозвона больше нет (`06 §2.1`).
+#[tokio::test]
+async fn a_revoked_loop_stops_without_a_stop_command() {
+    let h = common::start().await;
+    let (_listening, _url) = h.listen().await;
+    let listener = bind_keyed(&uds(&h, "bridge"), KEY).await;
+    let address = listener.local_addr().expect("listener address");
+    add(&h, "bridge", address, Some(KEY)).await;
+    let (bridge, _) = dialed(&listener, Capabilities::default(), NoHandler).await;
+
+    // Только отзыв, как в начале `modules.remove`: строка и петля на месте.
+    let reason = RpcError::new(ErrorCode::Unauthorized, "module removed");
+    h.kernel
+        .shared()
+        .live()
+        .remove(&ModuleId::from("bridge"), reason);
+    let closed = tokio::time::timeout(WAIT, bridge.closed())
+        .await
+        .expect("the session closes");
+    assert_eq!(closed.code, ErrorCode::Unauthorized);
+    silent(&listener).await;
+}
+
+/// Второй адрес реестра на тот же модуль — `conflict`: две петли вытесняли бы
+/// друг друга без конца.
+#[tokio::test]
+async fn an_address_already_dialed_is_a_conflict() {
+    let h = common::start_with(common::with_modules).await;
+    let taken = common::service_address(&h.kernel.shared().cfg().system.state_dir, common::SVC);
+    let error = h
+        .client_session()
+        .await
+        .modules()
+        .add()
+        .call(add::Args {
+            module: ModuleId::from("mirror"),
+            address: taken,
+            key: None,
+        })
+        .await
+        .expect_err("the config dials this address");
+    assert!(
+        error.to_string().contains(common::SVC),
+        "names the config entry: {error}"
+    );
+
+    let listener = bind_keyed(&uds(&h, "bridge"), KEY).await;
+    let address = listener.local_addr().expect("listener address");
+    add(&h, "bridge", address.clone(), Some(KEY)).await;
+    let error = h
+        .client_session()
+        .await
+        .modules()
+        .add()
+        .call(add::Args {
+            module: ModuleId::from("mirror"),
+            address,
+            key: None,
+        })
+        .await
+        .expect_err("modules.add dials this address");
+    assert!(error.to_string().contains("bridge"), "{error}");
+}
+
+/// Простой модуля до первого `welcome` не удлиняет паузу после его сессии;
+/// короткие сессии копят свою паузу, сессия дольше `ping_timeout` её сбрасывает.
+#[test]
+fn pacing_keeps_failures_and_short_sessions_apart() {
+    let ping_timeout = Duration::from_secs(45);
+    let (short, long) = (Duration::from_secs(1), Duration::from_secs(46));
+    let within = |pause: Duration, ceiling: u64| {
+        let ceiling = Duration::from_secs(ceiling);
+        assert!(
+            pause >= ceiling / 2 && pause <= ceiling,
+            "{pause:?} outside [{:?}, {ceiling:?}]",
+            ceiling / 2
+        );
+    };
+
+    let mut pacing = Pacing::default();
+    for ceiling in [1, 2, 4, 8, 16, 32, 60] {
+        within(pacing.failed(), ceiling);
+    }
+    pacing.welcomed();
+    within(pacing.ended(short, ping_timeout), 1);
+    within(pacing.failed(), 1);
+    pacing.welcomed();
+    within(pacing.ended(short, ping_timeout), 2);
+    within(pacing.ended(short, ping_timeout), 4);
+    within(pacing.ended(long, ping_timeout), 1);
+    within(pacing.ended(ping_timeout, ping_timeout), 2);
 }

@@ -28,7 +28,7 @@ use eva_protocol::{
 use eva_rpc::{
     Accepted, ClientOptions, Config, Listener, ModuleHandler, NoHandler, Psk, RpcClient, Server,
     ServiceListen, ServiceListener, codec,
-    config::{FileMode, Listen, TcpListen, UdsListen, WsListen},
+    config::{Listen, TcpListen, UdsListen, WsListen},
 };
 
 use crate::kernel::{Auth, Kernel, SERVICE};
@@ -85,8 +85,6 @@ impl Harness {
         let listen = match via {
             Via::Uds => Listen::Uds(UdsListen {
                 path: socket.clone(),
-                mode: FileMode::default(),
-                group: None,
             }),
             Via::Ws => Listen::Ws(WsListen {
                 addr: "127.0.0.1:0".parse().unwrap(),
@@ -146,8 +144,6 @@ impl Harness {
                     "service-{}.sock",
                     SOCKETS.fetch_add(1, Ordering::Relaxed)
                 )),
-                mode: FileMode::default(),
-                group: None,
             }),
             Dial::Tcp => ServiceListen::Tcp(TcpListen {
                 addr: "127.0.0.1:0".parse().unwrap(),

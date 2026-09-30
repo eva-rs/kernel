@@ -396,8 +396,6 @@ async fn live_socket_is_not_stolen() {
     let h = Harness::start(Via::Uds).await;
     let listen = eva_rpc::Listen::Uds(eva_rpc::config::UdsListen {
         path: h.socket.clone().unwrap(),
-        mode: Default::default(),
-        group: None,
     });
     let second = eva_rpc::Listener::bind(&listen, &h.config).await;
     assert!(second.is_err());

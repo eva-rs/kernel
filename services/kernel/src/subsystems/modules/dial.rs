@@ -21,18 +21,18 @@ use crate::{
         DRAIN, KernelAuth,
         live::Source,
         on_session,
-        services::{Control, Service},
+        services::{Control, Loop},
     },
 };
 
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
-/// Попытка дозвона: id записи и номер отзыва, прочитанный до connect.
+/// Попытка дозвона: id записи и номер отзыва, с которым запущена петля.
 #[derive(Debug, Clone)]
 pub struct Attempt {
     pub module: ModuleId,
-    pub epoch: u64,
+    pub epoch: Option<u64>,
     pub source: Source,
 }
 
@@ -60,6 +60,36 @@ impl Backoff {
     }
 }
 
+/// Паузы петли: у провалов попытки и у коротких сессий своё `d`. Простой
+/// модуля до `welcome` не удлиняет паузу после его первой сессии, а
+/// модуль, падающий сразу после `welcome`, всё равно получает растущую.
+#[derive(Debug, Default)]
+pub struct Pacing {
+    failures: Backoff,
+    sessions: Backoff,
+}
+
+impl Pacing {
+    /// Пауза после провала попытки.
+    pub fn failed(&mut self) -> Duration {
+        self.failures.pause()
+    }
+
+    /// Попытка дошла до `welcome`: прежние провалы — прошлый простой модуля.
+    pub fn welcomed(&mut self) {
+        self.failures.reset();
+    }
+
+    /// Пауза после сессии, прожившей `lived`: дольше `ping_timeout` — модуль
+    /// здоров, и счёт коротких сессий начинается заново.
+    pub fn ended(&mut self, lived: Duration, ping_timeout: Duration) -> Duration {
+        if lived > ping_timeout {
+            self.sessions.reset();
+        }
+        self.sessions.pause()
+    }
+}
+
 pub(super) type KernelServer<C> = Server<Kernel<C>, KernelAuth<C>>;
 
 /// Петли дозвона компонента `modules`; команды — от `Services`.
@@ -82,17 +112,16 @@ impl<C: Components> Dialer<C> {
             tokio::select! {
                 () = self.stop.cancelled() => break,
                 command = control.recv() => match command {
-                    Some(Control::Start(module, service)) => {
+                    Some(Control::Start(run)) => {
                         let stop = self.stop.child_token();
-                        if let Some(old) = loops.insert(module.clone(), stop.clone()) {
+                        if let Some(old) = loops.insert(run.module.clone(), stop.clone()) {
                             old.cancel();
                         }
                         tasks.spawn(dial_loop(
                             self.server.clone(),
                             self.shared.clone(),
                             self.sessions.clone(),
-                            module,
-                            service,
+                            run,
                             stop,
                         ));
                     }
@@ -122,22 +151,29 @@ async fn dial_loop<C: Components>(
     server: KernelServer<C>,
     shared: Shared<C>,
     sessions: TaskTracker,
-    module: ModuleId,
-    service: Service,
+    run: Loop,
     stop: CancellationToken,
 ) {
+    let Loop {
+        module,
+        service,
+        epoch,
+    } = run;
+    let attempt = Attempt {
+        module: module.clone(),
+        epoch,
+        source: service.source,
+    };
+    // `modules.remove` отзывает имя раньше, чем команда дойдёт до петли.
+    let removed = || epoch.is_some_and(|epoch| shared.live().epoch(&module) != epoch);
     let ping_timeout = *shared.cfg().modules.transport.ping_timeout;
-    let mut backoff = Backoff::default();
+    let mut pacing = Pacing::default();
     // `warn` — первый провал после старта петли или после сессии, дальше `debug`.
     let mut loud = true;
-    while !stop.is_cancelled() {
-        let attempt = Attempt {
-            module: module.clone(),
-            epoch: shared.live().epoch(&module),
-            source: service.source,
-        };
-        match server.dial(&service.address, &service.psk, &attempt).await {
+    while !stop.is_cancelled() && !removed() {
+        let pause = match server.dial(&service.address, &service.psk, &attempt).await {
             Ok(accepted) => {
+                pacing.welcomed();
                 shared.services().welcomed(&module);
                 let peer = accepted.peer.clone();
                 let started = Instant::now();
@@ -147,13 +183,11 @@ async fn dial_loop<C: Components>(
                     _ = peer.closed() => {}
                     () = stop.cancelled() => return,
                 }
-                if started.elapsed() > ping_timeout {
-                    backoff.reset();
-                }
                 loud = true;
+                pacing.ended(started.elapsed(), ping_timeout)
             }
             // Запись удалена или ядро встаёт: провал попытки ничего не говорит о модуле.
-            Err(_) if stop.is_cancelled() => return,
+            Err(_) if stop.is_cancelled() || removed() => return,
             Err(e) => {
                 let error = e.to_string();
                 if loud {
@@ -166,11 +200,12 @@ async fn dial_loop<C: Components>(
                 shared
                     .bump(Metric::ModulesDialFailed, module.as_str())
                     .await;
+                pacing.failed()
             }
-        }
+        };
 
         tokio::select! {
-            () = tokio::time::sleep(backoff.pause()) => {}
+            () = tokio::time::sleep(pause) => {}
             () = stop.cancelled() => return,
         }
     }

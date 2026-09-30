@@ -142,12 +142,12 @@ impl<C: Components> Authenticator for KernelAuth<C> {
                     return Err(e);
                 }
             },
-            // PSK уже доказан Noise; номер отзыва прочитан до connect.
+            // PSK уже доказан Noise; номер отзыва — с запуска петли.
             Origin::Dialed(attempt) => Identity {
                 module: attempt.module.clone(),
                 kind: ModuleKind::Service,
                 source: attempt.source,
-                epoch: Some(attempt.epoch),
+                epoch: attempt.epoch,
             },
         };
         let Identity {

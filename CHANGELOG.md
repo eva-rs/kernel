@@ -9,8 +9,10 @@
 - Реестр сервисов: `modules.services.<id> = {address, key}` в конфиге ядра; `address` — `uds:///<абсолютный путь>` или `tcp://<host>:<port>`, `key` — `SecretString`. Оба транспорта под Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = HKDF-SHA256(key, `eva-module psk v1`); кадры `u32 BE + msgpack` — внутри зашифрованного потока.
 - Токены только у клиентов: `modules.tokens.<id> = {token}`; ключ `kind` — ошибка старта с указанием на `modules.services`. Один id в `services` и `tokens`, зарезервированный id, пустой ключ, кривой `address` — ошибка старта; ключ короче 32 символов — предупреждение. Строка базы под id из конфига игнорируется с предупреждением.
 - `hello.token` необязателен: набранный ядром сервис его не шлёт (с токеном — `invalid_params`); клиенту без токена — `unauthorized`. `welcome.kind` — вид соединения. `max_hello`, лимит handshake'ей на сеть и пауза отказа — только у слушателя клиентов; `modules.listen` принимает только клиентов.
-- Петля дозвона на запись: сразу при старте и на `modules.add`, повтор с паузой в `[d/2, d]`, `d` от 1 s до 60 s, сброс после сессии дольше `ping_timeout`; не сдаётся. Новый счётчик `modules.dial_failed{module}`.
-- NixOS: `modules.services.*.key` — секрет (`secrets."modules.services.<id>.key"`, assertion на `plaintext`); сервис машины слушает `/run/eva-<id>/module.sock` с группой `eva`.
+- Петля дозвона на запись: сразу при старте и на `modules.add`, повтор с паузой в `[d/2, d]`, `d` от 1 s до 60 s; `d` провалов сбрасывает `welcome`, `d` коротких сессий — сессия дольше `ping_timeout`, простой модуля до первого соединения не удлиняет паузу после его сессии; не сдаётся. Петля запущена с номером отзыва имени: после `modules.remove` ни одна её попытка сессией не становится. Один `address` у двух записей — ошибка старта, у `modules.add` — `conflict`. Новый счётчик `modules.dial_failed{module}`.
+- Права файлов ядро и SDK не ставят: у `{uds}` слушателей нет ключей `mode`/`group`, права задаёт окружение — umask процесса или socket-юнит.
+- Socket activation у ядра и SDK: унаследованные сокеты (`LISTEN_PID`/`LISTEN_FDS`) сопоставляются слушателям по адресу (uds — путь, tcp/ws/wss — `ip:port`) и берутся вместо bind; сокет без слушателя или не слушающий (`Accept=yes`) — ошибка старта; `LISTEN_*` не снимаются.
+- NixOS: `modules.services.*.key` — секрет (`secrets."modules.services.<id>.key"`, assertion на `plaintext`); `StateDirectoryMode = 0700` и `UMask = 0077` — база (хранит ключи сервисов как есть), blob'ы и песочницы только пользователю ядра; клиентский сокет `/run/eva-kernel/modules.sock` держит socket-юнит `eva-kernel.socket` (`0660`, группа `eva`), ядро берёт его по адресу; сервис машины слушает `/run/eva-<id>/module.sock`, права — его юнит или socket-юнит.
 
 ### Библиотечное API
 
@@ -25,14 +27,16 @@
 
 ### SDK
 
-- Сервис слушает: `Module::listen(&ServiceConfig{listen, key, kernel_wait})` → `Listening` (uds/tcp под Noise, socket activation `LISTEN_FDS=1`); новое соединение ядра вытесняет прежнее `superseded`, `kernel().await` ждёт первого до `kernel_wait`, `run` переживает потерю ядра.
+- Сервис слушает: `Module::listen(&ServiceConfig{listen, key, kernel_wait})` → `Listening` (uds/tcp под Noise, socket activation по адресу); новое соединение ядра вытесняет прежнее `superseded`, `kernel().await` ждёт первого до `kernel_wait`, `run` переживает потерю ядра.
+- Слушатель сервиса: Noise, `hello` и `welcome` — за один `handshake_timeout` от accept; до конца Noise — не больше 64 соединений и 8 из одной сети, сверх новичок вытесняет старейшее недоказанное (`eva_rpc::gate::Gate`, общий со слушателем клиентов ядра); провал до Noise — `debug` в логе.
 - `ModuleConfig` → `ClientConfig` (клиенты хозяина: токен, реконнект — как было).
 - `hello.token` у сервиса не шлётся, `max_hello` сервис не проверяет.
 
 ### Тесты
 
 - Контракт `tests/contract.rs`: SDK-сервис ядро набирает по uds и по tcp под Noise — ответы побайтно равны прогону в процессе; клиенты с токеном по uds, ws и wss; чужой ключ — сессии нет, причина у обеих сторон; рестарт модуля — ядро перезванивает само; рестарт ядра — модуль принимает новое соединение с `hello.resume`; `modules.add` без ключа выдаёт рабочий ключ, запись конфига `modules.remove` не снимает.
-- `tests/dial.rs`: `modules.add` звонит сразу, `modules.remove` закрывает сессию и не отдаёт её попытке в полёте, паузы петли. Матрица `Policy` и `rpc/tests/it/errors.rs` — со строками `modules.add/remove`.
+- `tests/dial.rs`: `modules.add` звонит сразу, `modules.remove` закрывает сессию и гасит петлю (попытка после отзыва имени сессией не становится), паузы `Pacing`, второй адрес на модуль — `conflict`. `tests/secrets.rs`: ключ рук не открывает модуль (Noise между `eva-hands` и `eva-rpc` не сходится), `kind` у токена с любым значением — ошибка старта, два сервиса на один адрес — тоже. Матрица `Policy` и `rpc/tests/it/errors.rs` — со строками `modules.add/remove`.
+- `rpc/tests/it/activation.rs` — унаследованные сокеты по адресу у ядра и сервиса, `Accept=yes` и лишний сокет — ошибка; `reverse.rs` — `tools.call` и события к клиенту по ws; `service.rs` — поздний Noise не даёт `hello` отдельного бюджета; `sdk/tests/it/listen.rs` — поток молчащих сокетов не запирает ядро.
 
 ## API на eva-api-builder — 2026-09-27
 

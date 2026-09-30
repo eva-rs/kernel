@@ -344,7 +344,12 @@ impl Module {
             ids: self.options.ids.clone(),
         };
         let runtime = self.options(options).into_runtime(None, None);
-        Ok(Listening::start(runtime, listener, *cfg.kernel_wait))
+        Ok(Listening::start(
+            runtime,
+            listener,
+            *cfg.transport.handshake_timeout,
+            *cfg.kernel_wait,
+        ))
     }
 
     /// Клиент: подключение по конфигу секции `module`.

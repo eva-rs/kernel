@@ -12,6 +12,7 @@
 pub mod client;
 pub mod codec;
 pub mod config;
+pub mod gate;
 pub mod module;
 pub mod peer;
 pub mod server;
@@ -24,6 +25,7 @@ pub use peer::{Call, IdSeq, Kind, Outgoing, Peer, RemoteStream, Service};
 pub use server::{Accepted, Authenticator, DialError, Dispatcher, Origin, Server};
 pub use transport::{
     Conn, Incoming, Listener, RawConn, ServiceListener, TransportError,
+    activation::Inherited,
     noise::{KeyError, Psk},
     tls::install_crypto_provider,
 };
