@@ -32,6 +32,7 @@
       secretFields = [
         { section = [ "llm" "providers" ]; field = "api_key"; }
         { section = [ "modules" "tokens" ]; field = "token"; }
+        { section = [ "modules" "services" ]; field = "key"; }
         { section = [ "hands" "endpoints" ]; field = "key"; }
       ];
 
@@ -73,7 +74,8 @@
                 TimeoutStopSec = 180;
                 RuntimeDirectory = "eva-kernel";
                 RuntimeDirectoryPreserve = true;
-                # Отдать сокет группе `eva` процесс может, только состоя в ней.
+                # Отдать сокет группе `eva` процесс может, только состоя в ней; по ней же
+                # ядро дозванивается до сервисов машины: `/run/eva-<id>/module.sock`, 0660, группа `eva`.
                 SupplementaryGroups = [ "eva" ];
               };
             })
@@ -85,6 +87,7 @@
             example = {
               "llm.providers.router.api_key" = "/run/secrets/openrouter";
               "modules.tokens.phone.token" = "/run/secrets/eva-phone";
+              "modules.services.telegram.key" = "/run/secrets/eva-telegram";
               "hands.endpoints.laptop.key" = "/run/secrets/hands-laptop";
             };
             description = ''
@@ -169,12 +172,13 @@
 
           secretKeys = [
             "llm.providers.router.api_key"
-            "modules.tokens.telegram.token"
+            "modules.tokens.phone.token"
+            "modules.services.telegram.key"
             "hands.endpoints.laptop.key"
           ];
           nonSecret = {
             llm.providers.router.kind = "openai";
-            modules.tokens.telegram.kind = "service";
+            modules.services.telegram.address = "uds:///run/eva-telegram/module.sock";
             hands.endpoints = {
               laptop.address = "10.0.0.2:7777";
               here.local = true;
@@ -236,15 +240,19 @@
             assert builtins.elem "eva" byFile.SupplementaryGroups;
             assert byFile.settings.llm.providers.router.api_key
               == { file = "${credentialsDir}/llm.providers.router.api_key"; };
-            assert byFile.settings.modules.tokens.telegram
-              == { kind = "service"; token.file = "${credentialsDir}/modules.tokens.telegram.token"; };
+            assert byFile.settings.modules.tokens.phone
+              == { token.file = "${credentialsDir}/modules.tokens.phone.token"; };
+            assert byFile.settings.modules.services.telegram == {
+              address = "uds:///run/eva-telegram/module.sock";
+              key.file = "${credentialsDir}/modules.services.telegram.key";
+            };
             assert byFile.settings.hands.endpoints.laptop.key.file
               == "${credentialsDir}/hands.endpoints.laptop.key";
             assert lib.sort lib.lessThan byFile.LoadCredential
               == lib.sort lib.lessThan (map (key: "${key}:/run/secrets/${key}") secretKeys);
-            assert builtins.length plaintext.failed == 3;
+            assert builtins.length plaintext.failed == 4;
             assert builtins.all (m: lib.hasInfix "plaintext secrets" m) plaintext.failed;
-            assert builtins.length inStore.failed == 4;
+            assert builtins.length inStore.failed == 5;
             assert builtins.length sideways.failed == 4;
             assert builtins.length (builtins.filter (lib.hasInfix "__PLAINTEXT") sideways.failed) == 1;
             assert builtins.length (builtins.filter (lib.hasInfix "__plaintext") sideways.failed) == 1;

@@ -6,7 +6,7 @@ mod common;
 
 use std::{collections::BTreeMap, time::Duration};
 
-use common::{FaultyDb, Harness, OTHER, SVC, service};
+use common::{CLIENT, FaultyDb, Harness, OTHER, SVC, service};
 use eva::{
     time::{Clock as _, Timestamp},
     utils::SecretString,
@@ -109,15 +109,33 @@ async fn start_refuses_what_it_cannot_honour() {
     assert!(err.to_string().contains("Mars/Olympus"), "{err}");
 
     let err = start(|cfg| {
-        common::with_module_tokens(cfg);
-        if let Some(entry) = cfg.modules.tokens.get_mut(&ModuleId::from(SVC)) {
+        common::with_modules(cfg);
+        if let Some(entry) = cfg.modules.tokens.get_mut(&ModuleId::from(CLIENT)) {
             entry.token = SecretString::Plaintext(String::new());
         }
     })
     .await
     .err()
     .expect("an empty config token lets anyone in");
-    assert!(err.to_string().contains("modules.tokens.svc"), "{err}");
+    assert!(
+        err.to_string()
+            .contains(&format!("modules.tokens.{CLIENT}")),
+        "{err}"
+    );
+
+    let err = start(|cfg| {
+        common::with_modules(cfg);
+        if let Some(entry) = cfg.modules.services.get_mut(&ModuleId::from(SVC)) {
+            entry.key = SecretString::Plaintext(String::new());
+        }
+    })
+    .await
+    .err()
+    .expect("an empty key is no secret");
+    assert!(
+        err.to_string().contains("modules.services.svc.key"),
+        "{err}"
+    );
 
     let err = start(|cfg| {
         cfg.chats.persons.master = vec![MasterIdentity {

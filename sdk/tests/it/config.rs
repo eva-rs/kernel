@@ -1,18 +1,23 @@
-//! Секция `module` и пауза реконнекта.
+//! Секция `module` сервиса и клиента, пауза реконнекта.
 
 use std::time::Duration;
 
 use serde_json::json;
 
-use eva::url::Url;
-use eva_rpc::{Config, Conn};
-use eva_sdk::{Backoff, ConnectError, Module, ModuleConfig, SecretString};
+use eva::{time::HumanDuration, url::Url};
+use eva_rpc::{
+    Config, Conn,
+    config::{FileMode, UdsListen},
+};
+use eva_sdk::{
+    Backoff, ClientConfig, ConnectError, Module, SecretString, ServiceConfig, ServiceListen,
+};
 
 use crate::fake::{self, Surfaces};
 
 #[test]
-fn module_section_takes_defaults() {
-    let cfg: ModuleConfig = serde_json::from_value(json!({
+fn client_section_takes_defaults() {
+    let cfg: ClientConfig = serde_json::from_value(json!({
         "kernel": "uds:///run/eva-kernel/modules.sock",
         "token": {"plaintext": "s3cret"},
     }))
@@ -23,7 +28,7 @@ fn module_section_takes_defaults() {
     assert!(cfg.tls.extra_ca.is_none());
     assert_eq!(*cfg.transport.ping_interval, Duration::from_secs(15));
 
-    let cfg: ModuleConfig = serde_json::from_value(json!({
+    let cfg: ClientConfig = serde_json::from_value(json!({
         "kernel": "wss://eva.example:8443/v1/modules",
         "token": {"file": "/run/credentials/x.service/token"},
         "connect_wait": "10s",
@@ -42,9 +47,9 @@ fn module_section_takes_defaults() {
 
 #[test]
 fn token_is_required_and_tagged() {
-    let res = serde_json::from_value::<ModuleConfig>(json!({"kernel": "uds:///x"}));
+    let res = serde_json::from_value::<ClientConfig>(json!({"kernel": "uds:///x"}));
     assert!(res.is_err());
-    let bare = serde_json::from_value::<ModuleConfig>(json!({
+    let bare = serde_json::from_value::<ClientConfig>(json!({
         "kernel": "uds:///x",
         "token": "s3cret",
     }));
@@ -53,7 +58,7 @@ fn token_is_required_and_tagged() {
 
 #[test]
 fn token_never_prints() {
-    let cfg: ModuleConfig = serde_json::from_value(json!({
+    let cfg: ClientConfig = serde_json::from_value(json!({
         "kernel": "uds:///x",
         "token": {"plaintext": "s3cret"},
     }))
@@ -80,14 +85,17 @@ async fn a_file_token_is_read_without_its_trailing_newline() {
         .await
         .expect("handshake");
     let session = kernel.await.unwrap();
-    assert_eq!(session.hello.token.expose(), "s3cret");
+    assert_eq!(
+        session.hello.token.as_ref().map(|t| t.expose()),
+        Some("s3cret")
+    );
 }
 
 /// Нечитаемый секрет — ошибка старта с ключом конфига, до сети дело не доходит.
 #[tokio::test]
 async fn an_unreadable_token_names_its_key() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg: ModuleConfig = serde_json::from_value(json!({
+    let cfg: ClientConfig = serde_json::from_value(json!({
         "kernel": format!("uds://{}", dir.path().join("none.sock").display()),
         "token": {"file": dir.path().join("missing")},
     }))
@@ -121,4 +129,95 @@ fn backoff_doubles_and_caps() {
     let mut tight = Backoff::new(Duration::from_millis(10), Duration::from_millis(25));
     let delays: Vec<u128> = (0..4).map(|_| tight.next_delay().as_millis()).collect();
     assert_eq!(delays, [10, 20, 25, 25]);
+}
+
+#[test]
+fn service_section_takes_defaults() {
+    let cfg: ServiceConfig = serde_json::from_value(json!({
+        "listen": {"uds": "/run/eva-x/module.sock", "group": "eva"},
+        "key": {"file": "/run/credentials/x.service/key"},
+    }))
+    .unwrap();
+    let ServiceListen::Uds(uds) = &cfg.listen else {
+        panic!("uds expected: {:?}", cfg.listen);
+    };
+    assert_eq!(uds.path.to_str(), Some("/run/eva-x/module.sock"));
+    assert_eq!(uds.mode.0, 0o660);
+    assert_eq!(uds.group.as_deref(), Some("eva"));
+    assert_eq!(
+        cfg.key,
+        SecretString::File("/run/credentials/x.service/key".into())
+    );
+    assert_eq!(*cfg.kernel_wait, Duration::from_secs(180));
+    assert_eq!(*cfg.transport.handshake_timeout, Duration::from_secs(10));
+
+    let cfg: ServiceConfig = serde_json::from_value(json!({
+        "listen": {"tcp": "127.0.0.1:7001"},
+        "key": {"plaintext": "k"},
+        "kernel_wait": "10s",
+        "ping_interval": "5s",
+    }))
+    .unwrap();
+    let ServiceListen::Tcp(tcp) = &cfg.listen else {
+        panic!("tcp expected: {:?}", cfg.listen);
+    };
+    assert_eq!(tcp.addr.to_string(), "127.0.0.1:7001");
+    assert_eq!(*cfg.kernel_wait, Duration::from_secs(10));
+    assert_eq!(*cfg.transport.ping_interval, Duration::from_secs(5));
+}
+
+#[test]
+fn service_listen_and_key_are_required() {
+    let key = json!({"plaintext": "k"});
+    for section in [
+        json!({"key": key}),
+        json!({"listen": {"uds": "/x.sock"}}),
+        json!({"listen": {"uds": "/x.sock"}, "key": "bare"}),
+        json!({"listen": {"tcp": "127.0.0.1"}, "key": key}),
+        json!({"listen": "uds:///x.sock", "key": key}),
+    ] {
+        let res = serde_json::from_value::<ServiceConfig>(section.clone());
+        assert!(res.is_err(), "{section}");
+    }
+}
+
+#[test]
+fn service_key_never_prints() {
+    let cfg: ServiceConfig = serde_json::from_value(json!({
+        "listen": {"uds": "/x.sock"},
+        "key": {"plaintext": "s3cret-key"},
+    }))
+    .unwrap();
+    assert!(!format!("{cfg:?}").contains("s3cret-key"));
+}
+
+/// Негодный ключ — ошибка старта с ключом конфига; сокет не создаётся.
+#[tokio::test]
+async fn an_empty_or_unreadable_key_names_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("module.sock");
+    std::fs::write(dir.path().join("empty"), "\n").unwrap();
+    for key in [
+        SecretString::Plaintext(String::new()),
+        SecretString::File(dir.path().join("empty")),
+        SecretString::File(dir.path().join("missing")),
+    ] {
+        let cfg = ServiceConfig {
+            listen: ServiceListen::Uds(UdsListen {
+                path: path.clone(),
+                mode: FileMode::default(),
+                group: None,
+            }),
+            key,
+            kernel_wait: HumanDuration(Duration::from_secs(1)),
+            transport: Config::default(),
+        };
+        match Module::new().listen(&cfg).await {
+            Err(ConnectError::Config(message)) => {
+                assert!(message.starts_with("module.key:"), "{message}");
+            }
+            other => panic!("expected a config error, got {other:?}"),
+        }
+        assert!(!path.exists());
+    }
 }

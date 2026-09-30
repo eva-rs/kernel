@@ -23,7 +23,7 @@ use eva_protocol::{
             ResultBlock, Stop, StopReason, SystemKind, SystemSection, ToolChanges, ToolSpec, Usage,
         },
         model::{EmbedDecl, ModelCaps, ModelDecl, ModelEntry, Price, ProviderDecl},
-        module::TokenKind,
+        module::{ModuleKind, ServiceAddress},
         sleep::Phase,
         tool::{GroupDecl, Need, ResultForm, ToolContent, ToolDecl},
         turn::{
@@ -279,7 +279,7 @@ fn handshake() {
     let hello = Hello {
         version: "1.2.3".into(),
         proto_version: ProtoVersion::CURRENT,
-        token: "secret".into(),
+        token: Some("secret".into()),
         capabilities,
         resume: Some(Resume {
             session_id: "0198-session".into(),
@@ -295,6 +295,12 @@ fn handshake() {
         wire.get("module").is_none(),
         "identity comes from the token: {wire}"
     );
+    // Набранный ядром сервис токена не шлёт вовсе.
+    let dialed: Hello = decode(&encode(&json!({
+        "version": "1.2.3",
+        "proto_version": "0.1",
+    })));
+    assert_eq!(dialed.token, None);
     roundtrip(&Capabilities::default());
 
     let welcome = Welcome {
@@ -302,7 +308,7 @@ fn handshake() {
         module: "messenger-x".into(),
         kernel_version: "0.1.0".into(),
         proto_version: ProtoVersion { major: 0, minor: 1 },
-        kind: TokenKind::Service,
+        kind: ModuleKind::Service,
         services: vec!["chats".into(), "turns".into()],
         tool_ids: BTreeMap::from([("x.send".into(), ToolId(17))]),
         models_accepted: vec!["vendor/model".into()],
@@ -338,6 +344,68 @@ fn handshake() {
     );
     assert_eq!(ProtoVersion::parse("2"), None);
     assert_eq!(encode(&ProtoVersion { major: 1, minor: 4 }), encode(&"1.4"));
+}
+
+#[test]
+fn service_address() {
+    for (text, address) in [
+        (
+            "uds:///run/eva-bridge/module.sock",
+            ServiceAddress::Uds("/run/eva-bridge/module.sock".into()),
+        ),
+        (
+            "tcp://bridge.lan:7000",
+            ServiceAddress::Tcp {
+                host: "bridge.lan".into(),
+                port: 7000,
+            },
+        ),
+        (
+            "tcp://10.0.0.2:1",
+            ServiceAddress::Tcp {
+                host: "10.0.0.2".into(),
+                port: 1,
+            },
+        ),
+        (
+            "tcp://[::1]:65535",
+            ServiceAddress::Tcp {
+                host: "::1".into(),
+                port: 65535,
+            },
+        ),
+    ] {
+        let parsed: ServiceAddress = text.parse().unwrap();
+        assert_eq!(parsed, address);
+        assert_eq!(parsed.to_string(), text);
+        roundtrip(&parsed);
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), json!(text));
+    }
+
+    for bad in [
+        "uds://run/x.sock",
+        "uds://",
+        "unix:///run/x.sock",
+        "ws://host:1",
+        "tcp://host",
+        "tcp://host:",
+        "tcp://host:0",
+        "tcp://host:65536",
+        "tcp://:7000",
+        "tcp://host:7000/",
+        "tcp://host:7000?x=1",
+        "tcp://host:7000#f",
+        "tcp://user@host:7000",
+        "tcp://::1:7000",
+        "tcp://[host]:7000",
+        "tcp://a b:7000",
+    ] {
+        assert!(
+            ServiceAddress::parse(bad).is_err(),
+            "{bad} must be rejected"
+        );
+        assert!(serde_json::from_value::<ServiceAddress>(json!(bad)).is_err());
+    }
 }
 
 #[test]

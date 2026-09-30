@@ -156,10 +156,12 @@ pub struct Gauges {
 #[data]
 pub struct ModuleGauge {
     pub module: ModuleId,
-    pub kind: module::TokenKind,
+    pub kind: module::ModuleKind,
     pub state: module::State,
     pub since: Timestamp,
     pub capabilities: Vec<String>,
+    /// Только у записи реестра сервисов.
+    pub dial: Option<module::Dial>,
 }
 
 #[data]

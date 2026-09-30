@@ -24,6 +24,7 @@ use crate::{
         DbError, Queries as _,
         stats::{Period, ScopeFilter},
     },
+    handling::modules,
     state::{Policy, State},
 };
 
@@ -218,7 +219,7 @@ pub async fn Health<C: Components>(
     let now = world.now();
 
     let db = db_conn.acquire(shared).await?;
-    let (counters, modules, snapshot) = db
+    let (counters, rows, services, snapshot) = db
         .run(move |c| -> Result<_, DbError> {
             let snapshot = Snapshot {
                 agents_running: c.agents().running()?,
@@ -229,19 +230,32 @@ pub async fn Health<C: Components>(
                 index: c.stats().index_backlog()?,
                 embed_pending: c.stats().embed_pending()?,
             };
-            Ok((c.stats().counters(period)?, c.stats().modules()?, snapshot))
+            Ok((
+                c.stats().counters(period)?,
+                c.stats().modules()?,
+                c.modules().services()?,
+                snapshot,
+            ))
         })
         .await?;
 
-    let tokens = &shared.cfg().modules.tokens;
-    let modules = modules
+    let mut registry = modules::registry(shared, services);
+    let mut modules = rows
         .into_iter()
         .map(|row| {
-            let config_kind = tokens.get(&row.module).map(|t| t.kind);
-            convert::stats::module(row, config_kind)
+            let kind = modules::kind(shared, &registry, &row.module, row.live_token);
+            let dial = registry.remove(&row.module).map(|listed| listed.dial);
+            convert::stats::module(row, kind, dial)
         })
         .filter_map(Result::transpose)
-        .collect::<Result<_, DbError>>()?;
+        .collect::<Result<Vec<_>, DbError>>()?;
+    // Забытый сервис реестра тоже без строки в выборке: он всё ещё набирается.
+    modules.extend(
+        registry.into_iter().map(|(module, listed)| {
+            convert::stats::unseen_module(module, listed.dial, listed.since)
+        }),
+    );
+    modules.sort_by(|a, b| a.module.cmp(&b.module));
 
     let gauges = Gauges {
         modules,

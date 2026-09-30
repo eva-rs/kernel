@@ -25,16 +25,16 @@ use eva_protocol::{
     },
     types::{
         BlobId, ChatId, EventId, ModuleId, SessionId, TurnId,
-        module::TokenKind,
+        module::ModuleKind,
         surface::Surface,
         turn::{FeedEvent, TurnItem},
     },
     wire::{
         ErrorCode, RpcError,
-        handshake::{Hello, ProtoVersion, Welcome},
+        handshake::{Hello, ProtoVersion, Token, Welcome},
     },
 };
-use eva_rpc::Authenticator;
+use eva_rpc::{Authenticator, Origin};
 
 /// Чаты `turns.attach` с разным поведением потока.
 pub mod chat {
@@ -312,36 +312,48 @@ async fn blobs_put(
 }
 
 pub const CLIENT_TOKEN: &str = "client-token";
-pub const SERVICE_TOKEN: &str = "service-token";
 /// Второй клиент: чужой для `CLIENT_TOKEN`.
 pub const OTHER_TOKEN: &str = "other-token";
 
 /// Модуль токена `CLIENT_TOKEN`.
 pub const CLIENT: &str = "mod";
-/// Модуль токена `SERVICE_TOKEN`.
+/// Сервис, которого набирает ядро.
 pub const SERVICE: &str = "bridge";
 /// Модуль токена `OTHER_TOKEN`.
 pub const OTHER: &str = "other";
+/// Набранная запись, которой реестр уже не знает.
+pub const REMOVED: &str = "removed";
 
-/// Токен → модуль и бит `kind`; чужой токен — `unauthorized`.
+/// Токен → клиент, набранная запись → сервис; чужое — `unauthorized`.
 #[derive(Default)]
 pub struct Auth {
     sessions: AtomicU64,
 }
 
 impl Authenticator for Auth {
-    async fn authenticate(&self, hello: &Hello) -> Result<Welcome, RpcError> {
-        let (module, kind) = match hello.token.expose() {
-            CLIENT_TOKEN => (CLIENT, TokenKind::Client),
-            SERVICE_TOKEN => (SERVICE, TokenKind::Service),
-            OTHER_TOKEN => (OTHER, TokenKind::Client),
-            _ => return Err(RpcError::new(ErrorCode::Unauthorized, "unknown token")),
+    type Dialed = ModuleId;
+
+    async fn authenticate(
+        &self,
+        hello: &Hello,
+        origin: Origin<'_, ModuleId>,
+    ) -> Result<Welcome, RpcError> {
+        let (module, kind) = match origin {
+            Origin::Dialed(module) if module.as_str() == REMOVED => {
+                return Err(RpcError::new(ErrorCode::Unauthorized, "module removed"));
+            }
+            Origin::Dialed(module) => (module.clone(), ModuleKind::Service),
+            Origin::Listener => match hello.token.as_ref().map(Token::expose) {
+                Some(CLIENT_TOKEN) => (ModuleId::from(CLIENT), ModuleKind::Client),
+                Some(OTHER_TOKEN) => (ModuleId::from(OTHER), ModuleKind::Client),
+                _ => return Err(RpcError::new(ErrorCode::Unauthorized, "unknown token")),
+            },
         };
         let n = self.sessions.fetch_add(1, Ordering::SeqCst);
 
         Ok(Welcome {
             session_id: SessionId(format!("s{n}")),
-            module: ModuleId::from(module),
+            module,
             kernel_version: "test".to_owned(),
             proto_version: ProtoVersion::CURRENT,
             kind,

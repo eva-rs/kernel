@@ -72,6 +72,15 @@ impl<'a> Policy<'a> {
             .true_or(Aux::forbidden("kernel only"))
     }
 
+    /// Только клиент хозяина (`modules.add/remove`): ни тул модели, ни ядро
+    /// не наводят дозвон на произвольный адрес.
+    pub fn client(self) -> AuxResult<&'a ModuleId> {
+        match self.caller {
+            Caller::Client { module } => Ok(module),
+            Caller::Kernel | Caller::Service { .. } => Err(Aux::forbidden("owner client only")),
+        }
+    }
+
     /// Имя модуля сессии: `fs`/`sqlite`/`kv`, `surfaces.create`.
     pub fn module(self) -> AuxResult<&'a ModuleId> {
         self.caller

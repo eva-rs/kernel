@@ -1,11 +1,11 @@
-//! Токены `modules.tokens` (`06 §2`, `§11`): секреты читаются один раз на
-//! старте, в памяти остаётся только `blake3`. Имя записи — id модуля.
+//! Токены клиентов `modules.tokens` (`06 §2`, `§11`): секреты читаются один
+//! раз на старте, в памяти остаётся только `blake3`. Имя записи — id модуля.
 
 use std::collections::BTreeMap;
 
 use eyre::bail;
 
-use eva_protocol::types::{ModuleId, module::TokenKind};
+use eva_protocol::types::ModuleId;
 
 use crate::{
     config::modules::TokenEntry,
@@ -19,7 +19,6 @@ const WEAK_TOKEN: usize = 32;
 struct Entry {
     module: ModuleId,
     hash: blake3::Hash,
-    kind: TokenKind,
 }
 
 /// Записи `modules.tokens` без секретов.
@@ -27,8 +26,8 @@ struct Entry {
 pub struct ConfigTokens(Vec<Entry>);
 
 impl ConfigTokens {
-    /// Нечитаемый или пустой секрет, зарезервированное или невалидное имя и
-    /// один токен у двух записей — ошибка старта с путём ключа.
+    /// Ключ `kind`, нечитаемый или пустой секрет, зарезервированное или
+    /// невалидное имя и один токен у двух записей — ошибка старта с путём ключа.
     pub fn load(tokens: &BTreeMap<ModuleId, TokenEntry>) -> eyre::Result<Self> {
         let mut entries: Vec<Entry> = Vec::with_capacity(tokens.len());
         for (module, entry) in tokens {
@@ -37,6 +36,11 @@ impl ConfigTokens {
             }
             if let Err(e) = check_name(module) {
                 bail!("modules.tokens.{module}: {e}");
+            }
+            if entry.kind.is_some() {
+                bail!(
+                    "modules.tokens.{module}.kind: tokens are for clients only; a service module goes to modules.services.{module} = {{address, key}}"
+                );
             }
             let read = entry
                 .token
@@ -63,7 +67,6 @@ impl ConfigTokens {
             entries.push(Entry {
                 module: module.clone(),
                 hash,
-                kind: entry.kind,
             });
         }
         Ok(Self(entries))
@@ -71,17 +74,17 @@ impl ConfigTokens {
 
     /// Запись, чей токен предъявлен; сравниваются все записи без раннего
     /// выхода, `blake3::Hash` сравнивается за постоянное время.
-    pub fn find(&self, presented: &blake3::Hash) -> Option<(ModuleId, TokenKind)> {
+    pub fn find(&self, presented: &blake3::Hash) -> Option<ModuleId> {
         self.0.iter().fold(None, |found, entry| {
             let matches = entry.hash == *presented;
             match found {
-                None if matches => Some((entry.module.clone(), entry.kind)),
+                None if matches => Some(entry.module.clone()),
                 found => found,
             }
         })
     }
 
-    /// Конфиг называет модуль: выданный тулом токен ему не годится.
+    /// Конфиг называет модуль: выданный токен ему не годится.
     pub fn configures(&self, module: &ModuleId) -> bool {
         self.0.iter().any(|entry| entry.module == *module)
     }

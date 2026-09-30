@@ -12,7 +12,8 @@ use eva_protocol::wire::handshake::ProtoVersion;
 #[data]
 #[serde(default)]
 pub struct Config {
-    /// `hello` обязан прийти за это время.
+    /// Всё до `welcome` укладывается в это время: у клиента — от accept, у
+    /// сервиса — от connect ядра, вместе с Noise.
     pub handshake_timeout: HumanDuration,
     /// Период `notify ping` и `stream_heartbeat` в долгие потоки.
     pub ping_interval: HumanDuration,
@@ -32,8 +33,9 @@ pub struct Config {
     /// Кадр больше — соединение закрывается с `invalid_params`.
     #[schemars(with = "String")]
     pub max_frame: ByteSize,
-    /// Потолок кадра `hello`, урезается до `max_frame`; больше — отказ
-    /// `invalid_params`, на который модуль не переподключается.
+    /// Потолок кадра `hello` клиента, урезается до `max_frame`; больше — отказ
+    /// `invalid_params`, на который модуль не переподключается. Сервис уже
+    /// доказал PSK, его `hello` держит лишь `max_frame`.
     #[schemars(with = "String")]
     pub max_hello: ByteSize,
     /// Потолок чанка `blobs.put`.
@@ -129,7 +131,7 @@ impl Default for StreamBuffer {
 #[eva::int(u16, 1..=4096)]
 pub enum SessionLimit {}
 
-/// Слушатель ядра: `{uds: path, mode?, group?}`, `{ws: addr}` или
+/// Слушатель клиентов у ядра: `{uds: path, mode?, group?}`, `{ws: addr}` или
 /// `{wss: addr, tls: {cert, key}}` — вид задаёт ключ адреса.
 #[data]
 #[serde(untagged)]
@@ -161,6 +163,21 @@ pub struct WssListen {
     #[serde(rename = "wss")]
     pub addr: SocketAddr,
     pub tls: TlsFiles,
+}
+
+/// Слушатель сервисного модуля, куда звонит ядро: `{uds: path, mode?, group?}`
+/// или `{tcp: addr}`; оба под Noise.
+#[data]
+#[serde(untagged)]
+pub enum ServiceListen {
+    Uds(UdsListen),
+    Tcp(TcpListen),
+}
+
+#[data]
+pub struct TcpListen {
+    #[serde(rename = "tcp")]
+    pub addr: SocketAddr,
 }
 
 /// PEM-файлы сертификата (цепочка) и ключа.

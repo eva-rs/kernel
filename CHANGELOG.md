@@ -1,5 +1,39 @@
 # Changelog
 
+## Ядро звонит сервисам — не датировано
+
+Сервисный модуль (мост, MCP, удалённый провайдер) адреса ядра больше не знает: он слушает, а ядро набирает его по реестру. Клиенты хозяина (телефон, TUI) по-прежнему звонят ядру сами, с токеном.
+
+### Провод и конфиг (ломает развёртывание сервисов)
+
+- Реестр сервисов: `modules.services.<id> = {address, key}` в конфиге ядра; `address` — `uds:///<абсолютный путь>` или `tcp://<host>:<port>`, `key` — `SecretString`. Оба транспорта под Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = HKDF-SHA256(key, `eva-module psk v1`); кадры `u32 BE + msgpack` — внутри зашифрованного потока.
+- Токены только у клиентов: `modules.tokens.<id> = {token}`; ключ `kind` — ошибка старта с указанием на `modules.services`. Один id в `services` и `tokens`, зарезервированный id, пустой ключ, кривой `address` — ошибка старта; ключ короче 32 символов — предупреждение. Строка базы под id из конфига игнорируется с предупреждением.
+- `hello.token` необязателен: набранный ядром сервис его не шлёт (с токеном — `invalid_params`); клиенту без токена — `unauthorized`. `welcome.kind` — вид соединения. `max_hello`, лимит handshake'ей на сеть и пауза отказа — только у слушателя клиентов; `modules.listen` принимает только клиентов.
+- Петля дозвона на запись: сразу при старте и на `modules.add`, повтор с паузой в `[d/2, d]`, `d` от 1 s до 60 s, сброс после сессии дольше `ping_timeout`; не сдаётся. Новый счётчик `modules.dial_failed{module}`.
+- NixOS: `modules.services.*.key` — секрет (`secrets."modules.services.<id>.key"`, assertion на `plaintext`); сервис машины слушает `/run/eva-<id>/module.sock` с группой `eva`.
+
+### Библиотечное API
+
+- `modules.add {module, address, key?}` → `{key?}` (без `key` ядро генерирует его и возвращает один раз; ключ хранится в базе как есть) и `modules.remove {module}` → `{}`: только клиенту хозяина. Ошибки `Taken` (`conflict`) и `ServiceNotFound` (`not_found`); запись конфига `remove` не снимает (`conflict`).
+- `modules.token_issue {module, issued_by?}` — без `kind`, только токены клиентов; id сервиса (конфиг или `modules.add`) — `conflict`.
+- `Module.kind: Option<ModuleKind>` (`service` — запись реестра, `client` — живой токен), новое поле `Module.dial {address, config, error}`; запись реестра без строки `modules` показывается `offline`. То же поле у `ModuleGauge`.
+- `TokenKind` → `ModuleKind`, `Caller::from_token`/`token_kind` → `from_kind`/`kind`.
+
+### База
+
+- Миграция `0003_module_services`: таблица `module_services (module, address, key, added_via, added_at)`; живые токены `kind = 'service'` отзываются (аудит `issued_by` остаётся), колонка `module_tokens.kind` удалена. Сервисы с такими токенами нужно перевести в `modules.services` или `modules.add`.
+
+### SDK
+
+- Сервис слушает: `Module::listen(&ServiceConfig{listen, key, kernel_wait})` → `Listening` (uds/tcp под Noise, socket activation `LISTEN_FDS=1`); новое соединение ядра вытесняет прежнее `superseded`, `kernel().await` ждёт первого до `kernel_wait`, `run` переживает потерю ядра.
+- `ModuleConfig` → `ClientConfig` (клиенты хозяина: токен, реконнект — как было).
+- `hello.token` у сервиса не шлётся, `max_hello` сервис не проверяет.
+
+### Тесты
+
+- Контракт `tests/contract.rs`: SDK-сервис ядро набирает по uds и по tcp под Noise — ответы побайтно равны прогону в процессе; клиенты с токеном по uds, ws и wss; чужой ключ — сессии нет, причина у обеих сторон; рестарт модуля — ядро перезванивает само; рестарт ядра — модуль принимает новое соединение с `hello.resume`; `modules.add` без ключа выдаёт рабочий ключ, запись конфига `modules.remove` не снимает.
+- `tests/dial.rs`: `modules.add` звонит сразу, `modules.remove` закрывает сессию и не отдаёт её попытке в полёте, паузы петли. Матрица `Policy` и `rpc/tests/it/errors.rs` — со строками `modules.add/remove`.
+
 ## API на eva-api-builder — 2026-09-27
 
 Один список операций вместо нескольких сверяемых копий. Провод не изменился: те же методы, кадры, msgpack-тела и идемпотентность — выпущенные клиенты разницы не видят.

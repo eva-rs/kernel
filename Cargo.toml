@@ -57,6 +57,9 @@ base64 = "0.22"
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "functions", "serde_json", "limits"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 blake3 = "1"
+snow = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
 insta = { version = "1", features = ["json"] }

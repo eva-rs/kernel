@@ -16,7 +16,7 @@ let surfaces::get::Ok { surface } = session
     .await?;
 ```
 
-- `SessionMaker::make_session(caller)` выдаёт `Session<S>`: у ядра это `Kernel`, у модуля — `Connected::kernel()` (caller фиксирует токен). Отказ `make_session` — только `Aux`.
+- `SessionMaker::make_session(caller)` выдаёт `Session<S>`: у ядра это `Kernel`, у модуля — `Listening::kernel()` или `Connected::kernel()` (caller фиксирует соединение). Отказ `make_session` — только `Aux`.
 - `session.<ns>()` — трейт неймспейса, `.<op>()` — шаг операции. Без `use eva_core::prelude::*` (или `eva_sdk::prelude::*`) методы неймспейсов не резолвятся.
 - Операция `chats.move` в Rust — `session.chats().r#move()`.
 
@@ -195,7 +195,7 @@ session.chats().update().call(chats::update::Args {
 
 ## Операции
 
-Колонки: **вид** — read / mut / stream / upload; **ядро** — `Caller::Kernel`; **клиент** — модуль с токеном `kind: client`; **сервис** — модуль с токеном `kind: service`. «свои» — только объекты surface, созданных этим модулем; «—» — `forbidden`. Операции с пометкой *pending* существуют в API, но отвечают `unavailable` с маркером этапа ([Дорожная карта](roadmap.md)); для `chats.search`, `chats.compact`, `chats.notify`, `tools.catalog` `Policy` уже проверяется (сервису — `forbidden` раньше `unavailable`); для `chats.ingest` и `turns.*` в колонках — права, которые появятся в M2, а сейчас любой caller получает `unavailable`.
+Колонки: **вид** — read / mut / stream / upload; **ядро** — `Caller::Kernel`; **клиент** — клиент хозяина, пришедший на слушатель с токеном; **сервис** — модуль, которого набрало ядро по реестру `modules.services` / `modules.add`. «свои» — только объекты surface, созданных этим модулем; «—» — `forbidden`. Операции с пометкой *pending* существуют в API, но отвечают `unavailable` с маркером этапа ([Дорожная карта](roadmap.md)); для `chats.search`, `chats.compact`, `chats.notify`, `tools.catalog` `Policy` уже проверяется (сервису — `forbidden` раньше `unavailable`); для `chats.ingest` и `turns.*` в колонках — права, которые появятся в M2, а сейчас любой caller получает `unavailable`.
 
 ### `surfaces`
 
@@ -295,9 +295,11 @@ session.chats().update().call(chats::update::Args {
 
 | Операция | Вид | Ядро | Клиент | Сервис | Смысл |
 |---|---|---|---|---|---|
-| `list` | read | ✓ | ✓ | — | Модули, их состояние и capabilities |
-| `token_issue` | mut | ✓ | ✓ | — | Выдать токен модулю (показывается один раз, прежний отзывается). `issued_by` задаёт только ядро; токен своей сессии — `conflict`; имя из `modules.tokens` — `conflict` |
-| `token_revoke` | mut | ✓ | ✓ | — | Отозвать выданные токены и закрыть сессии модуля |
+| `list` | read | ✓ | ✓ | — | Модули, их состояние и capabilities; у записи реестра сервисов — `dial {address, config, error}`, ещё не дозвонённая — `offline` |
+| `add` | mut | — | ✓ | — | Добавить сервис в реестр `{module, address, key?}` и сразу начать дозвон. Без `key` ядро генерирует его и возвращает один раз; ключ короче 32 символов, id зарезервирован или невалиден — `invalid_params`; id занят сервисом или токеном клиента (конфиг или база) — `Taken` (`conflict`) |
+| `remove` | mut | — | ✓ | — | Убрать сервис, добавленный `add`: дозвон встаёт, сессия закрывается `unauthorized "module removed"`. Запись `modules.services` — `conflict`, неизвестный id — `ServiceNotFound` (`not_found`) |
+| `token_issue` | mut | ✓ | ✓ | — | Выдать токен клиенту (показывается один раз, прежний отзывается). `issued_by` задаёт только ядро; токен своей сессии — `conflict`; id из `modules.tokens`, `modules.services` или `modules.add` — `conflict` |
+| `token_revoke` | mut | ✓ | ✓ | — | Отозвать выданные токены и закрыть сессии клиента |
 
 ### `blobs`
 

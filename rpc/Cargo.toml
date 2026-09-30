@@ -2,7 +2,7 @@
 name = "eva-rpc"
 version.workspace = true
 edition.workspace = true
-description = "Eva RPC: msgpack frames over unix/ws/wss, server dispatcher and client session over the library traits."
+description = "Eva RPC: msgpack frames over unix/ws/wss for clients and Noise-encrypted uds/tcp for services, server dispatcher and client session over the library traits."
 
 [dependencies]
 eva-protocol.workspace = true
@@ -24,6 +24,9 @@ tokio-rustls.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 webpki-roots.workspace = true
+snow.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

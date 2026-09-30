@@ -70,6 +70,8 @@ cases! {
     errors::memory::NotArchived => Conflict: errors::memory::NotArchived { id: MemoryId(2) };
     errors::memory::Superseded => Conflict: errors::memory::Superseded { id: MemoryId(3), current: MemoryId(4) };
     errors::modules::NotFound => NotFound: errors::modules::NotFound { module: "m".into() };
+    errors::modules::Taken => Conflict: errors::modules::Taken { module: "m".into() };
+    errors::modules::ServiceNotFound => NotFound: errors::modules::ServiceNotFound { module: "m".into() };
     errors::persons::NotFound => NotFound: errors::persons::NotFound { person: "p7".into() };
     errors::persons::System => InvalidParams: errors::persons::System { person: "p0".into() };
     errors::persons::SelfMerge => InvalidParams: errors::persons::SelfMerge { person: "p1".into() };
@@ -207,6 +209,8 @@ fn every_operation_error() {
         memory::restore => [memory::NotFound, memory::NotArchived, memory::Superseded];
         models::list => [];
         modules::list => [];
+        modules::add => [modules::Taken];
+        modules::remove => [modules::ServiceNotFound];
         modules::token_issue => [];
         modules::token_revoke => [modules::NotFound];
         notes::list => [chats::NotFound];

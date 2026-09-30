@@ -12,7 +12,7 @@ use eva_protocol::{
     requests::surfaces::{create, get, update},
     types::{
         ChatId, ModuleId, SessionId, SurfaceId, ToolId, TurnId,
-        module::TokenKind,
+        module::ModuleKind,
         surface::Surface,
         turn::{Actor, TurnCtx},
     },
@@ -41,7 +41,7 @@ pub fn welcome(session: &str, tool_ids: &[(&str, i64)]) -> Welcome {
         module: ModuleId::from(MODULE),
         kernel_version: "0.0.0-test".to_owned(),
         proto_version: ProtoVersion::CURRENT,
-        kind: TokenKind::Service,
+        kind: ModuleKind::Service,
         services: Vec::new(),
         tool_ids: tool_ids
             .iter()

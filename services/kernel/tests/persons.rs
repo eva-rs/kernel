@@ -450,7 +450,7 @@ async fn reference_everywhere(h: &Harness, chat: i64, person: PersonId) {
                 (memory, p),
             )?;
             tx.execute(
-                "INSERT INTO module_tokens (token_hash, module, kind, issued_by, issued_at) VALUES (x'01', 'm', 'client', ?1, 1)",
+                "INSERT INTO module_tokens (token_hash, module, issued_by, issued_at) VALUES (x'01', 'm', ?1, 1)",
                 [p],
             )?;
             tx.execute(

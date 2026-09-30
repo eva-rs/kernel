@@ -1,30 +1,40 @@
 //! Контракт ядро ↔ SDK (`11 §8`, `06 §12`): один набор операций M1
-//! гоняется на `Kernel<Test>` в процессе и по настоящему UDS через
-//! `eva-sdk`; `Ok` и `Generic` совпадают побайтно в msgpack. Плюс изоляция
-//! сервисного модуля по UDS (`11 §9`) и жизнь SDK-модулей: два клиента на
-//! `local`, вытеснение, реконнект с `hello.resume`, чужой токен.
+//! гоняется на `Kernel<Test>` в процессе и через `eva-sdk` — клиент звонит
+//! на UDS ядра, сервис ядро набирает по uds и по tcp под Noise; `Ok` и
+//! `Generic` совпадают побайтно в msgpack. Плюс изоляция сервисного модуля
+//! (`11 §9`) и жизнь SDK-модулей: клиенты по uds/ws/wss, два клиента на
+//! `local`, вытеснение, реконнект клиента, перезвон сервиса с `hello.resume`,
+//! рестарт модуля и ядра, чужой ключ и чужой токен, `modules.add/remove`.
 
 mod common;
 
-use std::{fmt::Debug, future::pending, time::Duration};
+use std::{
+    fmt::Debug,
+    future::pending,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use futures::{StreamExt as _, stream};
 use serde::Serialize;
 
 use common::{
-    CLIENT, CLIENT2, Harness, OTHER, Outcome, SVC, client, outcome, service, token,
-    with_module_tokens,
+    CLIENT, CLIENT2, Harness, OTHER, Outcome, SVC, client, outcome, service, token, with_modules,
 };
 use eva::{
     bytes::Bytes,
     rand::{Rng as _, SeedableRng as _, xoshiro::Xoshiro256StarStar},
-    time::{Clock as _, Date},
+    time::{Clock as _, Date, HumanDuration},
     url::Url,
 };
 use eva_core::{ByteStream, prelude::*};
-use eva_kernel::db::{Db as _, DbResult, Queries as _, hands_grants::NewGrant};
+use eva_kernel::{
+    Config,
+    db::{Db as _, DbResult, Queries as _, hands_grants::NewGrant},
+};
 use eva_protocol::{
-    errors::Aux,
+    errors::{Aux, Generic},
     requests::{
         Patch, Response, agents, blobs, chats, cron, folders, fs, hands_grants, inference, kv,
         memory, models, modules, notes, persons, sleep,
@@ -33,12 +43,19 @@ use eva_protocol::{
     },
     types::{
         ChatId, CronJobId, HandsGrantId, MemoryId, ModelId, ModuleId, PersonId, RunId, SurfaceId,
-        Value, blob, chat, content::Block, folder, hands::GrantKind, module::TokenKind,
+        Value, blob, chat,
+        content::Block,
+        folder,
+        hands::GrantKind,
+        module::{Dial, ModuleKind, ServiceAddress, ServiceKey, State},
         stats::Scope,
     },
     wire::{Capabilities, ErrorCode, RpcError, handshake::ProtoVersion},
 };
-use eva_sdk::{ConnectError, Connected, Module, SecretString};
+use eva_rpc::config::{Listen, ServiceListen, TcpListen, TlsFiles, WsListen, WssListen};
+use eva_sdk::{
+    ClientConfig, ClientTls, ConnectError, Connected, Kernel, Listening, Module, SecretString,
+};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -577,6 +594,9 @@ async fn reads_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, day: Da
     let res = call!(r.c.stats.health(stats::health::Args { from: day, to: day })).map(|mut ok| {
         ok.gauges.db_bytes = 0;
         ok.counters.retain(|c| !c.metric.starts_with("modules."));
+        for module in &mut ok.gauges.modules {
+            untransported(&mut module.dial);
+        }
         ok
     });
     r.check("stats.health", &res, Outcome::Ok);
@@ -603,23 +623,68 @@ async fn reads_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, day: Da
     r.check("hands_grants.list by service", &res, Outcome::Forbidden);
 }
 
+/// Каталог сокета — у каждого ядра свой, причина провала дозвона — свойство
+/// транспорта: в контракт идёт только имя сокета.
+fn untransported(dial: &mut Option<Dial>) {
+    if let Some(dial) = dial {
+        dial.error = None;
+        if let ServiceAddress::Uds(path) = &mut dial.address {
+            *path = path.file_name().map(PathBuf::from).unwrap_or_default();
+        }
+    }
+}
+
 async fn modules_part<M: SessionMaker>(r: &mut Run<'_, M>) {
-    let res = call!(r.c.modules.list(modules::list::Args {}));
-    r.ok("modules.list", res);
+    let res = call!(r.c.modules.list(modules::list::Args {})).map(|mut ok| {
+        for module in &mut ok.modules {
+            untransported(&mut module.dial);
+        }
+        ok
+    });
+    r.check("modules.list", &res, Outcome::Ok);
     let res = call!(r.s.modules.list(modules::list::Args {}));
     r.check("modules.list by service", &res, Outcome::Forbidden);
+    let relay = || modules::add::Args {
+        module: ModuleId::from("relay"),
+        address: ServiceAddress::Uds("/run/eva-relay/module.sock".into()),
+        key: Some(ServiceKey::from("relay-key-0123456789abcdef0123456789")),
+    };
+    let res = call!(r.c.modules.add(relay()));
+    r.ok("modules.add", res);
+    let res = call!(r.c.modules.add(relay()));
+    r.check("modules.add taken", &res, Outcome::Spec);
+    let res = call!(r.s.modules.add(modules::add::Args {
+        module: ModuleId::from("probe"),
+        ..relay()
+    }));
+    r.check("modules.add by service", &res, Outcome::Forbidden);
+    let res = call!(r.c.modules.remove(modules::remove::Args {
+        module: ModuleId::from("relay"),
+    }));
+    r.ok("modules.remove", res);
+    let res = call!(r.c.modules.remove(modules::remove::Args {
+        module: ModuleId::from("relay"),
+    }));
+    r.check("modules.remove missing", &res, Outcome::Spec);
+    let res = call!(r.c.modules.remove(modules::remove::Args {
+        module: ModuleId::from(SVC),
+    }));
+    r.check("modules.remove config", &res, Outcome::Conflict);
     let res = call!(r.c.modules.token_issue(modules::token_issue::Args {
         module: ModuleId::from("bridge"),
-        kind: TokenKind::Service,
         issued_by: None,
     }));
     r.ok("modules.token_issue", res);
     let res = call!(r.c.modules.token_issue(modules::token_issue::Args {
         module: ModuleId::from("kernel"),
-        kind: TokenKind::Client,
         issued_by: None,
     }));
     r.check("modules.token_issue reserved", &res, Outcome::Invalid);
+    let res = call!(r.c.modules.token_issue(modules::token_issue::Args {
+        module: ModuleId::from(SVC),
+        issued_by: None,
+    }));
+    r.check("modules.token_issue service", &res, Outcome::Conflict);
     let res = call!(r.c.modules.token_revoke(modules::token_revoke::Args {
         module: ModuleId::from("bridge"),
     }));
@@ -806,7 +871,7 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
     r.ok("kv.list of another module", res);
 }
 
-/// SDK-модуль с токеном записи `module`: имя ему даёт `welcome`.
+/// SDK-клиент с токеном записи `module`: имя ему даёт `welcome`.
 async fn connect(url: &Url, module: &str) -> Connected {
     let connected = Module::new()
         .connect(url, &secret(module))
@@ -824,10 +889,33 @@ fn secret(module: &str) -> SecretString {
     SecretString::Plaintext(token(module))
 }
 
-/// Surface модуля: создание идемпотентно, звать можно на каждом старте.
-async fn create_surface(module: &Connected, id: &str, name: &str) {
+/// SDK-сервис `module` слушает там, куда его набирает ядро (`with_service`);
+/// поднятый до `Harness::listen`, он получит первую же попытку.
+async fn listen(h: &Harness, module: Module, name: &str) -> Listening {
     module
+        .listen(&common::sdk_service(h.dir.path(), name))
+        .await
+        .expect("service listens")
+}
+
+/// Ядро через первый дозвон: имя сервису даёт запись реестра.
+async fn dialed(listening: &Listening, module: &str) -> Kernel {
+    let kernel = listening
         .kernel()
+        .await
+        .expect("the kernel dials the service");
+    assert_eq!(
+        listening.module().as_ref().map(ModuleId::as_str),
+        Some(module),
+        "the registry entry names the module"
+    );
+    kernel
+}
+
+/// Surface модуля: создание идемпотентно, звать можно на каждом старте.
+async fn create_surface(kernel: &Kernel, id: &str, name: &str) {
+    kernel
+        .clone()
         .surfaces()
         .create()
         .call(surfaces::create::Args {
@@ -851,9 +939,24 @@ fn compare(in_process: &Transcript, over_uds: &Transcript) {
     }
 }
 
-/// Эталонный прогон: ядро в процессе, без транспорта.
-async fn in_process() -> Transcript {
-    let near = common::start_with(with_module_tokens).await;
+/// `with_modules`, но `SVC` ядро набирает по `address`, если он задан.
+fn modules_at(address: Option<ServiceAddress>) -> impl FnOnce(&mut Config) {
+    move |cfg| {
+        with_modules(cfg);
+        if let Some(address) = address {
+            cfg.modules
+                .services
+                .get_mut(&ModuleId::from(SVC))
+                .expect("svc is registered")
+                .address = address;
+        }
+    }
+}
+
+/// Эталонный прогон: ядро в процессе, без транспорта; `SVC` в реестре — по
+/// адресу дальнего прогона (`None` — сокет харнесса).
+async fn in_process(svc: Option<ServiceAddress>) -> Transcript {
+    let near = common::start_with(modules_at(svc)).await;
     seed(&near).await;
     handshake_row(&near, CLIENT).await;
     handshake_row(&near, SVC).await;
@@ -865,39 +968,69 @@ async fn in_process() -> Transcript {
     .await
 }
 
-#[tokio::test]
-async fn in_process_and_uds_answer_alike() {
-    let in_process = in_process().await;
-
-    let far = common::start_with(with_module_tokens).await;
-    seed(&far).await;
+/// Дальний прогон: клиент звонит на UDS ядра с токеном, сервис `svc`
+/// ядро набирает само, как записано в реестре.
+async fn over_rpc(far: &Harness, svc: &Listening) -> Transcript {
+    seed(far).await;
     let (_listening, url) = far.listen().await;
     let phone = connect(&url, CLIENT).await;
-    let svc = connect(&url, SVC).await;
-    let (phone_rpc, svc_rpc) = (phone.client(), svc.client());
-    let over_uds = contract(
+    let svc_caller = dialed(svc, SVC).await.caller().clone();
+    let (phone_rpc, svc_rpc) = (phone.client(), svc.client().expect("the kernel dialed"));
+    contract(
         (&phone_rpc, phone.caller()),
-        (&svc_rpc, svc.caller()),
-        today(&far),
+        (&svc_rpc, svc_caller),
+        today(far),
     )
-    .await;
+    .await
+}
+
+#[tokio::test]
+async fn in_process_and_uds_answer_alike() {
+    let in_process = in_process(None).await;
+
+    let far = common::start_with(with_modules).await;
+    let svc = listen(&far, Module::new(), SVC).await;
+    let over_uds = over_rpc(&far, &svc).await;
 
     assert!(in_process.len() > 90, "the contract covers the M1 surface");
     compare(&in_process, &over_uds);
 }
 
+/// Сервис на tcp под Noise: ядро набирает `host:port` из реестра.
+#[tokio::test]
+async fn in_process_and_tcp_answer_alike() {
+    let svc = Module::new()
+        .listen(&common::sdk_service_at(tcp(), SVC))
+        .await
+        .expect("service listens");
+    let address = svc.address().expect("a bound listener has an address");
+    assert!(matches!(address, ServiceAddress::Tcp { .. }), "{address}");
+    let in_process = in_process(Some(address.clone())).await;
+
+    let far = common::start_with(modules_at(Some(address))).await;
+    let over_tcp = over_rpc(&far, &svc).await;
+
+    compare(&in_process, &over_tcp);
+}
+
+fn tcp() -> ServiceListen {
+    ServiceListen::Tcp(TcpListen {
+        addr: "127.0.0.1:0".parse().expect("loopback"),
+    })
+}
+
 /// `Kernel` SDK — то, что зовёт код модуля: мутации, потоки и загрузки идут
 /// через `LiveSession` своим путём, а не через `RpcSession`.
-struct Sdk<'a>(&'a Connected);
+struct Sdk(Kernel);
 
-impl SessionMaker for Sdk<'_> {
+impl SessionMaker for Sdk {
     type Session = eva_sdk::live::LiveSession;
 
     fn make_session(
         &self,
         caller: Caller,
     ) -> impl eva_core::service::AuxFut<Session<eva_sdk::live::LiveSession>> {
-        let kernel = self.0.kernel();
+        let kernel = self.0.clone();
         async move {
             if kernel.caller() != &caller {
                 return Err(Aux::forbidden("the SDK session belongs to another caller"));
@@ -910,16 +1043,18 @@ impl SessionMaker for Sdk<'_> {
 /// `11 §9`: код SDK — код ядра и для публичного `Kernel` модуля.
 #[tokio::test]
 async fn in_process_and_the_sdk_kernel_answer_alike() {
-    let in_process = in_process().await;
+    let in_process = in_process(None).await;
 
-    let far = common::start_with(with_module_tokens).await;
+    let far = common::start_with(with_modules).await;
     seed(&far).await;
+    let svc = listen(&far, Module::new(), SVC).await;
     let (_listening, url) = far.listen().await;
     let phone = connect(&url, CLIENT).await;
-    let svc = connect(&url, SVC).await;
+    let svc = dialed(&svc, SVC).await;
+    let svc_caller = svc.caller().clone();
     let over_sdk = contract(
-        (&Sdk(&phone), phone.caller()),
-        (&Sdk(&svc), svc.caller()),
+        (&Sdk(phone.kernel()), phone.caller()),
+        (&Sdk(svc), svc_caller),
         today(&far),
     )
     .await;
@@ -1038,11 +1173,13 @@ fn expect_own<O: Debug, E: Debug>(step: &str, own: bool, res: &Response<O, E>) {
 /// на свой surface, чужой объект — `forbidden`, несуществующий — `not_found`.
 #[tokio::test]
 async fn a_service_over_uds_reaches_only_its_own_surface() {
-    let h = common::start_with(with_module_tokens).await;
-    let (_listening, url) = h.listen().await;
-    let svc = connect(&url, SVC).await;
+    let h = common::start_with(with_modules).await;
+    let svc = listen(&h, Module::new(), SVC).await;
+    let other = listen(&h, Module::new(), OTHER).await;
+    let (_listening, _url) = h.listen().await;
+    let svc = dialed(&svc, SVC).await;
     create_surface(&svc, SVC, "Service").await;
-    let other = connect(&url, OTHER).await;
+    let other = dialed(&other, OTHER).await;
     create_surface(&other, OTHER, "Other").await;
 
     let mine = SurfaceId::from(SVC);
@@ -1061,7 +1198,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
     let mut rng = Xoshiro256StarStar::seed_from_u64(11);
 
     for round in 0..300 {
-        let mut k = svc.kernel();
+        let mut k = svc.clone();
         let object = &pool[rng.random_range(0..pool.len())];
         let (chat, surface, own) = (object.chat, object.surface.clone(), object.surface == mine);
         let blob_id = object.blob.clone();
@@ -1323,7 +1460,8 @@ async fn eventually(what: &str, mut check: impl AsyncFnMut() -> bool) {
 /// и видят одни чаты (`06 §2`); `local` никто не создаёт — его сеет ядро.
 #[tokio::test]
 async fn two_sdk_clients_serve_local_together() {
-    let h = common::start_with(with_module_tokens).await;
+    let h = common::start_with(with_modules).await;
+    let svc = listen(&h, Module::new(), SVC).await;
     let (_listening, url) = h.listen().await;
     let phone = Module::new()
         .ask(true)
@@ -1331,7 +1469,7 @@ async fn two_sdk_clients_serve_local_together() {
         .await
         .expect("phone connects");
     let tui = connect(&url, CLIENT2).await;
-    let _svc = connect(&url, SVC).await;
+    let _svc = dialed(&svc, SVC).await;
 
     let mut serving = h.serving("local").await;
     serving.sort();
@@ -1363,23 +1501,23 @@ async fn two_sdk_clients_serve_local_together() {
 /// Второй `hello` с тем же токеном вытесняет первый, и SDK первого не лезет
 /// обратно (иначе два процесса выбивали бы друг друга по кругу).
 #[tokio::test]
-async fn a_superseded_sdk_module_stops_instead_of_fighting_back() {
-    let h = common::start_with(with_module_tokens).await;
+async fn a_superseded_sdk_client_stops_instead_of_fighting_back() {
+    let h = common::start_with(with_modules).await;
     let (_listening, url) = h.listen().await;
     let module =
         || Module::new().reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50));
     let first = module()
-        .connect(&url, &secret(SVC))
+        .connect(&url, &secret(CLIENT2))
         .await
         .expect("first connects");
-    create_surface(&first, SVC, "Service").await;
+    create_surface(&first.kernel(), CLIENT2, "Desk").await;
     let running = tokio::spawn(first.run(pending()));
 
     let second = module()
-        .connect(&url, &secret(SVC))
+        .connect(&url, &secret(CLIENT2))
         .await
         .expect("second connects");
-    create_surface(&second, SVC, "Service").await;
+    create_surface(&second.kernel(), CLIENT2, "Desk").await;
     let ended = tokio::time::timeout(WAIT, running)
         .await
         .expect("the first module stops")
@@ -1392,64 +1530,108 @@ async fn a_superseded_sdk_module_stops_instead_of_fighting_back() {
         .surfaces()
         .get()
         .call(surfaces::get::Args {
-            surface: SurfaceId::from(SVC),
+            surface: SurfaceId::from(CLIENT2),
         })
         .await;
     assert!(res.is_ok(), "{res:?}");
     assert!(!second.client().peer().is_closed());
 }
 
-/// Обрыв со стороны ядра: SDK переподключается с `hello.resume`, surface
-/// снова обслуживается без единого вызова модуля, прежняя ручка `Connected`
-/// ведёт уже в новую сессию, а тот же процесс ядра продолжает окно
-/// идемпотентности.
+/// Обрыв со стороны ядра: SDK-клиент переподключается с `hello.resume`,
+/// surface снова обслуживается без единого вызова модуля, прежняя ручка
+/// `Connected` ведёт уже в новую сессию, а тот же процесс ядра продолжает
+/// окно идемпотентности.
 #[tokio::test]
-async fn an_sdk_module_reconnects_with_resume() {
-    let h = common::start_with(with_module_tokens).await;
+async fn an_sdk_client_reconnects_with_resume() {
+    let h = common::start_with(with_modules).await;
     let (_listening, url) = h.listen().await;
-    let svc = Module::new()
+    let tui = Module::new()
         .ask(true)
         .reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50))
-        .connect(&url, &secret(SVC))
+        .connect(&url, &secret(CLIENT2))
         .await
-        .expect("service connects");
-    create_surface(&svc, SVC, "Service").await;
-    assert!(h.ask_ui(SVC).await);
+        .expect("client connects");
+    create_surface(&tui.kernel(), CLIENT2, "Desk").await;
+    assert!(h.ask_ui(CLIENT2).await);
     assert!(
-        !svc.welcome().resumed,
+        !tui.welcome().resumed,
         "the first hello has nothing to resume"
     );
-    let first = svc.welcome().session_id;
-    let handle = svc.clone();
-    let running = tokio::spawn(svc.run(pending()));
+    let first = tui.welcome().session_id;
+    let handle = tui.clone();
+    let running = tokio::spawn(tui.run(pending()));
 
     h.kernel.shared().live().close_all(&RpcError::new(
         ErrorCode::Unavailable,
         "the test drops sessions",
     ));
     eventually("a new session serves the surface again", async || {
-        handle.welcome().session_id != first && h.ask_ui(SVC).await
+        handle.welcome().session_id != first && h.ask_ui(CLIENT2).await
     })
     .await;
-    assert_eq!(h.serving(SVC).await, [SVC]);
+    assert_eq!(h.serving(CLIENT2).await, [CLIENT2]);
     assert!(
         handle.welcome().resumed,
         "the same kernel process continues the window"
     );
-
-    let reconnects = h
-        .query(|c| {
-            Ok(c.query_row(
-                "SELECT coalesce(sum(count), 0) FROM health_stats WHERE metric = 'modules.reconnects' AND key = ?1",
-                [SVC],
-                |r| r.get::<_, i64>(0),
-            )?)
-        })
-        .await;
-    assert_eq!(reconnects, 1, "the second hello carried resume");
+    assert_eq!(
+        reconnects(&h, CLIENT2).await,
+        1,
+        "the second hello carried resume"
+    );
 
     let res = handle
         .kernel()
+        .surfaces()
+        .get()
+        .call(surfaces::get::Args {
+            surface: SurfaceId::from(CLIENT2),
+        })
+        .await;
+    assert!(res.is_ok(), "{res:?}");
+    running.abort();
+}
+
+/// Обрыв со стороны ядра: ядро само перезванивает SDK-сервису, тот отвечает
+/// `hello.resume`; `Kernel`, взятый до обрыва, ведёт уже в новую сессию.
+#[tokio::test]
+async fn an_sdk_service_is_redialed_with_resume() {
+    let h = common::start_with(with_modules).await;
+    let svc = listen(&h, Module::new().ask(true), SVC).await;
+    let (_listening, _url) = h.listen().await;
+    let kernel = dialed(&svc, SVC).await;
+    create_surface(&kernel, SVC, "Service").await;
+    assert!(h.ask_ui(SVC).await);
+    let welcome = svc.welcome().expect("welcomed");
+    assert!(!welcome.resumed, "the first hello has nothing to resume");
+    let running = tokio::spawn(svc.clone().run(pending()));
+
+    h.kernel.shared().live().close_all(&RpcError::new(
+        ErrorCode::Unavailable,
+        "the test drops sessions",
+    ));
+    eventually(
+        "the kernel redials and the surface is served again",
+        async || {
+            svc.welcome()
+                .is_some_and(|w| w.session_id != welcome.session_id)
+                && h.ask_ui(SVC).await
+        },
+    )
+    .await;
+    assert_eq!(h.serving(SVC).await, [SVC]);
+    assert!(
+        svc.welcome().is_some_and(|w| w.resumed),
+        "the same kernel process continues the window"
+    );
+    assert_eq!(
+        reconnects(&h, SVC).await,
+        1,
+        "the second hello carried resume"
+    );
+
+    let res = kernel
+        .clone()
         .surfaces()
         .get()
         .call(surfaces::get::Args {
@@ -1460,10 +1642,343 @@ async fn an_sdk_module_reconnects_with_resume() {
     running.abort();
 }
 
-/// Имя модулю даёт токен: чужой токен — это чужая идентичность, а не отказ.
+/// Рестарт модуля: новый процесс слушает тот же адрес, ядро набирает его
+/// само; окно нового процесса пусто — `hello` без `resume`, а surface
+/// прежнего процесса обслуживается без повторного создания.
 #[tokio::test]
-async fn an_sdk_module_is_whoever_its_token_names() {
-    let h = common::start_with(with_module_tokens).await;
+async fn a_restarted_sdk_service_is_redialed() {
+    let h = common::start_with(with_modules).await;
+    let svc = listen(&h, Module::new().ask(true), SVC).await;
+    let (_listening, _url) = h.listen().await;
+    let kernel = dialed(&svc, SVC).await;
+    create_surface(&kernel, SVC, "Service").await;
+    let first = svc.welcome().expect("welcomed").session_id;
+
+    svc.run(async {}).await.expect("the module stops");
+    eventually("the kernel loses the module", async || {
+        h.serving(SVC).await.is_empty()
+    })
+    .await;
+
+    let svc = listen(&h, Module::new().ask(true), SVC).await;
+    let mut kernel = dialed(&svc, SVC).await;
+    let welcome = svc.welcome().expect("welcomed");
+    assert_ne!(welcome.session_id, first);
+    assert!(
+        !welcome.resumed,
+        "a new module process has nothing to resume"
+    );
+    assert_eq!(
+        reconnects(&h, SVC).await,
+        0,
+        "the new process sent no resume"
+    );
+    assert_eq!(h.serving(SVC).await, [SVC]);
+    assert!(h.ask_ui(SVC).await, "capabilities come from the new hello");
+    let res = kernel
+        .surfaces()
+        .get()
+        .call(surfaces::get::Args {
+            surface: SurfaceId::from(SVC),
+        })
+        .await;
+    assert!(res.is_ok(), "{res:?}");
+}
+
+/// Рестарт ядра: модуль слушает дальше и принимает новое соединение с
+/// `hello.resume`; новый процесс ядра окна не продолжает, а `Kernel`,
+/// взятый до рестарта, ведёт уже в новую сессию.
+#[tokio::test]
+async fn an_sdk_service_outlives_a_kernel_restart() {
+    let h = common::start_with(with_modules).await;
+    let svc = listen(&h, Module::new().ask(true), SVC).await;
+    let (listening, _url) = h.listen().await;
+    let mut kernel = dialed(&svc, SVC).await;
+    create_surface(&kernel, SVC, "Service").await;
+    let first = svc.welcome().expect("welcomed").session_id;
+    let running = tokio::spawn(svc.clone().run(pending()));
+
+    listening.shutdown().await;
+    let Harness {
+        kernel: stopped,
+        dir,
+        ..
+    } = h;
+    drop(stopped);
+    let mut cfg = common::config(dir.path());
+    with_modules(&mut cfg);
+    let h = common::start_in(dir, cfg).await;
+    let (_listening, _url) = h.listen().await;
+
+    eventually("the new kernel dials the module", async || {
+        svc.welcome().is_some_and(|w| w.session_id != first) && h.ask_ui(SVC).await
+    })
+    .await;
+    assert!(
+        svc.welcome().is_some_and(|w| !w.resumed),
+        "a new kernel process has no window to continue"
+    );
+    assert_eq!(reconnects(&h, SVC).await, 1, "the hello carried resume");
+    assert_eq!(h.serving(SVC).await, [SVC]);
+    let res = kernel
+        .surfaces()
+        .get()
+        .call(surfaces::get::Args {
+            surface: SurfaceId::from(SVC),
+        })
+        .await;
+    assert!(res.is_ok(), "{res:?}");
+    assert!(!running.is_finished(), "run outlives the kernel");
+    running.abort();
+}
+
+/// Чужой ключ: Noise рвётся, сессии нет, причину видят обе стороны; модуль,
+/// поднятый заново с верным ключом, ядро набирает само.
+#[tokio::test]
+async fn a_wrong_key_gets_no_session_until_the_module_has_the_right_one() {
+    let h = common::start_with(with_modules).await;
+    let wrong = eva_sdk::ServiceConfig {
+        key: SecretString::Plaintext(common::key(OTHER)),
+        kernel_wait: HumanDuration(Duration::from_millis(1500)),
+        ..common::sdk_service(h.dir.path(), SVC)
+    };
+    let svc = Module::new().listen(&wrong).await.expect("service listens");
+    let (_listening, _url) = h.listen().await;
+
+    match svc.kernel().await {
+        Err(ConnectError::Transport(message)) => {
+            assert!(message.contains("wrong key"), "{message}");
+        }
+        other => panic!(
+            "expected no kernel, got {:?}",
+            other.map(|k| k.caller().clone())
+        ),
+    }
+    assert_eq!(svc.module(), None);
+    let dial = listed(&h, SVC).await.dial.expect("a registry entry");
+    assert!(
+        dial.error
+            .as_deref()
+            .is_some_and(|e| e.contains("wrong key")),
+        "{dial:?}"
+    );
+    assert!(dial_failures(&h, SVC).await >= 1);
+    let never = listed(&h, SVC).await;
+    assert_eq!(
+        (never.state, never.version.as_str()),
+        (State::Offline, ""),
+        "no session, no row"
+    );
+    svc.run(async {}).await.expect("the module stops");
+
+    let svc = listen(&h, Module::new(), SVC).await;
+    let kernel = dialed(&svc, SVC).await;
+    assert_eq!(kernel.caller(), &service(SVC));
+    let listed = listed(&h, SVC).await;
+    assert_eq!(listed.state, State::Connected);
+    assert_eq!(listed.dial.and_then(|d| d.error), None, "welcome clears it");
+}
+
+/// `modules.add` без ключа от клиента хозяина: ключ ядро выдаёт один раз, и
+/// SDK-сервис с ним ядро набирает само. Запись конфига операцией не снять и
+/// её сессию не задеть; `modules.remove` закрывает сессию своей записи.
+#[tokio::test]
+async fn the_owner_adds_and_removes_an_sdk_service_at_runtime() {
+    let h = common::start_with(with_modules).await;
+    let svc = listen(&h, Module::new(), SVC).await;
+    let (_listening, url) = h.listen().await;
+    let phone = connect(&url, CLIENT).await;
+    let mut svc_kernel = dialed(&svc, SVC).await;
+
+    let modules::add::Ok { key } = phone
+        .kernel()
+        .modules()
+        .add()
+        .call(modules::add::Args {
+            module: ModuleId::from("bridge"),
+            address: common::service_address(h.dir.path(), "bridge"),
+            key: None,
+        })
+        .await
+        .expect("the owner's client adds a service");
+    let key = key.expect("the kernel generates the key");
+    let bridge = Module::new()
+        .listen(&eva_sdk::ServiceConfig {
+            key: SecretString::Plaintext(key.expose().to_owned()),
+            ..common::sdk_service(h.dir.path(), "bridge")
+        })
+        .await
+        .expect("bridge listens");
+    let bridge_kernel = dialed(&bridge, "bridge").await;
+    assert_eq!(bridge_kernel.caller(), &service("bridge"));
+    create_surface(&bridge_kernel, "bridge", "Bridge").await;
+
+    let res = phone
+        .kernel()
+        .modules()
+        .remove()
+        .call(modules::remove::Args {
+            module: ModuleId::from(SVC),
+        })
+        .await;
+    assert!(
+        matches!(&res, Err(Generic::Aux(Aux::Conflict(_)))),
+        "config is stronger: {res:?}"
+    );
+    let res = svc_kernel
+        .surfaces()
+        .list()
+        .call(surfaces::list::Args::default())
+        .await;
+    assert!(res.is_ok(), "the config session stays: {res:?}");
+
+    let peer = bridge.client().expect("dialed");
+    phone
+        .kernel()
+        .modules()
+        .remove()
+        .call(modules::remove::Args {
+            module: ModuleId::from("bridge"),
+        })
+        .await
+        .expect("the owner's client removes its service");
+    let reason = tokio::time::timeout(WAIT, peer.closed())
+        .await
+        .expect("remove closes the session");
+    assert_eq!(
+        (reason.code, reason.message.as_str()),
+        (ErrorCode::Unauthorized, "module removed")
+    );
+    assert!(h.serving("bridge").await.is_empty());
+}
+
+/// Клиенты хозяина звонят с токеном на любой слушатель ядра — uds, ws и wss —
+/// и живут рядом; токен, выданный операцией, работает как токен конфига.
+#[tokio::test]
+async fn owner_clients_connect_with_tokens_over_uds_ws_and_wss() {
+    let [ws, wss] = free_ports();
+    let h = common::start_with(|cfg| {
+        with_modules(cfg);
+        cfg.modules.listen.push(Listen::Ws(WsListen {
+            addr: SocketAddr::from(([127, 0, 0, 1], ws)),
+        }));
+        cfg.modules.listen.push(Listen::Wss(WssListen {
+            addr: SocketAddr::from(([127, 0, 0, 1], wss)),
+            tls: TlsFiles {
+                cert: fixture("localhost.pem"),
+                key: fixture("localhost.key"),
+            },
+        }));
+    })
+    .await;
+    let (_listening, uds) = h.listen().await;
+    let tablet = h
+        .client_session()
+        .await
+        .modules()
+        .token_issue()
+        .call(modules::token_issue::Args {
+            module: ModuleId::from("tablet"),
+            issued_by: None,
+        })
+        .await
+        .expect("token_issue")
+        .token;
+
+    let ws = Url::parse(&format!("ws://127.0.0.1:{ws}/v1/modules")).expect("ws url");
+    let wss = Url::parse(&format!("wss://127.0.0.1:{wss}")).expect("wss url");
+    let trusted = ClientTls {
+        extra_ca: Some(fixture("ca.pem")),
+    };
+    let clients = [
+        (uds, token(CLIENT), ClientTls::default(), CLIENT),
+        (ws, token(CLIENT2), ClientTls::default(), CLIENT2),
+        (wss, tablet, trusted, "tablet"),
+    ];
+    let mut connected = Vec::new();
+    for (kernel, token, tls, module) in clients {
+        let client = Module::new()
+            .connect_config(&ClientConfig {
+                kernel: kernel.clone(),
+                token: SecretString::Plaintext(token),
+                connect_wait: HumanDuration(WAIT),
+                tls,
+                transport: eva_rpc::Config::default(),
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{module} over {kernel}: {e}"));
+        assert_eq!(client.caller(), common::client(module), "{kernel}");
+        assert_eq!(client.welcome().kind, ModuleKind::Client, "{kernel}");
+        let res = client
+            .kernel()
+            .surfaces()
+            .get()
+            .call(surfaces::get::Args {
+                surface: SurfaceId::from("local"),
+            })
+            .await;
+        assert!(res.is_ok(), "{kernel}: {res:?}");
+        connected.push(client);
+    }
+
+    let mut serving = h.serving("local").await;
+    serving.sort();
+    assert_eq!(serving, [CLIENT, "tablet", CLIENT2]);
+    assert!(connected.iter().all(|c| !c.client().peer().is_closed()));
+}
+
+/// Свободные порты loopback: пробные сокеты держатся вместе, чтобы порты различались.
+fn free_ports<const N: usize>() -> [u16; N] {
+    let probes: [std::net::TcpListener; N] =
+        std::array::from_fn(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("probe port"));
+    probes.map(|probe| probe.local_addr().expect("probe address").port())
+}
+
+/// Сертификаты `eva-rpc`: CA и лист для `127.0.0.1`.
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../rpc/tests/fixtures")
+        .join(name)
+}
+
+async fn listed(h: &Harness, module: &str) -> eva_protocol::types::module::Module {
+    h.client_session()
+        .await
+        .modules()
+        .list()
+        .call(modules::list::Args {})
+        .await
+        .expect("modules.list")
+        .modules
+        .into_iter()
+        .find(|m| m.name.as_str() == module)
+        .expect("listed")
+}
+
+async fn dial_failures(h: &Harness, module: &str) -> i64 {
+    counter(h, "modules.dial_failed", module).await
+}
+
+async fn reconnects(h: &Harness, module: &str) -> i64 {
+    counter(h, "modules.reconnects", module).await
+}
+
+async fn counter(h: &Harness, metric: &'static str, module: &str) -> i64 {
+    let module = module.to_owned();
+    h.query(move |c| {
+        Ok(c.query_row(
+            "SELECT coalesce(sum(count), 0) FROM health_stats WHERE metric = ?1 AND key = ?2",
+            [metric, module.as_str()],
+            |r| r.get::<_, i64>(0),
+        )?)
+    })
+    .await
+}
+
+/// Имя клиенту даёт токен: чужой токен — это чужая идентичность, а не отказ.
+#[tokio::test]
+async fn an_sdk_client_is_whoever_its_token_names() {
+    let h = common::start_with(with_modules).await;
     let (_listening, url) = h.listen().await;
 
     let res = Module::new()
@@ -1474,12 +1989,20 @@ async fn an_sdk_module_is_whoever_its_token_names() {
         "{:?}",
         res.map(|c| c.welcome())
     );
+    let res = Module::new()
+        .connect(&url, &SecretString::Plaintext(common::key(SVC)))
+        .await;
+    assert!(
+        matches!(&res, Err(ConnectError::Rejected(e)) if e.code == ErrorCode::Unauthorized),
+        "a service key is no token: {:?}",
+        res.map(|c| c.welcome())
+    );
 
-    let other = connect(&url, OTHER).await;
-    assert_eq!(other.caller(), service(OTHER));
+    let tui = connect(&url, CLIENT2).await;
+    assert_eq!(tui.caller(), client(CLIENT2));
     assert_eq!(
-        other.module().as_str(),
-        OTHER,
+        tui.module().as_str(),
+        CLIENT2,
         "welcome.module names the token entry"
     );
 }

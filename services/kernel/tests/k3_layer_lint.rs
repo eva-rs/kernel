@@ -26,7 +26,7 @@ const SQL_OUTSIDE_DB: &[(&str, &str)] = &[(
     "sqlite.* runs the module's own statements",
 )];
 
-/// Авторизация по caller'у вне `state/policy/`: handshake выводит его из токена.
+/// Авторизация по caller'у вне `state/policy/`: handshake выводит его из соединения.
 const CALLER_OUTSIDE_POLICY: &[&str] = &["subsystems/modules/auth.rs"];
 
 fn root() -> PathBuf {
@@ -138,7 +138,7 @@ fn rpc_names_the_caller_only_at_hello() {
             continue;
         }
         let hello = ["client.rs", "server/mod.rs"].contains(&file.as_str())
-            && line.matches("Caller::").count() == line.matches("Caller::from_token(").count();
+            && line.matches("Caller::").count() == line.matches("Caller::from_kind(").count();
         if hello {
             at_hello.push(file);
         } else {
@@ -153,6 +153,6 @@ fn rpc_names_the_caller_only_at_hello() {
     assert_eq!(
         at_hello,
         ["client.rs", "server/mod.rs"],
-        "both ends derive the caller from the token"
+        "both ends derive the caller from the connection"
     );
 }

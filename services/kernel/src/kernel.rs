@@ -18,7 +18,7 @@ use crate::{
     session::Session,
     shared::Shared,
     state::State,
-    subsystems::modules::tokens::ConfigTokens,
+    subsystems::modules::Registrations,
     world::Demiurge as _,
 };
 
@@ -74,7 +74,7 @@ impl<C: Components> Kernel<C> {
             hands,
         } = parts;
         let zone = DayZone::from_tz(cfg.system.tz.as_deref())?;
-        let tokens = ConfigTokens::load(&cfg.modules.tokens)?;
+        let registrations = Registrations::load(&cfg.modules)?;
         check_masters(&cfg)?;
         let now = demiurge.now();
 
@@ -127,7 +127,21 @@ impl<C: Components> Kernel<C> {
             Err(e) => log::warn!(error:% = e; "failed to sweep stale blob uploads"),
         }
 
-        let shared = Shared::new(cfg, zone, db, demiurge, providers, hands, tokens);
+        let shadowed = db
+            .reader()
+            .await?
+            .run(|c| {
+                let mut ids = c.modules().token_modules()?;
+                ids.extend(c.modules().services()?.into_iter().map(|row| row.module));
+                DbResult::Ok(ids)
+            })
+            .await
+            .wrap_err("failed to read module registrations")?;
+        for module in shadowed.iter().filter(|m| registrations.shadowed(m)) {
+            log::warn!(module:% = module; "the config names this module: its database registration is ignored");
+        }
+
+        let shared = Shared::new(cfg, zone, db, demiurge, providers, hands, registrations);
         shared.settle_providers();
         let default_model = &shared.cfg().llm.default_model;
         if shared.models().get(default_model).is_none() {

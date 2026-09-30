@@ -1,4 +1,4 @@
-//! Модули и их токены.
+//! Модули, реестр сервисов и токены клиентов.
 
 use eva::data;
 
@@ -6,7 +6,7 @@ use crate::{
     errors,
     types::{
         ModuleId, PersonId,
-        module::{Module, TokenKind},
+        module::{Module, ServiceAddress, ServiceKey},
     },
 };
 
@@ -28,20 +28,67 @@ pub mod list {
     code!(Err => []);
 }
 
+pub mod add {
+    use super::*;
+
+    #[data]
+    pub struct Args {
+        pub module: ModuleId,
+        pub address: ServiceAddress,
+        /// `None` — ключ генерирует ядро.
+        pub key: Option<ServiceKey>,
+    }
+
+    #[data]
+    pub struct Ok {
+        /// Сгенерированный ядром ключ; показывается один раз.
+        pub key: Option<ServiceKey>,
+    }
+
+    /// Зарезервированное или невалидное имя, негодный ключ — `Aux::Invalid`.
+    #[data(error)]
+    pub enum Err {
+        #[display("{_0}")]
+        Taken(#[from] errors::modules::Taken),
+    }
+
+    code!(Err => [Taken]);
+}
+
+pub mod remove {
+    use super::*;
+
+    #[data]
+    pub struct Args {
+        pub module: ModuleId,
+    }
+
+    #[data]
+    pub struct Ok {}
+
+    /// Запись `modules.services` — `Aux::Conflict`.
+    #[data(error)]
+    pub enum Err {
+        #[display("{_0}")]
+        ServiceNotFound(#[from] errors::modules::ServiceNotFound),
+    }
+
+    code!(Err => [ServiceNotFound]);
+}
+
 pub mod token_issue {
     use super::*;
 
     #[data]
     pub struct Args {
         pub module: ModuleId,
-        pub kind: TokenKind,
         /// Заполняет только обёртка тула: актор тура.
         pub issued_by: Option<PersonId>,
     }
 
     #[data]
     pub struct Ok {
-        /// Показывается один раз; ядро хранит только хэш.
+        /// Токен клиента; показывается один раз, ядро хранит только хэш.
         pub token: String,
     }
 

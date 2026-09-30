@@ -32,6 +32,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "module_kv_usage",
         sql: include_str!("migrations/0002_module_kv_usage.sql"),
     },
+    Migration {
+        version: 3,
+        name: "module_services",
+        sql: include_str!("migrations/0003_module_services.sql"),
+    },
 ];
 
 #[data(error)]

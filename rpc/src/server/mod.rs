@@ -12,12 +12,16 @@ use futures::{SinkExt as _, StreamExt as _};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use eva::data;
 use eva_core::{Caller, SessionMaker};
-use eva_protocol::wire::{
-    Capabilities, ErrorCode, Frame, RpcError,
-    frame::{Notify, Request, Response},
-    handshake::{Hello, ProtoVersion, Warning, Welcome},
-    method,
+use eva_protocol::{
+    types::module::ServiceAddress,
+    wire::{
+        Capabilities, ErrorCode, Frame, RpcError,
+        frame::{Notify, Request, Response},
+        handshake::{Hello, ProtoVersion, Warning, Welcome},
+        method,
+    },
 };
 
 use crate::{
@@ -25,7 +29,7 @@ use crate::{
     config::Config,
     module::ModuleClient,
     peer::{IdSeq, Peer},
-    transport::{Conn, Listener, Outbound},
+    transport::{Conn, Listener, Outbound, TransportError, noise::Psk, service},
 };
 
 use self::{dispatch::Table, window::Windows};
@@ -48,12 +52,47 @@ const MAX_HANDSHAKES_PER_NET: usize = 8;
 /// заголовок ws-кадра.
 const HELLO_FRAMING: u64 = 64;
 
-/// Проверка `hello` ядром: токен → `welcome` (`module` и `kind` в нём задают
-/// caller сессии), вытеснение прежней сессии того же модуля. Отказ уходит
-/// модулю ответом на `hello`, соединение закрывается.
+/// Проверка `hello` ядром: идентичность → `welcome` (`module` и `kind` в нём
+/// задают caller сессии), вытеснение прежней сессии того же модуля. Отказ
+/// уходит модулю ответом на `hello`, соединение закрывается.
 pub trait Authenticator: Send + Sync + 'static {
-    fn authenticate(&self, hello: &Hello)
-    -> impl Future<Output = Result<Welcome, RpcError>> + Send;
+    /// Что набирающий знает о записи, которую набрал: у ядра — id реестра и
+    /// то, по чему попытка устаревает.
+    type Dialed: Send + Sync + 'static;
+
+    fn authenticate(
+        &self,
+        hello: &Hello,
+        origin: Origin<'_, Self::Dialed>,
+    ) -> impl Future<Output = Result<Welcome, RpcError>> + Send;
+}
+
+/// Кто открыл соединение (`06 §2`).
+#[derive(Debug)]
+pub enum Origin<'a, D> {
+    /// Клиент на слушателе: идентичность — `hello.token`.
+    Listener,
+    /// Ядро набрало запись `D`: Noise уже доказал её PSK, токена в `hello` нет.
+    Dialed(&'a D),
+}
+
+impl<D> Clone for Origin<'_, D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for Origin<'_, D> {}
+
+/// Попытка `Server::dial` не стала сессией.
+#[data(error, not(serde, JsonSchema))]
+pub enum DialError {
+    /// Сокет, DNS, Noise (в том числе чужой ключ) или таймаут до `hello`.
+    #[display("{_0}")]
+    Transport(TransportError),
+    /// `hello` не пришёл, нарушил протокол или отвергнут; то, что ушло модулю.
+    #[display("handshake: {_0}")]
+    Handshake(RpcError),
 }
 
 /// Сессия модуля после `welcome`.
@@ -119,20 +158,57 @@ where
         &self.inner.cfg
     }
 
-    /// Handshake на установленном соединении. `hello` обязан быть первым
-    /// кадром в течение `handshake_timeout`; любой другой кадр закрывает
-    /// соединение. Ошибка — то, что ушло модулю.
-    pub async fn accept(&self, conn: Conn) -> Result<Accepted, RpcError> {
+    /// Handshake клиента на установленном соединении. `hello` обязан быть
+    /// первым кадром в течение `handshake_timeout`; любой другой кадр
+    /// закрывает соединение. Ошибка — то, что ушло модулю.
+    pub async fn accept(&self, mut conn: Conn) -> Result<Accepted, RpcError> {
         let deadline = Instant::now() + *self.inner.cfg.handshake_timeout;
-        self.accept_by(conn, deadline).await
+        let heard = self.hear(&mut conn, deadline).await;
+        self.settle(conn, heard, Origin::Listener).await
     }
 
-    /// `hello` — до `deadline`. Если `authenticate` прошёл, сессия отдаётся
-    /// даже с недоставленным `welcome` — уже закрытой: заведённое им
-    /// состояние прибирает владелец по закрытию, как у любой сессии.
-    async fn accept_by(&self, mut conn: Conn, deadline: Instant) -> Result<Accepted, RpcError> {
-        let heard = self.hear(&mut conn, deadline).await;
-        self.settle(conn, heard).await
+    /// Набирает сервис: connect, Noise, `hello` и `welcome` — за один
+    /// `handshake_timeout` от начала connect.
+    pub async fn dial(
+        &self,
+        address: &ServiceAddress,
+        psk: &Psk,
+        dialed: &A::Dialed,
+    ) -> Result<Accepted, DialError> {
+        let deadline = Instant::now() + *self.inner.cfg.handshake_timeout;
+        let conn = service::dial_by(address, psk, &self.inner.cfg, deadline)
+            .await
+            .map_err(DialError::Transport)?;
+        self.accept_dialed_by(conn, dialed, deadline)
+            .await
+            .map_err(DialError::Handshake)
+    }
+
+    /// Handshake на соединении, которое ядро набрало само (`dial`, пара в
+    /// памяти): `hello` без токена и ограничен лишь `max_frame`.
+    pub async fn accept_dialed(
+        &self,
+        conn: Conn,
+        dialed: &A::Dialed,
+    ) -> Result<Accepted, RpcError> {
+        let deadline = Instant::now() + *self.inner.cfg.handshake_timeout;
+        self.accept_dialed_by(conn, dialed, deadline).await
+    }
+
+    async fn accept_dialed_by(
+        &self,
+        mut conn: Conn,
+        dialed: &A::Dialed,
+        deadline: Instant,
+    ) -> Result<Accepted, RpcError> {
+        let heard = match self.read_hello(&mut conn, deadline).await {
+            Ok((id, hello, _)) if hello.token.is_some() => Err((
+                Some(id),
+                RpcError::invalid_params("a dialed module sends no token"),
+            )),
+            heard => heard,
+        };
+        self.settle(conn, heard, Origin::Dialed(dialed)).await
     }
 
     /// Первый кадр под бюджетом чтения: до `welcome` пир не доказал права
@@ -145,14 +221,20 @@ where
 
     /// `authenticate`, окно и `welcome`. Прерывать нельзя: `authenticate`
     /// заводит состояние сессии, которое прибирает только владелец `Accepted`.
-    async fn settle(&self, mut conn: Conn, heard: Heard) -> Result<Accepted, RpcError> {
+    /// Поэтому сессия отдаётся и с недоставленным `welcome` — уже закрытой.
+    async fn settle(
+        &self,
+        mut conn: Conn,
+        heard: Heard,
+        origin: Origin<'_, A::Dialed>,
+    ) -> Result<Accepted, RpcError> {
         let cfg = &self.inner.cfg;
         let (id, hello, unknown) = match heard {
             Ok(hello) => hello,
             Err((id, error)) => return Err(reject(conn, id, error).await),
         };
 
-        let mut welcome = match self.inner.auth.authenticate(&hello).await {
+        let mut welcome = match self.inner.auth.authenticate(&hello, origin).await {
             Ok(welcome) => welcome,
             Err(error) => {
                 log::info!(
@@ -174,7 +256,7 @@ where
                 message: String::from("unknown capability, ignored"),
             }));
 
-        let caller = Caller::from_token(welcome.kind, welcome.module.clone());
+        let caller = Caller::from_kind(welcome.kind, welcome.module.clone());
         let resume = hello.resume.as_ref().map(|r| &r.session_id);
         let window = self
             .inner
@@ -364,7 +446,7 @@ where
                     },
                 };
                 pass.spoke();
-                let accepted = server.settle(conn, heard).await;
+                let accepted = server.settle(conn, heard, Origin::Listener).await;
                 drop(pass);
                 if let Ok(accepted) = accepted {
                     on_session(accepted);

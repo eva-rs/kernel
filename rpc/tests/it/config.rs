@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use eva::bytesize::ByteSize;
-use eva_rpc::config::{Config, FileMode, Listen, StreamBuffer};
+use eva_rpc::config::{Config, FileMode, Listen, ServiceListen, StreamBuffer};
 
 #[test]
 fn defaults() {
@@ -68,6 +68,29 @@ fn listen_by_address_key() {
     assert_eq!(wss.tls.key.to_str(), Some("/etc/eva/key.pem"));
 
     assert!(serde_json::from_value::<Listen>(json!({"tcp": "127.0.0.1:1"})).is_err());
+}
+
+/// Сервис слушает uds или tcp; ws/wss — только у клиентского слушателя ядра.
+#[test]
+fn service_listen_by_address_key() {
+    let listen: Vec<ServiceListen> = serde_json::from_value(json!([
+        {"uds": "/run/eva-bridge/module.sock", "group": "eva"},
+        {"tcp": "0.0.0.0:7000"},
+    ]))
+    .unwrap();
+    let [ServiceListen::Uds(uds), ServiceListen::Tcp(tcp)] = listen.as_slice() else {
+        panic!("wrong variants: {listen:?}");
+    };
+    assert_eq!(uds.mode, FileMode(0o660));
+    assert_eq!(uds.group.as_deref(), Some("eva"));
+    assert_eq!(tcp.addr.port(), 7000);
+
+    for other in [json!({"ws": "127.0.0.1:1"}), json!({"tcp": "host"})] {
+        assert!(
+            serde_json::from_value::<ServiceListen>(other.clone()).is_err(),
+            "{other}"
+        );
+    }
 }
 
 /// Ответ и элемент потока с данными в `max_payload` укладываются в `max_frame`.

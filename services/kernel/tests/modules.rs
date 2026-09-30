@@ -1,4 +1,5 @@
-//! `modules.*` (`06 §2`, `§9`, `10 §2.6`, `11 §3`).
+//! `modules.*` (`06 §2`, `§9`, `10 §2.6`, `11 §3`): список, реестр сервисов
+//! `add`/`remove` и токены клиентов — без транспорта; дозвон — `dial.rs`.
 
 mod common;
 
@@ -8,10 +9,10 @@ use common::{CLIENT, OTHER, Outcome, SVC, TestSession, client, matrix_callers, o
 use eva_core::{CallStep as _, service::modules::Modules as _};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::modules::{list, token_issue, token_revoke},
+    requests::modules::{add, list, remove, token_issue, token_revoke},
     types::{
         ModuleId, PersonId,
-        module::{State, TokenKind},
+        module::{Dial, ModuleKind, ServiceAddress, ServiceKey, State},
     },
     wire::{Capabilities, capabilities::ToolsCap},
 };
@@ -22,10 +23,11 @@ use eva_kernel::{
     db::{Db as _, Queries as _, modules::TokenRow},
 };
 
-fn issue(module: &str, kind: TokenKind) -> token_issue::Args {
+const KEY: &str = "bridge-key-0123456789abcdef0123456789";
+
+fn issue(module: &str) -> token_issue::Args {
     token_issue::Args {
         module: ModuleId::from(module),
-        kind,
         issued_by: None,
     }
 }
@@ -36,23 +38,40 @@ fn revoke(module: &str) -> token_revoke::Args {
     }
 }
 
+fn address(module: &str) -> ServiceAddress {
+    ServiceAddress::Uds(format!("/run/eva-{module}/module.sock").into())
+}
+
+fn add(module: &str, key: Option<&str>) -> add::Args {
+    add::Args {
+        module: ModuleId::from(module),
+        address: address(module),
+        key: key.map(ServiceKey::from),
+    }
+}
+
+fn remove(module: &str) -> remove::Args {
+    remove::Args {
+        module: ModuleId::from(module),
+    }
+}
+
 fn hash(token: &str) -> Vec<u8> {
     blake3::hash(token.as_bytes()).as_bytes().to_vec()
 }
 
-/// Живой токен по хэшу: как его увидит handshake.
-async fn live(h: &common::Harness, token: &str) -> Option<(ModuleId, TokenKind)> {
+/// Клиент живого токена по хэшу: как его увидит handshake.
+async fn live(h: &common::Harness, token: &str) -> Option<ModuleId> {
     let hash = hash(token);
     h.query(move |c| c.modules().token(&hash)).await
 }
 
 /// Живая строка `module_tokens` в обход `token_issue`.
-async fn legacy_token(h: &common::Harness, module: &str, kind: TokenKind) {
+async fn legacy_token(h: &common::Harness, module: &str) {
     use eva::time::Clock as _;
     let row = TokenRow {
         hash: hash(&format!("{module}-legacy")),
         module: ModuleId::from(module),
-        kind,
         issued_by: None,
         issued_via: Some(ModuleId::from(CLIENT)),
         issued_at: h.clock.get(),
@@ -73,6 +92,19 @@ async fn list_modules(session: &mut TestSession) -> Vec<eva_protocol::types::mod
         .await
         .expect("modules.list")
         .modules
+}
+
+async fn services(h: &common::Harness) -> Vec<(String, String, String, String)> {
+    h.query(|c| {
+        let mut stmt = c.prepare(
+            "SELECT module, address, key, added_via FROM module_services ORDER BY module",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    })
+    .await
 }
 
 #[tokio::test]
@@ -106,54 +138,290 @@ async fn list_shows_connected_modules_with_capabilities() {
     assert_eq!(other.version, "2.0.0");
     assert_eq!(other.proto_version, "1.2");
     assert_eq!(other.capabilities, ["tools"]);
-    assert_eq!(other.kind, None, "no token issued yet");
+    assert_eq!(
+        (other.kind, &other.dial),
+        (None, &None),
+        "neither a registry entry nor a token"
+    );
     assert!(modules[1].capabilities.is_empty());
 }
 
 #[tokio::test]
-async fn list_kind_comes_from_live_token_and_config_wins() {
+async fn list_kind_comes_from_the_registry_and_live_tokens() {
     let h = common::start_with(|cfg| {
         cfg.modules.tokens.insert(
             ModuleId::from(OTHER),
-            TokenEntry {
-                token: SecretString::Plaintext(String::from("configured")),
-                kind: TokenKind::Client,
-            },
+            TokenEntry::new(SecretString::Plaintext(String::from("configured"))),
         );
+        common::with_service(cfg, SVC);
     })
     .await;
     h.register_module(SVC).await;
     h.register_module(OTHER).await;
+    h.register_module("tablet").await;
+    h.register_module("bridge").await;
     let mut client = h.client_session().await;
 
     client
         .modules()
         .token_issue()
-        .call(issue(SVC, TokenKind::Service))
+        .call(issue("tablet"))
         .await
         .expect("issue");
-    // Токен, выданный до того, как конфиг назвал модуль.
-    legacy_token(&h, OTHER, TokenKind::Service).await;
+    client
+        .modules()
+        .add()
+        .call(add("bridge", Some(KEY)))
+        .await
+        .expect("add");
+    // Токены, выданные до того, как конфиг назвал модуль: инертны.
+    legacy_token(&h, OTHER).await;
+    legacy_token(&h, SVC).await;
 
     let modules = list_modules(&mut client).await;
-    let kinds: Vec<_> = modules.iter().map(|m| (m.name.as_str(), m.kind)).collect();
+    let kinds: Vec<_> = modules
+        .iter()
+        .map(|m| (m.name.as_str(), m.kind, m.dial.as_ref().map(|d| d.config)))
+        .collect();
     assert_eq!(
         kinds,
         [
-            (OTHER, Some(TokenKind::Client)),
-            (SVC, Some(TokenKind::Service))
+            ("bridge", Some(ModuleKind::Service), Some(false)),
+            (OTHER, Some(ModuleKind::Client), None),
+            (SVC, Some(ModuleKind::Service), Some(true)),
+            ("tablet", Some(ModuleKind::Client), None),
         ],
-        "config token is stronger than the issued one"
+        "the config is stronger than the database"
     );
 
     client
         .modules()
         .token_revoke()
-        .call(revoke(SVC))
+        .call(revoke("tablet"))
         .await
         .expect("revoke");
     let modules = list_modules(&mut client).await;
-    assert_eq!(modules[1].kind, None, "revoked token is not live");
+    assert_eq!(modules[3].kind, None, "revoked token is not live");
+}
+
+/// Запись реестра без строки `modules`: `offline`, пустые версии, `since` —
+/// `added_at` или старт ядра (`06 §9`).
+#[tokio::test]
+async fn a_never_dialed_registry_entry_is_listed_offline() {
+    let mut h = common::start_with(|cfg| common::with_service(cfg, SVC)).await;
+    let started = h.kernel.shared().started_at();
+    h.clock.advance(std::time::Duration::from_secs(60));
+    let mut client = h.client_session().await;
+    client
+        .modules()
+        .add()
+        .call(add("bridge", Some(KEY)))
+        .await
+        .expect("add");
+
+    let modules = list_modules(&mut client).await;
+    let [bridge, svc] = modules.as_slice() else {
+        panic!("two registry entries: {modules:?}");
+    };
+    for (module, config) in [(bridge, false), (svc, true)] {
+        assert_eq!(
+            (
+                module.state,
+                module.kind,
+                module.version.as_str(),
+                module.proto_version.as_str()
+            ),
+            (State::Offline, Some(ModuleKind::Service), "", ""),
+            "{module:?}"
+        );
+        assert!(module.capabilities.is_empty());
+        assert_eq!(
+            module.dial.as_ref().map(|d| d.config),
+            Some(config),
+            "{module:?}"
+        );
+    }
+    assert_eq!(
+        bridge.dial,
+        Some(Dial {
+            address: address("bridge"),
+            config: false,
+            error: None,
+        })
+    );
+    assert_eq!(svc.since, started, "a config entry dates from the start");
+    assert!(bridge.since > started, "a runtime entry dates from add");
+}
+
+#[tokio::test]
+async fn add_generates_a_key_once_and_stores_it_as_is() {
+    let h = common::start().await;
+    let mut client = h.client_session().await;
+
+    let add::Ok { key } = client
+        .modules()
+        .add()
+        .call(add("bridge", None))
+        .await
+        .expect("add without a key");
+    let key = key.expect("the kernel generates the key").0;
+    assert_eq!(key.len(), 64);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(
+        !format!("{:?}", ServiceKey(key.clone())).contains(&key),
+        "Debug hides the key"
+    );
+
+    let add::Ok { key: shown } = client
+        .modules()
+        .add()
+        .call(add("mcp", Some(KEY)))
+        .await
+        .expect("add with a key");
+    assert_eq!(shown, None, "a given key is not echoed");
+
+    assert_eq!(
+        services(&h).await,
+        [
+            (
+                String::from("bridge"),
+                String::from("uds:///run/eva-bridge/module.sock"),
+                key,
+                String::from(CLIENT),
+            ),
+            (
+                String::from("mcp"),
+                String::from("uds:///run/eva-mcp/module.sock"),
+                String::from(KEY),
+                String::from(CLIENT),
+            ),
+        ],
+        "the kernel dials with the key: it is stored as is"
+    );
+}
+
+#[tokio::test]
+async fn add_rejects_bad_ids_and_weak_keys() {
+    let h = common::start().await;
+    let mut client = h.client_session().await;
+
+    for bad in [
+        "kernel",
+        "system",
+        "local",
+        "",
+        "Bridge",
+        "has space",
+        "a/b",
+        "9lives",
+    ] {
+        let res = client.modules().add().call(add(bad, Some(KEY))).await;
+        assert_eq!(outcome(&res), Outcome::Invalid, "{bad:?}: {res:?}");
+    }
+    for weak in ["", "short", &"k".repeat(31), "\n"] {
+        let res = client.modules().add().call(add("bridge", Some(weak))).await;
+        assert_eq!(outcome(&res), Outcome::Invalid, "{weak:?}: {res:?}");
+    }
+    client
+        .modules()
+        .add()
+        .call(add("bridge", Some(&"k".repeat(32))))
+        .await
+        .expect("32 characters are enough");
+}
+
+/// Одно пространство имён (`06 §2`): сервис конфига или БД, токен конфига
+/// или живой `module_tokens` — `Taken`; отозванный токен id не держит.
+#[tokio::test]
+async fn add_of_a_taken_id_is_taken() {
+    let h = common::start_with(common::with_modules).await;
+    let mut client = h.client_session().await;
+    client
+        .modules()
+        .token_issue()
+        .call(issue("tablet"))
+        .await
+        .expect("issue");
+    client
+        .modules()
+        .add()
+        .call(add("bridge", Some(KEY)))
+        .await
+        .expect("add");
+
+    for taken in [SVC, CLIENT, "tablet", "bridge"] {
+        let res = client.modules().add().call(add(taken, Some(KEY))).await;
+        assert!(
+            matches!(&res, Err(Generic::Spec(add::Err::Taken(e))) if e.module.as_str() == taken),
+            "{taken}: {res:?}"
+        );
+    }
+    assert_eq!(services(&h).await.len(), 1, "nothing overwritten");
+
+    client
+        .modules()
+        .token_revoke()
+        .call(revoke("tablet"))
+        .await
+        .expect("revoke");
+    client
+        .modules()
+        .add()
+        .call(add("tablet", Some(KEY)))
+        .await
+        .expect("a revoked token does not hold the id");
+}
+
+#[tokio::test]
+async fn remove_takes_only_runtime_entries() {
+    let h = common::start_with(common::with_modules).await;
+    let mut client = h.client_session().await;
+
+    let res = client.modules().remove().call(remove(SVC)).await;
+    assert!(
+        matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.services")),
+        "config is stronger: {res:?}"
+    );
+    for unknown in ["bridge", CLIENT] {
+        let res = client.modules().remove().call(remove(unknown)).await;
+        assert!(
+            matches!(&res, Err(Generic::Spec(remove::Err::ServiceNotFound(e))) if e.module.as_str() == unknown),
+            "{unknown}: {res:?}"
+        );
+    }
+
+    client
+        .modules()
+        .add()
+        .call(add("bridge", Some(KEY)))
+        .await
+        .expect("add");
+    h.register_module("bridge").await;
+    client
+        .modules()
+        .remove()
+        .call(remove("bridge"))
+        .await
+        .expect("remove");
+    assert!(services(&h).await.is_empty());
+    let modules = list_modules(&mut client).await;
+    let bridge = modules
+        .iter()
+        .find(|m| m.name.as_str() == "bridge")
+        .expect("the modules row stays");
+    assert_eq!((bridge.kind, &bridge.dial), (None, &None));
+
+    let res = client.modules().remove().call(remove("bridge")).await;
+    assert!(
+        matches!(&res, Err(Generic::Spec(remove::Err::ServiceNotFound(_)))),
+        "second remove: {res:?}"
+    );
+    client
+        .modules()
+        .add()
+        .call(add("bridge", Some(KEY)))
+        .await
+        .expect("the id is free again");
 }
 
 #[tokio::test]
@@ -164,22 +432,19 @@ async fn token_issue_stores_only_the_hash() {
     let token_issue::Ok { token } = client
         .modules()
         .token_issue()
-        .call(issue("bridge", TokenKind::Service))
+        .call(issue("tablet"))
         .await
         .expect("issue");
     assert_eq!(token.len(), 64);
     assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
 
-    type Row = (Vec<u8>, String, String, Option<String>, Option<String>);
+    type Row = (Vec<u8>, String, Option<String>, Option<String>);
     let rows: Vec<Row> = h
         .query(|c| {
-            let mut stmt = c.prepare(
-                "SELECT token_hash, module, kind, issued_by, issued_via FROM module_tokens",
-            )?;
+            let mut stmt =
+                c.prepare("SELECT token_hash, module, issued_by, issued_via FROM module_tokens")?;
             let rows = stmt
-                .query_map([], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-                })?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
                 .collect::<Result<_, _>>()?;
             Ok(rows)
         })
@@ -188,17 +453,13 @@ async fn token_issue_stores_only_the_hash() {
         rows,
         [(
             hash(&token),
-            String::from("bridge"),
-            String::from("service"),
+            String::from("tablet"),
             None,
             Some(String::from(CLIENT)),
         )],
         "only blake3(token) is stored"
     );
-    assert_eq!(
-        live(&h, &token).await,
-        Some((ModuleId::from("bridge"), TokenKind::Service))
-    );
+    assert_eq!(live(&h, &token).await, Some(ModuleId::from("tablet")));
 }
 
 #[tokio::test]
@@ -209,14 +470,14 @@ async fn token_issue_rotates_the_live_token() {
     let first = client
         .modules()
         .token_issue()
-        .call(issue("bridge", TokenKind::Service))
+        .call(issue("tablet"))
         .await
         .expect("first")
         .token;
     let second = client
         .modules()
         .token_issue()
-        .call(issue("bridge", TokenKind::Client))
+        .call(issue("tablet"))
         .await
         .expect("second")
         .token;
@@ -227,10 +488,7 @@ async fn token_issue_rotates_the_live_token() {
         None,
         "rotation revokes the old token"
     );
-    assert_eq!(
-        live(&h, &second).await,
-        Some((ModuleId::from("bridge"), TokenKind::Client))
-    );
+    assert_eq!(live(&h, &second).await, Some(ModuleId::from("tablet")));
 }
 
 #[tokio::test]
@@ -239,20 +497,12 @@ async fn token_issue_rejects_reserved_and_malformed_names() {
     let mut client = h.client_session().await;
 
     for reserved in ["kernel", "system", "local"] {
-        let res = client
-            .modules()
-            .token_issue()
-            .call(issue(reserved, TokenKind::Client))
-            .await;
+        let res = client.modules().token_issue().call(issue(reserved)).await;
         assert_eq!(outcome(&res), Outcome::Invalid, "{reserved}: {res:?}");
     }
 
     for bad in ["", "Bridge", "has space", "a/b", "9lives", &"a".repeat(65)] {
-        let res = client
-            .modules()
-            .token_issue()
-            .call(issue(bad, TokenKind::Client))
-            .await;
+        let res = client.modules().token_issue().call(issue(bad)).await;
         assert_eq!(outcome(&res), Outcome::Invalid, "{bad:?}: {res:?}");
     }
 }
@@ -268,16 +518,12 @@ async fn issued_by_is_the_kernel_tool_path_only() {
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::system()),
-            ..issue("bridge", TokenKind::Client)
+            ..issue("tablet")
         })
         .await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "{res:?}");
 
-    let res = kernel
-        .modules()
-        .token_issue()
-        .call(issue("bridge", TokenKind::Client))
-        .await;
+    let res = kernel.modules().token_issue().call(issue("tablet")).await;
     assert_eq!(
         outcome(&res),
         Outcome::Invalid,
@@ -289,7 +535,7 @@ async fn issued_by_is_the_kernel_tool_path_only() {
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::numbered(99)),
-            ..issue("bridge", TokenKind::Client)
+            ..issue("tablet")
         })
         .await;
     assert!(
@@ -302,7 +548,7 @@ async fn issued_by_is_the_kernel_tool_path_only() {
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::system()),
-            ..issue("bridge", TokenKind::Client)
+            ..issue("tablet")
         })
         .await
         .expect("kernel tool path");
@@ -323,28 +569,28 @@ async fn token_revoke_needs_a_live_token() {
     let h = common::start().await;
     let mut client = h.client_session().await;
 
-    let res = client.modules().token_revoke().call(revoke("bridge")).await;
+    let res = client.modules().token_revoke().call(revoke("tablet")).await;
     assert!(
-        matches!(&res, Err(Generic::Spec(token_revoke::Err::NotFound(e))) if e.module.as_str() == "bridge"),
+        matches!(&res, Err(Generic::Spec(token_revoke::Err::NotFound(e))) if e.module.as_str() == "tablet"),
         "{res:?}"
     );
 
     let token = client
         .modules()
         .token_issue()
-        .call(issue("bridge", TokenKind::Service))
+        .call(issue("tablet"))
         .await
         .expect("issue")
         .token;
     client
         .modules()
         .token_revoke()
-        .call(revoke("bridge"))
+        .call(revoke("tablet"))
         .await
         .expect("revoke");
     assert_eq!(live(&h, &token).await, None);
 
-    let res = client.modules().token_revoke().call(revoke("bridge")).await;
+    let res = client.modules().token_revoke().call(revoke("tablet")).await;
     assert!(
         matches!(&res, Err(Generic::Spec(token_revoke::Err::NotFound(_)))),
         "second revoke: {res:?}"
@@ -362,26 +608,39 @@ async fn policy_matrix() {
         } else {
             Outcome::Forbidden
         };
+        // Дозвон на произвольный адрес наводит только клиент хозяина.
+        let client_only = if matches!(caller, eva_core::Caller::Client { .. }) {
+            Outcome::Ok
+        } else {
+            Outcome::Forbidden
+        };
         let mut session = h.session(caller.clone()).await;
         let mut modules = session.modules();
 
         let res = modules.list().call(list::Args {}).await;
         assert_eq!(outcome(&res), expect, "{who} list");
 
+        let res = modules.add().call(add("bridge", Some(KEY))).await;
+        assert_eq!(outcome(&res), client_only, "{who} add");
+        let res = modules.remove().call(remove("bridge")).await;
+        assert_eq!(outcome(&res), client_only, "{who} remove");
+
         let args = token_issue::Args {
             issued_by: caller.is_kernel().then(PersonId::system),
-            ..issue("bridge", TokenKind::Service)
+            ..issue("tablet")
         };
         let res = modules.token_issue().call(args).await;
         assert_eq!(outcome(&res), expect, "{who} token_issue");
 
-        let res = modules.token_revoke().call(revoke("bridge")).await;
+        let res = modules.token_revoke().call(revoke("tablet")).await;
         assert_eq!(outcome(&res), expect, "{who} token_revoke");
     }
 
-    // Отказ Policy — до базы: чужой модуль не узнает, есть ли токен.
+    // Отказ Policy — до базы: чужой модуль не узнает, есть ли токен или сервис.
     let mut svc = h.session(service(SVC)).await;
     let res = svc.modules().token_revoke().call(revoke("nobody")).await;
+    assert_eq!(outcome(&res), Outcome::Forbidden);
+    let res = svc.modules().remove().call(remove("nobody")).await;
     assert_eq!(outcome(&res), Outcome::Forbidden);
 }
 
@@ -393,29 +652,34 @@ async fn database_failure_is_aux_db() {
 
     let res = client.modules().list().call(list::Args {}).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
-    let res = client
-        .modules()
-        .token_issue()
-        .call(issue("bridge", TokenKind::Client))
-        .await;
+    let res = client.modules().token_issue().call(issue("tablet")).await;
+    assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
+    let res = client.modules().add().call(add("bridge", Some(KEY))).await;
+    assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
+    let res = client.modules().remove().call(remove("bridge")).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
 }
 
-/// Handshake не примет выданный токен модуля из `modules.tokens`: выдача —
-/// отказ, а не мёртвый секрет (`06 §9`, конфиг сильнее).
+/// Handshake не примет выданный токен модуля из конфига или реестра: выдача —
+/// отказ, а не мёртвый секрет (`06 §9`, конфиг сильнее, пространство одно).
 #[tokio::test]
-async fn token_issue_for_a_configured_module_is_a_conflict() {
-    let h = common::start_with(common::with_module_tokens).await;
+async fn token_issue_for_a_registered_module_is_a_conflict() {
+    let h = common::start_with(common::with_modules).await;
     let mut kernel = h.kernel_session().await;
     let mut owner = h.client_session().await;
 
     let res = owner
         .modules()
         .token_issue()
-        .call(issue(SVC, TokenKind::Service))
+        .call(issue(common::CLIENT2))
         .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.tokens")),
+        "{res:?}"
+    );
+    let res = owner.modules().token_issue().call(issue(SVC)).await;
+    assert!(
+        matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.services")),
         "{res:?}"
     );
     let res = kernel
@@ -423,10 +687,22 @@ async fn token_issue_for_a_configured_module_is_a_conflict() {
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::system()),
-            ..issue(OTHER, TokenKind::Client)
+            ..issue(OTHER)
         })
         .await;
     assert_eq!(outcome(&res), Outcome::Conflict, "kernel tool: {res:?}");
+
+    owner
+        .modules()
+        .add()
+        .call(add("bridge", Some(KEY)))
+        .await
+        .expect("add");
+    let res = owner.modules().token_issue().call(issue("bridge")).await;
+    assert!(
+        matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.add")),
+        "{res:?}"
+    );
 
     let rows: i64 = h
         .query(|c| Ok(c.query_row("SELECT count(*) FROM module_tokens", [], |r| r.get(0))?))
@@ -442,28 +718,24 @@ async fn a_module_cannot_rotate_the_token_of_its_own_session() {
     let first = owner
         .modules()
         .token_issue()
-        .call(issue("tablet", TokenKind::Client))
+        .call(issue("tablet"))
         .await
         .expect("issue")
         .token;
 
     let mut tablet = h.session(client("tablet")).await;
-    let res = tablet
-        .modules()
-        .token_issue()
-        .call(issue("tablet", TokenKind::Client))
-        .await;
+    let res = tablet.modules().token_issue().call(issue("tablet")).await;
     assert_eq!(outcome(&res), Outcome::Conflict, "{res:?}");
     assert_eq!(
         live(&h, &first).await,
-        Some((ModuleId::from("tablet"), TokenKind::Client)),
+        Some(ModuleId::from("tablet")),
         "the old token still authenticates"
     );
 
     tablet
         .modules()
         .token_issue()
-        .call(issue("bridge", TokenKind::Service))
+        .call(issue("laptop"))
         .await
         .expect("other names are fine");
 }

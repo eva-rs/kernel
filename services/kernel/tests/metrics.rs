@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{CLIENT, Harness, SVC, token, with_module_tokens};
+use common::{CLIENT, Harness, SVC, with_modules};
 use eva_core::{
     CallStep as _,
     service::{chats::Chats as _, inference::Inference as _, persons::Persons as _},
@@ -19,11 +19,11 @@ use eva_protocol::{
     },
     wire::{
         Capabilities,
-        handshake::{Hello, ProtoVersion, Resume},
+        handshake::{Hello, Resume},
     },
 };
 use eva_providers::mock::Script;
-use eva_rpc::{ClientOptions, NoHandler, RpcClient};
+use eva_rpc::NoHandler;
 
 async fn counters(h: &Harness) -> Vec<(String, String, i64)> {
     h.query(|c| {
@@ -45,34 +45,34 @@ fn has(counters: &[(String, String, i64)], metric: &str, key: &str, count: i64) 
 
 #[tokio::test]
 async fn module_sessions_are_counted() {
-    let h = common::start_with(with_module_tokens).await;
-    let (_listening, url) = h.listen().await;
+    let h = common::start_with(with_modules).await;
+    let listener = h.bind_service(SVC).await;
+    let (_listening, _url) = h.listen().await;
     let hello = |resume| Hello {
-        version: String::from("0.1.0"),
-        proto_version: ProtoVersion::CURRENT,
-        token: token(SVC).into(),
-        capabilities: Capabilities::default(),
         resume,
+        ..common::dialed_hello(Capabilities::default())
     };
 
-    let (first, welcome) =
-        RpcClient::connect_with(&url, hello(None), ClientOptions::default(), NoHandler)
-            .await
-            .expect("connects");
+    let (first, welcome) = common::answer(&listener, hello(None), NoHandler)
+        .await
+        .expect("dialed");
     drop(first);
     let resume = Some(Resume {
         session_id: welcome.session_id,
     });
-    let (second, _) =
-        RpcClient::connect_with(&url, hello(resume), ClientOptions::default(), NoHandler)
-            .await
-            .expect("resumes");
-    drop(second);
+    let (second, _) = common::answer(&listener, hello(resume), NoHandler)
+        .await
+        .expect("redialed with resume");
+    // Без слушателя следующий дозвон — провал.
+    drop((second, listener));
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let counters = counters(&h).await;
-        if has(&counters, "modules.disconnected", SVC, 2) {
+        let failed = counters
+            .iter()
+            .any(|(m, k, n)| m == "modules.dial_failed" && k == SVC && *n >= 1);
+        if has(&counters, "modules.disconnected", SVC, 2) && failed {
             assert!(has(&counters, "modules.connected", SVC, 2), "{counters:?}");
             assert!(has(&counters, "modules.reconnects", SVC, 1), "{counters:?}");
             break;

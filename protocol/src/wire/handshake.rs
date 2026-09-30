@@ -9,17 +9,20 @@ use eva::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::{
-    types::{ModelId, ModuleId, SessionId, ToolId, module::TokenKind},
+    types::{ModelId, ModuleId, SessionId, ToolId, module::ModuleKind},
     wire::{Capabilities, ErrorCode},
 };
 
-/// Имени модуля нет: идентичность даёт токен (`06 §2`).
+/// Имени модуля нет: идентичность клиента даёт токен, сервиса — запись
+/// реестра, которую набрало ядро (`06 §2`).
 #[data]
 pub struct Hello {
     /// Версия модуля, для `modules.list`.
     pub version: String,
     pub proto_version: ProtoVersion,
-    pub token: Token,
+    /// Только у клиента; набранный ядром сервис его не шлёт.
+    #[serde(default)]
+    pub token: Option<Token>,
     #[serde(default)]
     pub capabilities: Capabilities,
     /// Тот же процесс, что и прошлая сессия: переносит идемпотентность и незавершённые `tools.call`.
@@ -63,12 +66,12 @@ impl From<&str> for Token {
 #[data]
 pub struct Welcome {
     pub session_id: SessionId,
-    /// Имя записи токена: скоуп `fs`/`sqlite`/`kv` и значение `surface.module`.
+    /// Id записи реестра или токена: скоуп `fs`/`sqlite`/`kv` и значение `surface.module`.
     pub module: ModuleId,
     pub kernel_version: String,
     pub proto_version: ProtoVersion,
-    /// Бит токена: по нему модуль строит свой `Caller`, подменить его нельзя.
-    pub kind: TokenKind,
+    /// Вид соединения: по нему модуль строит свой `Caller`, подменить его нельзя.
+    pub kind: ModuleKind,
     /// Неймспейсы операций, которые ядро обслуживает по RPC.
     #[serde(default)]
     pub services: Vec<String>,

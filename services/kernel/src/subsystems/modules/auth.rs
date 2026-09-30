@@ -1,6 +1,7 @@
-//! Handshake со стороны ядра (`06 §2`, `§3`): токен → id модуля и caller,
-//! разбор capabilities, строка `modules` и вытеснение прежней сессии того
-//! же модуля. Всё это — до `welcome`: первый же запрос модуля
+//! Handshake со стороны ядра (`06 §2`, `§3`): соединение → id модуля и
+//! caller (клиент — по токену, сервис — по записи реестра, которую набрало
+//! ядро), разбор capabilities, строка `modules` и вытеснение прежней сессии
+//! того же модуля. Всё это — до `welcome`: первый же запрос модуля
 //! (`surfaces.create`) опирается на строку `modules`.
 
 use std::time::Duration;
@@ -9,7 +10,7 @@ use eva_core::{Caller, NAMESPACES};
 use eva_protocol::{
     types::{
         ModuleId, SessionId,
-        module::TokenKind,
+        module::ModuleKind,
         tool::{GroupDecl, ToolDecl},
     },
     wire::{
@@ -18,7 +19,7 @@ use eva_protocol::{
         handshake::{Hello, ProtoVersion, Warning, Welcome},
     },
 };
-use eva_rpc::Authenticator;
+use eva_rpc::{Authenticator, Origin};
 
 use crate::{
     components::Components,
@@ -28,7 +29,8 @@ use crate::{
     state::Policy,
     subsystems::modules::{
         cleanup_superseded,
-        live::{Entry, Refused, TokenSource},
+        dial::Attempt,
+        live::{Entry, Refused, Source},
     },
     world::{Demiurge as _, God},
 };
@@ -44,11 +46,13 @@ pub struct KernelAuth<C: Components> {
     shared: Shared<C>,
 }
 
-/// Чей токен предъявлен: id модуля — имя записи, бит прав и откуда запись.
+/// Кто пришёл: id модуля, вид, откуда запись и номер отзыва для `claim`.
 struct Identity {
     module: ModuleId,
-    kind: TokenKind,
-    source: TokenSource,
+    kind: ModuleKind,
+    source: Source,
+    /// `None` — идентичность не отзывается (токен конфига).
+    epoch: Option<u64>,
 }
 
 fn refused() -> RpcError {
@@ -61,31 +65,22 @@ impl<C: Components> KernelAuth<C> {
     }
 
     /// Запись конфига `modules.tokens`, иначе живая строка `module_tokens`;
-    /// выданный тулом токен модулю, которого называет конфиг, не годится.
-    async fn identify(&self, presented: &blake3::Hash) -> Result<Identity, RpcError> {
+    /// выданный токен модулю, которого называет конфиг, не годится.
+    async fn identify(&self, presented: &blake3::Hash) -> Result<(ModuleId, Source), RpcError> {
         let tokens = self.shared.tokens();
-        if let Some((module, kind)) = tokens.find(presented) {
-            return Ok(Identity {
-                module,
-                kind,
-                source: TokenSource::Config,
-            });
+        if let Some(module) = tokens.find(presented) {
+            return Ok((module, Source::ConfigToken));
         }
         match self.issued(presented).await? {
-            Some((module, kind)) if !tokens.configures(&module) => Ok(Identity {
-                module,
-                kind,
-                source: TokenSource::Issued,
-            }),
+            Some(module) if !self.shared.services().shadowed(&module, tokens) => {
+                Ok((module, Source::IssuedToken))
+            }
             _ => Err(refused()),
         }
     }
 
     /// Живой выданный токен по `blake3`: в БД лежит только хэш.
-    async fn issued(
-        &self,
-        presented: &blake3::Hash,
-    ) -> Result<Option<(ModuleId, TokenKind)>, RpcError> {
+    async fn issued(&self, presented: &blake3::Hash) -> Result<Option<ModuleId>, RpcError> {
         let hash = presented.as_bytes().to_vec();
         self.shared
             .db()
@@ -97,22 +92,27 @@ impl<C: Components> KernelAuth<C> {
             .map_err(unverified)
     }
 
-    async fn authorize(&self, hello: &Hello) -> Result<(Identity, u64), RpcError> {
-        if hello.token.expose().is_empty() {
-            return Err(refused());
-        }
-        let presented = blake3::hash(hello.token.expose().as_bytes());
-        let identity = self.identify(&presented).await?;
-        let epoch = self.shared.live().epoch(&identity.module);
+    /// Клиент на слушателе: токен обязателен, UDS от него не освобождает.
+    async fn client(&self, hello: &Hello) -> Result<Identity, RpcError> {
+        let token = match &hello.token {
+            Some(token) if !token.expose().is_empty() => token,
+            _ => return Err(refused()),
+        };
+        let presented = blake3::hash(token.expose().as_bytes());
+        let (module, source) = self.identify(&presented).await?;
+        let epoch = self.shared.live().epoch(&module);
         // Отзыв между первым чтением и номером отзыва прошёл бы незамеченным:
         // выданный токен перечитывается уже после номера.
-        if identity.source == TokenSource::Issued
-            && self.issued(&presented).await?.map(|(module, _)| module)
-                != Some(identity.module.clone())
+        if source == Source::IssuedToken && self.issued(&presented).await?.as_ref() != Some(&module)
         {
             return Err(refused());
         }
-        Ok((identity, epoch))
+        Ok(Identity {
+            module,
+            kind: ModuleKind::Client,
+            source,
+            epoch: (source == Source::IssuedToken).then_some(epoch),
+        })
     }
 }
 
@@ -127,21 +127,37 @@ fn unverified(e: impl std::fmt::Display) -> RpcError {
 }
 
 impl<C: Components> Authenticator for KernelAuth<C> {
-    async fn authenticate(&self, hello: &Hello) -> Result<Welcome, RpcError> {
-        let (identity, epoch) = match self.authorize(hello).await {
-            Ok(found) => found,
-            Err(e) => {
-                tokio::time::sleep(REFUSED_DELAY).await;
-                return Err(e);
-            }
+    type Dialed = Attempt;
+
+    async fn authenticate(
+        &self,
+        hello: &Hello,
+        origin: Origin<'_, Attempt>,
+    ) -> Result<Welcome, RpcError> {
+        let identity = match origin {
+            Origin::Listener => match self.client(hello).await {
+                Ok(identity) => identity,
+                Err(e) => {
+                    tokio::time::sleep(REFUSED_DELAY).await;
+                    return Err(e);
+                }
+            },
+            // PSK уже доказан Noise; номер отзыва прочитан до connect.
+            Origin::Dialed(attempt) => Identity {
+                module: attempt.module.clone(),
+                kind: ModuleKind::Service,
+                source: attempt.source,
+                epoch: Some(attempt.epoch),
+            },
         };
         let Identity {
             module,
             kind,
             source,
+            epoch,
         } = identity;
         let live = self.shared.live();
-        let caller = Caller::from_token(kind, module.clone());
+        let caller = Caller::from_kind(kind, module.clone());
         let now = self.shared.now();
 
         let mut warnings = Vec::new();
@@ -159,15 +175,19 @@ impl<C: Components> Authenticator for KernelAuth<C> {
         if capabilities.events.is_some() {
             entry = entry.with_events(self.shared.bus().subscribe());
         }
-        let issued = (source == TokenSource::Issued).then_some(epoch);
-        match live.claim(module.clone(), entry, issued) {
+        match live.claim(module.clone(), entry, epoch) {
             Ok(Some(old)) => cleanup_superseded(&self.shared, &module, old),
             Ok(None) => {}
             Err(Refused::Revoked) => {
-                return Err(RpcError::new(
-                    ErrorCode::Unauthorized,
-                    format_args!("token of module {module} was revoked during the handshake"),
-                ));
+                let message = match kind {
+                    ModuleKind::Client => {
+                        format!("token of module {module} was revoked during the handshake")
+                    }
+                    ModuleKind::Service => {
+                        format!("module {module} was removed during the handshake")
+                    }
+                };
+                return Err(RpcError::new(ErrorCode::Unauthorized, message));
             }
             Err(Refused::Closing(reason)) => return Err(reason),
         }

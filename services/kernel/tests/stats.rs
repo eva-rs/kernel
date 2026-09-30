@@ -6,7 +6,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Harness, OTHER, Outcome, SVC, outcome};
+use common::{CLIENT, Harness, OTHER, Outcome, SVC, outcome};
 use eva::{
     time::{Clock as _, Date},
     utils::SecretString,
@@ -22,7 +22,7 @@ use eva_protocol::{
     types::{
         ChatId, FolderId, ModelId, ModuleId, SurfaceId, ToolId,
         model::{ModelCaps, ModelDecl, Price},
-        module::{State, TokenKind},
+        module::{Dial, ModuleKind, ServiceAddress, State},
         stats::{BreakReason, GroupBy, Scope, Target},
         turn::{Audience, TurnView},
     },
@@ -696,8 +696,11 @@ async fn health_counters_and_gauges() {
                ('{D1}', 'cron.ok', 'daily', 2), ('{D2}', 'cron.ok', 'daily', 3),
                ('{D1}', 'tools.denied', 'forbidden', 0), ('{D0}', 'cron.failed', 'daily', 1),
                ('{D2}', 'sleep.runs', '', 1);
-             INSERT INTO module_tokens (token_hash, module, kind, issued_via, issued_at)
-               VALUES (x'01', '{SVC}', 'service', 'phone', {t});
+             INSERT INTO module_tokens (token_hash, module, issued_via, issued_at)
+               VALUES (x'01', '{CLIENT}', 'phone', {t});
+             INSERT INTO module_services (module, address, key, added_via, added_at)
+               VALUES ('{SVC}', 'uds:///run/eva-svc/module.sock', 'svc-key', 'phone', {t}),
+                      ('bridge', 'tcp://bridge.lan:7000', 'bridge-key', 'phone', {later});
              INSERT INTO agents (id, parent_chat_id, name, task, tools, master_turn, status, started_at)
                VALUES (2, 1, 'scout', 'look', '[]', 1, 'running', {t});
              INSERT INTO pending (id, chat_id, turn_id, call_id, kind, payload, created_at, expires_at, resolved_at, outcome)
@@ -747,10 +750,30 @@ async fn health_counters_and_gauges() {
         .collect();
     assert_eq!(
         modules,
-        [(SVC, TokenKind::Service, State::Connected)],
-        "modules without a live token have no kind and are left out"
+        [
+            ("bridge", ModuleKind::Service, State::Offline),
+            (CLIENT, ModuleKind::Client, State::Connected),
+            (SVC, ModuleKind::Service, State::Connected),
+        ],
+        "neither a registry entry nor a live token: no kind, left out; a never dialed entry is offline"
     );
-    assert!(gauges.modules[0].capabilities.is_empty());
+    let bridge = &gauges.modules[0];
+    assert_eq!(
+        bridge.since.as_nanos().get(),
+        u64::try_from(t + 60 * SEC).expect("positive"),
+        "since = added_at"
+    );
+    let svc = &gauges.modules[2];
+    assert!(svc.capabilities.is_empty());
+    assert_eq!(
+        svc.dial,
+        Some(Dial {
+            address: ServiceAddress::Uds("/run/eva-svc/module.sock".into()),
+            config: false,
+            error: None,
+        })
+    );
+    assert_eq!(gauges.modules[1].dial, None);
     assert_eq!(gauges.agents_running, 1);
     assert_eq!(gauges.pending_open, 1);
     assert!(gauges.db_bytes > 0);
@@ -767,18 +790,17 @@ async fn health_counters_and_gauges() {
 }
 
 #[tokio::test]
-async fn configured_token_kind_wins() {
+async fn configured_registrations_name_the_kind() {
     let h = common::start_with(|cfg| {
         cfg.modules.tokens.insert(
             ModuleId::from(OTHER),
-            TokenEntry {
-                token: SecretString::Plaintext(String::from("secret")),
-                kind: TokenKind::Client,
-            },
+            TokenEntry::new(SecretString::Plaintext(String::from("secret"))),
         );
+        common::with_service(cfg, SVC);
     })
     .await;
     h.register_module(OTHER).await;
+    h.register_module(SVC).await;
 
     let health::Ok { gauges, .. } = h
         .kernel_session()
@@ -794,9 +816,15 @@ async fn configured_token_kind_wins() {
     let modules: Vec<_> = gauges
         .modules
         .iter()
-        .map(|m| (m.module.as_str(), m.kind))
+        .map(|m| (m.module.as_str(), m.kind, m.dial.as_ref().map(|d| d.config)))
         .collect();
-    assert_eq!(modules, [(OTHER, TokenKind::Client)]);
+    assert_eq!(
+        modules,
+        [
+            (OTHER, ModuleKind::Client, None),
+            (SVC, ModuleKind::Service, Some(true)),
+        ]
+    );
 }
 
 #[tokio::test]

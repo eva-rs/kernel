@@ -3,7 +3,8 @@
 use eva_protocol::{
     requests::stats::chat_spend,
     types::{
-        module::TokenKind,
+        ModuleId,
+        module::{Dial, ModuleKind, State},
         stats::{
             BreakCount, CacheStats, Counter, ModelSpend, ModuleGauge, Money, SeriesPoint, SpendRow,
             ToolUsageRow, TurnSpend,
@@ -200,19 +201,20 @@ pub fn counter(row: CounterRow) -> Counter {
     Counter { metric, key, count }
 }
 
-/// `kind` из конфига сильнее выданного токена; без живого токена gauge не строится.
+/// `kind` и `dial` считает вызывающий; без вида (ни реестра, ни токена) gauge не строится.
 pub fn module(
     row: ModuleRow,
-    config_kind: Option<TokenKind>,
+    kind: Option<ModuleKind>,
+    dial: Option<Dial>,
 ) -> Result<Option<ModuleGauge>, DbError> {
     let ModuleRow {
         module,
-        kind,
+        live_token: _,
         state,
         since,
         capabilities,
     } = row;
-    let Some(kind) = config_kind.or(kind) else {
+    let Some(kind) = kind else {
         return Ok(None);
     };
     let capabilities: Capabilities = rmp_serde::from_slice(&capabilities)
@@ -224,5 +226,18 @@ pub fn module(
         state,
         since,
         capabilities: capabilities.names(),
+        dial,
     }))
+}
+
+/// Запись реестра без строки `modules`: ещё ни разу не дозвонились.
+pub fn unseen_module(module: ModuleId, dial: Dial, since: eva::time::Timestamp) -> ModuleGauge {
+    ModuleGauge {
+        module,
+        kind: ModuleKind::Service,
+        state: State::Offline,
+        since,
+        capabilities: Vec::new(),
+        dial: Some(dial),
+    }
 }

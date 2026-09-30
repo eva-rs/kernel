@@ -1,7 +1,8 @@
-//! Живые сессии модулей (`06 §2`): один id модуля — одна сессия. Повторный
-//! `hello` с токеном того же модуля вытесняет прежнюю; между разными
-//! модулями вытеснения нет, поэтому `local` держат сразу несколько клиентов.
-//! Кто обслуживает surface, выводится отсюда же (`06 §3`): реестра нет.
+//! Живые сессии модулей (`06 §2`): один id модуля — одна сессия. Новая
+//! сессия того же id — повторный `hello` клиента или новый дозвон сервиса —
+//! вытесняет прежнюю; между разными id вытеснения нет, поэтому `local`
+//! держат сразу несколько клиентов. Кто обслуживает surface, выводится
+//! отсюда же (`06 §3`): реестра нет.
 
 use std::{
     collections::BTreeMap,
@@ -13,7 +14,7 @@ use tokio::sync::broadcast;
 
 use eva_core::Caller;
 use eva_protocol::{
-    types::{ModuleId, SessionId, module::TokenKind},
+    types::{ModuleId, SessionId, module::ModuleKind},
     wire::{Capabilities, RpcError},
 };
 use eva_rpc::Peer;
@@ -23,19 +24,21 @@ use crate::{
     db::surfaces::{LOCAL, SurfaceRef},
 };
 
-/// Откуда токен сессии: отзыв и ротация `module_tokens` не трогают сессию
-/// с токеном из конфига.
+/// Откуда идентичность сессии: отзыв токена закрывает только сессии
+/// выданного токена, `modules.remove` — только сессии записи из БД.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenSource {
-    Config,
-    Issued,
+pub enum Source {
+    ConfigToken,
+    IssuedToken,
+    ConfigService,
+    RuntimeService,
 }
 
 #[derive(Debug)]
 pub struct Entry {
     pub session: SessionId,
     pub caller: Caller,
-    pub source: TokenSource,
+    pub source: Source,
     /// Объявленное в `hello`: `tools`/`hooks` исполняются с M2/M4, до тех
     /// пор только хранятся.
     pub capabilities: Capabilities,
@@ -53,7 +56,7 @@ impl Entry {
     pub fn new(
         session: SessionId,
         caller: Caller,
-        source: TokenSource,
+        source: Source,
         capabilities: Capabilities,
         since: Timestamp,
     ) -> Self {
@@ -98,7 +101,8 @@ pub enum Attach {
 /// `hello` опоздал к регистрации сессии.
 #[derive(Debug, Clone)]
 pub enum Refused {
-    /// Отзыв токена застал `hello` между проверкой токена и регистрацией.
+    /// Отзыв токена или `modules.remove` застал `hello` между проверкой
+    /// идентичности и регистрацией.
     Revoked,
     /// Ядро останавливается: сессия, заявленная после `shut_down`, пережила бы его.
     Closing(RpcError),
@@ -121,14 +125,14 @@ impl Live {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Номер отзыва имени: `hello` читает его до проверки токена.
+    /// Номер отзыва имени: `hello` читает его до проверки токена, дозвон — до connect.
     pub fn epoch(&self, module: &ModuleId) -> u64 {
         self.lock().epochs.get(module).copied().unwrap_or_default()
     }
 
     /// Новая сессия имени; прежняя возвращается, её закрывает вызывающий.
-    /// `epoch` — номер, прочитанный до проверки выданного токена: отзыв
-    /// после него значит, что проверка устарела.
+    /// `epoch` — номер, прочитанный до проверки идентичности: отзыв после
+    /// него значит, что проверка устарела.
     pub fn claim(
         &self,
         module: ModuleId,
@@ -175,10 +179,20 @@ impl Live {
     /// закрывается (`06 §9`), с токеном из конфига — живёт; `hello`,
     /// проверивший токен до отзыва, сессию уже не получит.
     pub fn revoke(&self, module: &ModuleId, reason: RpcError) -> bool {
+        self.invalidate(module, Source::IssuedToken, reason)
+    }
+
+    /// `modules.remove`: сессия записи из БД закрывается, попытка дозвона,
+    /// начатая до удаления, сессию уже не получит.
+    pub fn remove(&self, module: &ModuleId, reason: RpcError) -> bool {
+        self.invalidate(module, Source::RuntimeService, reason)
+    }
+
+    fn invalidate(&self, module: &ModuleId, source: Source, reason: RpcError) -> bool {
         let mut live = self.lock();
         *live.epochs.entry(module.clone()).or_default() += 1;
         match live.sessions.get_mut(module) {
-            Some(entry) if entry.source == TokenSource::Issued => {
+            Some(entry) if entry.source == source => {
                 entry.close(reason);
                 true
             }
@@ -250,8 +264,6 @@ fn serves(module: &ModuleId, entry: &Entry, surface: &SurfaceRef) -> bool {
     entry.closing.is_none()
         && match &surface.module {
             Some(creator) => creator == module,
-            None => {
-                surface.id.as_str() == LOCAL && entry.caller.token_kind() == Some(TokenKind::Client)
-            }
+            None => surface.id.as_str() == LOCAL && entry.caller.kind() == Some(ModuleKind::Client),
         }
 }

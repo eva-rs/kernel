@@ -310,7 +310,6 @@ const PAIRS: &[Pair] = &[
         variants::<chat::ExternalKind>,
     ),
     pair("modules", "state", variants::<module::State>),
-    pair("module_tokens", "kind", variants::<module::TokenKind>),
     pair("agents", "status", variants::<agent::Status>),
     pair("pending", "kind", variants::<turn::PendingKind>),
     pair("pending", "outcome", variants::<turn::PendingOutcome>),

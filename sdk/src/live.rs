@@ -1,13 +1,14 @@
 //! `Kernel` модуля: каждый вызов берёт текущее соединение, поэтому ручка,
-//! взятая до реконнекта, после него ведёт в новую сессию.
+//! взятая до смены соединения, после неё ведёт в новую сессию.
 //!
-//! Вызов на закрытом соединении при живом `run` ждёт реконнекта до
-//! `CALL_RECONNECT_WAIT`. Оборванные в полёте чтение и открытие потока
-//! повторяются на новом соединении, мутация — с тем же id запроса, только
-//! если ядро продолжило окно идемпотентности (`welcome.resumed`, `06 §5`) и
-//! не исполнит её второй раз; иначе (рестарт ядра) исход неизвестен, и она
-//! отвечает `Aux::Unavailable`. Загрузка отвечает `Aux::Unavailable`
-//! (`11 §6`): её тело уже прочитано.
+//! Вызов на закрытом соединении ждёт нового до `CALL_RECONNECT_WAIT`, пока
+//! новое возможно: у клиента жив `run`, у сервиса — приём соединений ядра.
+//! Оборванные в полёте чтение и открытие потока повторяются на новом
+//! соединении, мутация — с тем же id запроса, только если ядро продолжило
+//! окно идемпотентности (`welcome.resumed`, `06 §5`) и не исполнит её второй
+//! раз; иначе (рестарт ядра) исход неизвестен, и она отвечает
+//! `Aux::Unavailable`. Загрузка отвечает `Aux::Unavailable` (`11 §6`): её
+//! тело уже прочитано.
 
 use std::{
     marker::PhantomData,
@@ -37,7 +38,7 @@ type Rpc = Session<RpcSession>;
 /// ради незавершённого `tools.call` (`modules.call_reconnect_grace`).
 pub const CALL_RECONNECT_WAIT: Duration = Duration::from_secs(30);
 
-/// Текущее соединение модуля; меняется на реконнекте.
+/// Текущее соединение модуля; меняется с каждым новым.
 pub(crate) struct Current {
     pub client: RpcClient,
     pub welcome: Welcome,
@@ -50,8 +51,10 @@ struct Phase {
     /// Растёт с каждым соединением, не продолжившим окно идемпотентности
     /// прошлого: id мутаций из старого окна новому ядру неизвестны.
     window: u64,
-    /// `run` жив и умеет переподключаться: только тогда закрытое соединение стоит ждать.
+    /// Новое соединение возможно: только тогда закрытое стоит ждать.
     reconnects: bool,
+    /// Модуль остановлен: новых соединений не будет.
+    closed: bool,
 }
 
 /// Текущее соединение и его смены.
@@ -76,25 +79,48 @@ impl Link {
                 generation: 0,
                 window: 0,
                 reconnects: false,
+                closed: false,
             }),
         }
     }
 
-    /// Новое соединение — текущее; ждущие вызовы просыпаются.
-    pub fn install(&self, current: Current) {
+    /// Новое соединение — текущее; ждущие вызовы просыпаются. Отдаёт
+    /// прежнее; после `close` новое не ставится, а закрывается.
+    pub fn install(&self, current: Current) -> Option<Current> {
         let resumed = current.welcome.resumed;
-        let previous = {
-            let mut slot = self.current.write().unwrap_or_else(PoisonError::into_inner);
-            // Поколение меняется под той же блокировкой: снимок видит клиента и номер согласованно.
-            self.phase.send_modify(|p| {
-                p.generation += 1;
-                if !resumed {
-                    p.window += 1;
-                }
-            });
-            slot.replace(current)
-        };
-        drop(previous);
+        let mut slot = self.current.write().unwrap_or_else(PoisonError::into_inner);
+        if self.phase.borrow().closed {
+            current.client.peer().close(shutting_down());
+            return None;
+        }
+        // Поколение меняется под той же блокировкой: снимок видит клиента и номер согласованно.
+        self.phase.send_modify(|p| {
+            p.generation += 1;
+            if !resumed {
+                p.window += 1;
+            }
+        });
+        slot.replace(current)
+    }
+
+    /// Остановка модуля: текущее соединение закрывается, новые не ставятся.
+    pub fn close(&self) {
+        let slot = self.current.write().unwrap_or_else(PoisonError::into_inner);
+        self.phase.send_modify(|p| p.closed = true);
+        if let Some(current) = slot.as_ref() {
+            current.client.peer().close(shutting_down());
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.phase.borrow().closed
+    }
+
+    /// Ждёт первого соединения; `None` — модуль остановлен раньше.
+    pub async fn first(self: &Arc<Self>) -> Option<Kernel> {
+        let mut phase = self.phase.subscribe();
+        _ = phase.wait_for(|p| p.generation > 0 || p.closed).await;
+        self.kernel()
     }
 
     pub fn current<T>(&self, f: impl FnOnce(&Current) -> T) -> Option<T> {
@@ -105,7 +131,7 @@ impl Link {
             .map(f)
     }
 
-    /// Пока жив guard, вызовы на закрытом соединении ждут реконнекта.
+    /// Пока жив guard, вызовы на закрытом соединении ждут нового.
     pub fn reconnecting(&self) -> Reconnecting<'_> {
         self.phase.send_modify(|p| p.reconnects = true);
         Reconnecting(self)
@@ -136,7 +162,10 @@ impl Link {
         let mut phase = self.phase.subscribe();
         loop {
             // Флаг читается до снимка: смена между ними разбудит `changed`.
-            let reconnects = phase.borrow_and_update().reconnects;
+            let reconnects = {
+                let phase = phase.borrow_and_update();
+                phase.reconnects && !phase.closed
+            };
             let live = self.snapshot()?;
             if stale != Some(live.generation) && !live.peer.is_closed() {
                 return Ok(live);
@@ -215,6 +244,10 @@ fn cut<T, E>(result: &Response<T, E>, peer: &Peer) -> Option<String> {
     };
     let reason = peer.close_reason()?;
     (reason.clone().into_aux() == *aux).then_some(reason.message)
+}
+
+pub(crate) fn shutting_down() -> RpcError {
+    RpcError::new(ErrorCode::Unavailable, "module is shutting down")
 }
 
 /// Обрыв — `Aux::Unavailable` при любой причине закрытия (`11 §6`), вытеснение тоже.

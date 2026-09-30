@@ -5,21 +5,23 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use eva::{bytesize::ByteSize, data, time::HumanDuration, utils::SecretString};
 
-use eva_protocol::types::{ModuleId, module::TokenKind};
+use eva_protocol::types::{ModuleId, module::ServiceAddress};
 use eva_rpc::config::{FileMode, Listen, UdsListen};
 
 #[data]
 #[serde(default)]
 pub struct ModulesConfig {
-    /// Относительный путь сокета — от `system.state_dir`.
+    /// Слушатели клиентов; относительный путь сокета — от `system.state_dir`.
     pub listen: Vec<Listen>,
     /// `handshake_timeout`, `ping_*`, `request_timeout`, `stream_*`, `max_inflight`,
     /// `max_streams`, `max_frame`, `max_hello`, `blob_chunk`, `idempotency_window`,
     /// `proto_min_major`.
     #[serde(flatten)]
     pub transport: eva_rpc::Config,
-    /// Ключ — id модуля; токен конфига сильнее выданного тулом (`module_tokens`).
+    /// Ключ — id клиента; токен конфига сильнее выданного (`module_tokens`).
     pub tokens: BTreeMap<ModuleId, TokenEntry>,
+    /// Ключ — id сервиса, которого набирает ядро; запись сильнее `modules.add`.
+    pub services: BTreeMap<ModuleId, ServiceEntry>,
     pub call_reconnect_grace: HumanDuration,
     pub offline_forget: HumanDuration,
     pub hooks: HooksConfig,
@@ -49,6 +51,7 @@ impl Default for ModulesConfig {
             })],
             transport: eva_rpc::Config::default(),
             tokens: BTreeMap::new(),
+            services: BTreeMap::new(),
             call_reconnect_grace: secs(30),
             offline_forget: secs(7 * 24 * 60 * 60),
             hooks: HooksConfig::default(),
@@ -74,12 +77,29 @@ const fn secs(n: u64) -> HumanDuration {
     HumanDuration(Duration::from_secs(n))
 }
 
-/// Токен модуля из конфига: секрет и единственный бит прав.
+/// Токен клиента из конфига.
 #[data]
 pub struct TokenEntry {
     /// `{plaintext: …}` или `{file: …}`; читается один раз на старте.
     pub token: SecretString,
-    pub kind: TokenKind,
+    /// Сервис с токеном — ошибка старта, а не молча клиент: он живёт в `modules.services`.
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
+    pub kind: Option<serde::de::IgnoredAny>,
+}
+
+impl TokenEntry {
+    pub const fn new(token: SecretString) -> Self {
+        Self { token, kind: None }
+    }
+}
+
+/// Сервис из конфига: куда звонить и общий с модулем секрет PSK (`06 §2.1`).
+#[data]
+pub struct ServiceEntry {
+    pub address: ServiceAddress,
+    /// `{plaintext: …}` или `{file: …}`; читается один раз на старте.
+    pub key: SecretString,
 }
 
 #[data]

@@ -22,8 +22,14 @@ use eva_protocol::{
     },
     types::{
         BlobId, ChatId, EventId, FolderId, HandsGrantId, MemoryId, ModuleId, PendingId, PersonId,
-        RunId, SurfaceId, blob, chat::ExternalKind, content::Block, folder, hands::GrantKind,
-        module::TokenKind, stats::Scope, turn::Answer,
+        RunId, SurfaceId, blob,
+        chat::ExternalKind,
+        content::Block,
+        folder,
+        hands::GrantKind,
+        module::{ServiceAddress, ServiceKey},
+        stats::Scope,
+        turn::Answer,
     },
 };
 
@@ -89,6 +95,9 @@ const MATRIX: &[(&str, [Outcome; 5])] = &[
     ("stats.chat_spend", [K, K, K, F, F]),
     ("stats.health", [K, K, F, F, F]),
     ("modules.list", [K, K, F, F, F]),
+    // Дозвон на произвольный адрес наводит только клиент хозяина.
+    ("modules.add", [F, K, F, F, F]),
+    ("modules.remove", [F, K, F, F, F]),
     ("modules.token_issue", [K, K, F, F, F]),
     ("modules.token_revoke", [K, K, F, F, F]),
     ("hands_grants.list", [K, K, F, F, F]),
@@ -311,6 +320,15 @@ fn put_args(chat: ChatId) -> blobs::put::Meta {
         kind: blob::Kind::File,
         size: 3,
         hash: None,
+    }
+}
+
+/// Сервис по адресу, где никто не слушает: ядро здесь без `listen`, не звонит.
+fn service_args(module: &str) -> modules::add::Args {
+    modules::add::Args {
+        module: ModuleId::from(module),
+        address: ServiceAddress::Uds(format!("/run/eva-{module}/module.sock").into()),
+        key: Some(ServiceKey::from("policy-key-0123456789abcdef0123456789")),
     }
 }
 
@@ -990,6 +1008,35 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .call(modules::list::Args::default())
                 .await,
         ),
+        "modules.add" => outcome(
+            &ctx.s()
+                .await
+                .modules()
+                .add()
+                .call(service_args(&format!("added{n}")))
+                .await,
+        ),
+        "modules.remove" => {
+            let module = format!("removed{n}");
+            ctx.h
+                .client_session()
+                .await
+                .modules()
+                .add()
+                .call(service_args(&module))
+                .await
+                .expect("service to remove");
+            outcome(
+                &ctx.s()
+                    .await
+                    .modules()
+                    .remove()
+                    .call(modules::remove::Args {
+                        module: ModuleId::from(module),
+                    })
+                    .await,
+            )
+        }
         "modules.token_issue" => outcome(
             &ctx.s()
                 .await
@@ -997,7 +1044,6 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .token_issue()
                 .call(modules::token_issue::Args {
                     module: ModuleId::from(format!("issued{n}")),
-                    kind: TokenKind::Service,
                     // Личность выдавшего называет только ядро: у него нет своего модуля.
                     issued_by: ctx.caller.is_kernel().then(PersonId::system),
                 })
@@ -1012,7 +1058,6 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .token_issue()
                 .call(modules::token_issue::Args {
                     module: module.clone(),
-                    kind: TokenKind::Service,
                     issued_by: None,
                 })
                 .await

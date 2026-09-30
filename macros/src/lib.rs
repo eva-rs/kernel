@@ -73,6 +73,8 @@ pub fn endpoints(args: TokenStream) -> TokenStream {
         })
         .service("modules", |svc| {
             svc.method("list")
+                .method_with("add", mutating)
+                .method_with("remove", mutating)
                 .method_with("token_issue", mutating)
                 .method_with("token_revoke", mutating)
         })

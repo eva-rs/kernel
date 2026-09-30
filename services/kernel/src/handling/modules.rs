@@ -1,29 +1,42 @@
-//! Хендлеры `modules.*` (`06 §2`, `§9`, `10 §2.6`): список модулей и
-//! токены, выданные хозяином. Хранится только `blake3(token)`.
+//! Хендлеры `modules.*` (`06 §2`, `§9`, `10 §2.6`): список модулей, реестр
+//! сервисов `modules.add/remove` и токены клиентов, выданные хозяином.
+//! Токен хранится как `blake3(token)`, ключ сервиса — как есть: ядро само им
+//! дозванивается.
+
+use std::collections::BTreeMap;
 
 use eva::rand::Rng as _;
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
         Response,
-        modules::{list, token_issue, token_revoke},
+        modules::{add, list, remove, token_issue, token_revoke},
     },
-    types::ModuleId,
+    types::{
+        ModuleId,
+        module::{ModuleKind, ServiceKey},
+    },
     wire::{ErrorCode, RpcError},
 };
+use eva_rpc::Psk;
 
 use crate::{
     components::Components,
     convert,
     db::{
-        Db as _, Queries as _,
-        modules::TokenRow,
+        Db as _, DbResult, Queries as _,
+        modules::{ServiceRow, TokenRow},
         surfaces::{LOCAL, SYSTEM},
     },
+    shared::Shared,
     state::{Policy, State},
+    subsystems::modules::{
+        live::Source,
+        services::{Listed, Service, WEAK_KEY, trimmed},
+    },
 };
 
-/// Id, которые не бывают именем токена (`06 §2`): их занимают ядро и builtin surface.
+/// Id, которые не бывают id модуля (`06 §2`): их занимают ядро и builtin surface.
 pub const RESERVED: &[&str] = &["kernel", SYSTEM, LOCAL];
 
 /// Имя модуля — ещё и каталог его `fs`/`sqlite`: `[a-z][a-z0-9_-]{0,63}`.
@@ -35,6 +48,48 @@ pub fn check_name(module: &ModuleId) -> AuxResult<()> {
     ok.true_or(Aux::Invalid(format!(
         "module name {module:?} must match [a-z][a-z0-9_-]{{0,63}}"
     )))
+}
+
+fn check_id(module: &ModuleId) -> AuxResult<()> {
+    (!RESERVED.contains(&module.as_str()))
+        .true_or(Aux::Invalid(format!("module id {module} is reserved")))?;
+    check_name(module)
+}
+
+/// Реестр сервисов для списков: конфиг и незатенённые строки `module_services`.
+pub fn registry<C: Components>(
+    shared: &Shared<C>,
+    rows: Vec<ServiceRow>,
+) -> BTreeMap<ModuleId, Listed> {
+    let rows = rows
+        .into_iter()
+        .filter_map(|row| match convert::module::service_address(&row) {
+            Ok(address) => Some((row.module, address, row.added_at)),
+            Err(e) => {
+                log::error!(error:% = e; "module_services row is not listable");
+                None
+            }
+        })
+        .collect();
+    shared
+        .services()
+        .listed(rows, shared.tokens(), shared.started_at())
+}
+
+/// Запись реестра — сервис; токен конфига или живой выданный — клиент.
+pub fn kind<C: Components>(
+    shared: &Shared<C>,
+    registry: &BTreeMap<ModuleId, Listed>,
+    module: &ModuleId,
+    live_token: bool,
+) -> Option<ModuleKind> {
+    if registry.contains_key(module) {
+        Some(ModuleKind::Service)
+    } else if live_token || shared.tokens().configures(module) {
+        Some(ModuleKind::Client)
+    } else {
+        None
+    }
 }
 
 #[eva::endpoint]
@@ -53,18 +108,138 @@ pub async fn List<C: Components>(
     Policy::new(caller).owner()?;
 
     let db = db_conn.acquire(shared).await?;
-    let rows = db.run(|c| c.modules().list()).await?;
-    let tokens = &shared.cfg().modules.tokens;
+    let (rows, services) = db
+        .run(|c| DbResult::Ok((c.modules().list()?, c.modules().services()?)))
+        .await?;
+    let mut registry = registry(shared, services);
 
-    Ok(list::Ok {
-        modules: rows
+    let mut modules: Vec<_> = rows
+        .into_iter()
+        .map(|row| {
+            let kind = kind(shared, &registry, &row.name, row.live_token);
+            let dial = registry.remove(&row.name).map(|listed| listed.dial);
+            convert::module::from_db(row, kind, dial)
+        })
+        .collect();
+    modules.extend(
+        registry
             .into_iter()
-            .map(|row| {
-                let config = tokens.get(&row.name).map(|t| t.kind);
-                convert::module::from_db(row, config)
-            })
-            .collect(),
+            .map(|(name, listed)| convert::module::unseen(name, listed.dial, listed.since)),
+    );
+    modules.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(list::Ok { modules })
+}
+
+#[eva::endpoint]
+#[fastrace::trace]
+pub async fn Add<C: Components>(
+    state: &mut State<C>,
+    args: add::Args,
+) -> Response<add::Ok, add::Err> {
+    let State {
+        shared,
+        world,
+        caller,
+        ..
+    } = state;
+    let added_via = Policy::new(caller).client()?.clone();
+    let add::Args {
+        module,
+        address,
+        key,
+    } = args;
+    check_id(&module)?;
+
+    let (key, generated) = match key {
+        Some(key) => {
+            let len = trimmed(key.expose()).chars().count();
+            (len >= WEAK_KEY).true_or(Aux::Invalid(format!(
+                "key must be a high-entropy secret of at least {WEAK_KEY} characters: a guessable key is brute-forced offline from one captured handshake"
+            )))?;
+            (key.0, false)
+        }
+        None => {
+            let secret: [u8; 32] = world.rng().random();
+            (convert::blob::hex(&secret), true)
+        }
+    };
+    // Конфиг сильнее: его id заняты без обращения к БД.
+    if shared.services().shadowed(&module, shared.tokens()) {
+        return Err(errors::modules::Taken { module }.spec());
+    }
+
+    let services = shared.services();
+    let _ops = services.ops().await;
+    let row = ServiceRow {
+        module: module.clone(),
+        address: address.to_string(),
+        key: key.clone(),
+        added_via,
+        added_at: world.now(),
+    };
+    shared
+        .db()
+        .write(move |tx| -> Response<(), add::Err> {
+            let modules = tx.modules();
+            if modules.service_exists(&row.module)? || modules.has_live_token(&row.module)? {
+                return Err(errors::modules::Taken {
+                    module: row.module.clone(),
+                }
+                .spec());
+            }
+            modules.insert_service(&row)?;
+            Ok(())
+        })
+        .await?;
+
+    log::info!(module:% = module, address:% = address, generated, caller = caller.label(); "service module added");
+    services.start(
+        module,
+        Service {
+            address,
+            psk: Psk::derive(trimmed(&key)),
+            source: Source::RuntimeService,
+        },
+    );
+    Ok(add::Ok {
+        key: generated.then_some(ServiceKey(key)),
     })
+}
+
+#[eva::endpoint]
+#[fastrace::trace]
+pub async fn Remove<C: Components>(
+    state: &mut State<C>,
+    args: remove::Args,
+) -> Response<remove::Ok, remove::Err> {
+    let State { shared, caller, .. } = state;
+    Policy::new(caller).client()?;
+    let remove::Args { module } = args;
+
+    let services = shared.services();
+    (!services.configures(&module)).true_or(Aux::Conflict(format!(
+        "modules.services configures module {module}: remove it from the config"
+    )))?;
+
+    let _ops = services.ops().await;
+    let name = module.clone();
+    let deleted = shared
+        .db()
+        .write(move |tx| tx.modules().delete_service(&name))
+        .await
+        .aux_err()?;
+    if !deleted {
+        return Err(errors::modules::ServiceNotFound { module }.spec());
+    }
+
+    // Номер отзыва — раньше остановки петли: попытка в полёте сессией не станет.
+    shared.live().remove(
+        &module,
+        RpcError::new(ErrorCode::Unauthorized, "module removed"),
+    );
+    services.stop(&module);
+    log::info!(module:% = module, caller = caller.label(); "service module removed");
+    Ok(remove::Ok {})
 }
 
 #[eva::endpoint]
@@ -82,15 +257,9 @@ pub async fn TokenIssue<C: Components>(
     Policy::new(caller)
         .modules()
         .issue(&args.module, args.issued_by.as_ref())?;
-    let token_issue::Args {
-        module,
-        kind,
-        issued_by,
-    } = args;
+    let token_issue::Args { module, issued_by } = args;
 
-    (!RESERVED.contains(&module.as_str()))
-        .true_or(Aux::Invalid(format!("module id {module} is reserved")))?;
-    check_name(&module)?;
+    check_id(&module)?;
     let issued_via = caller.module().cloned();
     (issued_by.is_some() || issued_via.is_some()).true_or(Aux::Invalid(
         "issued_by is required when the kernel issues a token".into(),
@@ -99,13 +268,15 @@ pub async fn TokenIssue<C: Components>(
     (!shared.tokens().configures(&module)).true_or(Aux::Conflict(format!(
         "modules.tokens configures module {module}: change its token in the config"
     )))?;
+    (!shared.services().configures(&module)).true_or(Aux::Conflict(format!(
+        "modules.services configures module {module}: a service authenticates by its key"
+    )))?;
 
     let secret: [u8; 32] = world.rng().random();
     let token = convert::blob::hex(&secret);
     let row = TokenRow {
         hash: blake3::hash(token.as_bytes()).as_bytes().to_vec(),
         module: module.clone(),
-        kind,
         issued_by,
         issued_via,
         issued_at: world.now(),
@@ -114,14 +285,19 @@ pub async fn TokenIssue<C: Components>(
     let revoked = shared
         .db()
         .write(move |tx| -> Response<usize, token_issue::Err> {
+            let modules = tx.modules();
+            (!modules.service_exists(&row.module)?).true_or(Aux::Conflict(format!(
+                "module {} is a service added by modules.add: it authenticates by its key",
+                row.module
+            )))?;
             if let Some(person) = &row.issued_by {
-                tx.modules()
+                modules
                     .person_exists(person)?
                     .true_or(Aux::NotFound(format!("person {person}")))?;
             }
             // Один живой токен на модуль: выдача нового — ротация.
-            let revoked = tx.modules().revoke_tokens(&row.module, row.issued_at)?;
-            tx.modules().insert_token(&row)?;
+            let revoked = modules.revoke_tokens(&row.module, row.issued_at)?;
+            modules.insert_token(&row)?;
             Ok(revoked)
         })
         .await?;
@@ -132,7 +308,7 @@ pub async fn TokenIssue<C: Components>(
             RpcError::new(ErrorCode::Unauthorized, "module token rotated"),
         );
     }
-    log::info!(module:% = module, kind:% = kind, revoked, caller = caller.label(); "module token issued");
+    log::info!(module:% = module, revoked, caller = caller.label(); "client token issued");
     Ok(token_issue::Ok { token })
 }
 

@@ -21,8 +21,8 @@ use eva_protocol::{
 use eva_rpc::{ClientOptions, ConnectError, NoHandler, RpcClient, codec, config::Config};
 
 use crate::{
-    harness::{Harness, Via, config, hello, ms},
-    kernel::{CLIENT, CLIENT_TOKEN, FLOOD_ITEMS, SERVICE, SERVICE_TOKEN, chat, chat_id, item},
+    harness::{Dial, Harness, Via, config, hello, ms, service_hello},
+    kernel::{CLIENT, CLIENT_TOKEN, FLOOD_ITEMS, SERVICE, chat, chat_id, item},
 };
 
 macro_rules! both {
@@ -306,14 +306,19 @@ async fn bad_token(via: Via) {
 async fn caller_from_welcome(via: Via) {
     let mut h = Harness::start(via).await;
 
-    // Имени модуля в `hello` нет: id и caller — из записи токена.
+    // Имени модуля в `hello` нет: id и caller клиента — из записи токена,
+    // сервиса — из записи, которую набрало ядро.
     let (client, accepted) = h.connect(CLIENT_TOKEN).await;
     assert_eq!(client.caller(), &accepted.caller);
     assert!(client.caller().is_owner());
     assert_eq!(client.welcome().module.as_str(), CLIENT);
     assert_eq!(client.caller().module().map(|m| m.as_str()), Some(CLIENT));
 
-    let (service, accepted) = h.connect(SERVICE_TOKEN).await;
+    let dial = match via {
+        Via::Uds => Dial::Uds,
+        Via::Ws => Dial::Tcp,
+    };
+    let (service, accepted) = h.dial_with(dial, service_hello(), NoHandler).await;
     assert_eq!(service.caller(), &accepted.caller);
     assert!(!service.caller().is_owner());
     assert_eq!(accepted.welcome.module.as_str(), SERVICE);

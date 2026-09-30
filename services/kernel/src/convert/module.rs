@@ -1,14 +1,22 @@
 //! Модуль (`06 §9`) → тип протокола.
 
+use eva::time::Timestamp;
+
 use eva_protocol::{
-    types::module::{Module, TokenKind},
+    types::{
+        ModuleId,
+        module::{Dial, Module, ModuleKind, ServiceAddress, State},
+    },
     wire::Capabilities,
 };
 
-use crate::db::modules::ModuleRow;
+use crate::db::{
+    DbError,
+    modules::{ModuleRow, ServiceRow},
+};
 
-/// `config_kind` — токен из `modules.tokens`: конфиг сильнее выданного.
-pub fn from_db(row: ModuleRow, config_kind: Option<TokenKind>) -> Module {
+/// `kind` и `dial` считает вызывающий: конфиг сильнее строк БД.
+pub fn from_db(row: ModuleRow, kind: Option<ModuleKind>, dial: Option<Dial>) -> Module {
     let ModuleRow {
         name,
         state,
@@ -17,7 +25,7 @@ pub fn from_db(row: ModuleRow, config_kind: Option<TokenKind>) -> Module {
         capabilities,
         first_seen_at: _,
         last_seen_at,
-        token,
+        live_token: _,
     } = row;
 
     let capabilities = match rmp_serde::from_slice::<Capabilities>(&capabilities) {
@@ -30,11 +38,35 @@ pub fn from_db(row: ModuleRow, config_kind: Option<TokenKind>) -> Module {
 
     Module {
         name,
-        kind: config_kind.or(token),
+        kind,
         state,
         version,
         proto_version,
         since: last_seen_at,
         capabilities,
+        dial,
     }
+}
+
+/// Запись реестра, которую ещё ни разу не дозвонили: строки `modules` нет.
+pub fn unseen(name: ModuleId, dial: Dial, since: Timestamp) -> Module {
+    Module {
+        name,
+        kind: Some(ModuleKind::Service),
+        state: State::Offline,
+        version: String::new(),
+        proto_version: String::new(),
+        since,
+        capabilities: Vec::new(),
+        dial: Some(dial),
+    }
+}
+
+pub fn service_address(row: &ServiceRow) -> Result<ServiceAddress, DbError> {
+    ServiceAddress::parse(&row.address).map_err(|e| {
+        DbError::corrupt(format_args!(
+            "module_services.address of {}: {e}",
+            row.module
+        ))
+    })
 }

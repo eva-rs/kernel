@@ -8,7 +8,7 @@
 | `macros/` | `eva-kernel-macros` | список операций `endpoints!`: трейты неймспейсов и X-макро `for_each_op!` |
 | `core/` | `eva-core` | `Session`, `CallStep`, трейты неймспейсов и `for_each_op!` из списка операций, `Caller`, трейт `Provider`, `prelude` |
 | `rpc/` | `eva-rpc` | кадры msgpack, транспорты uds/ws/wss, симметричный пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
-| `sdk/` | `eva-sdk` | `Module` → `Connected`: SDK для модулей |
+| `sdk/` | `eva-sdk` | `Module` → `Listening` / `Connected`: SDK для модулей |
 | `providers/openai/`, `providers/mock/` | `eva-provider-*` | `impl Provider` одного вендора |
 | `providers/all/` | `eva-providers` | `ProviderConfig` под тегом `kind`, `AnyProvider`, `build` |
 | `services/kernel/` | `eva-kernel` | библиотека ядра и бинарь `eva-kernel` |
@@ -112,7 +112,7 @@ flowchart LR
    - правило доступа — в `state/policy/<ns>.rs`;
    - хендлер `pub async fn Op<C: Components>(state: &mut State<C>, args) -> Response<Ok, Err>` — в `handling/<ns>.rs`; у потока `Ok` — `Items`, у загрузки тело — `args.body`;
    - строка `fn op() = h::Op;` в блоке `project!` — в `impls/<ns>.rs`; без неё трейт неймспейса не соберётся.
-5. **Тесты.** Строка в `services/kernel/tests/contract.rs`: операция проходит и в процессе (`Kernel<Test>`), и по настоящему UDS через `eva-sdk`, а ответы сверяются побайтно в msgpack. Строка в матрице `services/kernel/tests/k3_policy_all.rs`: исход операции для каждого вызывающего (ядро, клиент, свой сервис, чужой сервис, сервис против `local`/`system`). Поведение и политика — в доменном файле `services/kernel/tests/<ns>.rs`.
+5. **Тесты.** Строка в `services/kernel/tests/contract.rs`: операция проходит и в процессе (`Kernel<Test>`), и через `eva-sdk` по настоящим сокетам (клиент звонит на UDS ядра, сервис ядро набирает по uds и tcp под Noise), а ответы сверяются побайтно в msgpack. Строка в матрице `services/kernel/tests/k3_policy_all.rs`: исход операции для каждого вызывающего (ядро, клиент, свой сервис, чужой сервис, сервис против `local`/`system`). Поведение и политика — в доменном файле `services/kernel/tests/<ns>.rs`.
 
 Тестовый харнесс (`services/kernel/tests/common/`) собирает `Kernel<Test>` на временном каталоге: часы двигает тест, провайдер — `mock`, руки — `Hands::local` в песочнице; отказы БД и рук включаются флагом. Набор подменяемых компонентов задаёт трейт `Components` (`Real` — боевой).
 

@@ -146,14 +146,14 @@ async fn a_database_failure_before_the_token_is_accepted_stays_in_the_log() {
     };
     use eva_rpc::{ClientOptions, ConnectError, NoHandler, RpcClient};
 
-    let h = common::start_with(common::with_module_tokens).await;
+    let h = common::start_with(common::with_modules).await;
     let (_listening, url) = h.listen().await;
     h.db_fail.store(true, Ordering::Relaxed);
 
     let hello = Hello {
         version: String::from("1.0.0"),
         proto_version: ProtoVersion::CURRENT,
-        token: "not-a-config-token".into(),
+        token: Some("not-a-config-token".into()),
         capabilities: Capabilities::default(),
         resume: None,
     };

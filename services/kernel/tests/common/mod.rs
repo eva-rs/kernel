@@ -3,8 +3,9 @@
 //! песочнице, отказы БД и рук по флагу; `Harness::listen` поднимает UDS
 //! поверх того же ядра. Каждый файл `tests/*.rs` берёт отсюда нужное.
 //!
-//! Модули по UDS: `start_with(with_module_tokens)`, затем `h.listen()` →
-//! `(Listening, Url)`; токен модуля — `token(name)`.
+//! Модули: `start_with(with_modules)`; клиенты звонят по `Url` из
+//! `h.listen()` с `token(name)`, сервисы слушают `h.bind_service(name)` до
+//! `h.listen()` и отвечают ядру через `answer`.
 
 #![allow(dead_code)]
 
@@ -32,15 +33,21 @@ use eva_protocol::{
     types::{
         ChatId, ModelId, ModuleId, SessionId, SurfaceId,
         model::{ModelCaps, ModelDecl, ProviderDecl},
-        module::TokenKind,
+        module::{ModuleKind, ServiceAddress},
     },
-    wire::Capabilities,
+    wire::{
+        Capabilities,
+        handshake::{Hello, ProtoVersion, Welcome},
+    },
 };
 use eva_providers::{
     AnyProvider, ProviderConfig,
     mock::{self, MockProvider},
 };
-use eva_rpc::config::{FileMode, Listen, UdsListen};
+use eva_rpc::{
+    ClientOptions, ConnectError, ModuleHandler, Psk, RpcClient, ServiceListener,
+    config::{FileMode, Listen, ServiceListen, UdsListen},
+};
 
 use eva_kernel::{
     Components, Config, Kernel, Parts, Session,
@@ -49,14 +56,14 @@ use eva_kernel::{
         WorkConfig,
         hands::{EndpointConfig, HandsLimits},
         llm::ProviderEntry,
-        modules::TokenEntry,
+        modules::{ServiceEntry, TokenEntry},
     },
     db::{Connection, Db, DbError, DbResult, Queries as _, Reader, Sqlite, Tx},
     hands::Machine,
     providers::KernelProvider,
     subsystems::modules::{
         self, Listening,
-        live::{Entry as LiveEntry, TokenSource},
+        live::{Entry as LiveEntry, Source},
     },
     world::testing,
 };
@@ -254,29 +261,131 @@ pub fn mock_config() -> mock::Config {
     }
 }
 
-/// Токен модуля харнесса в `modules.tokens` (`with_module_tokens`).
+/// Токен клиента харнесса в `modules.tokens` (`with_modules`).
 pub fn token(module: &str) -> String {
     format!("{module}-token")
 }
 
-/// `modules.tokens`: клиенты `CLIENT`, `CLIENT2`, сервисы `SVC`, `OTHER`.
-pub fn with_module_tokens(cfg: &mut Config) {
-    let entries = [
-        (CLIENT, TokenKind::Client),
-        (CLIENT2, TokenKind::Client),
-        (SVC, TokenKind::Service),
-        (OTHER, TokenKind::Service),
-    ];
-    for (module, kind) in entries {
+/// Ключ сервиса харнесса в `modules.services` (`with_modules`): не короче 32 символов.
+pub fn key(module: &str) -> String {
+    format!("{module}-key-0123456789abcdef0123456789abcdef")
+}
+
+/// Сокет, который ядро набирает для сервиса харнесса.
+pub fn service_socket(dir: &Path, module: &str) -> PathBuf {
+    dir.join(format!("{module}.sock"))
+}
+
+pub fn service_address(dir: &Path, module: &str) -> ServiceAddress {
+    ServiceAddress::Uds(service_socket(dir, module))
+}
+
+/// Клиенты `CLIENT`, `CLIENT2` в `modules.tokens`, сервисы `SVC`, `OTHER` в
+/// `modules.services` на сокетах `system.state_dir`.
+pub fn with_modules(cfg: &mut Config) {
+    for module in [CLIENT, CLIENT2] {
         cfg.modules.tokens.insert(
             ModuleId::from(module),
-            TokenEntry {
-                token: SecretString::Plaintext(token(module)),
-                kind,
-            },
+            TokenEntry::new(SecretString::Plaintext(token(module))),
         );
     }
+    for module in [SVC, OTHER] {
+        with_service(cfg, module);
+    }
 }
+
+/// Сервис `module` в `modules.services` на сокете `system.state_dir`.
+pub fn with_service(cfg: &mut Config, module: &str) {
+    let address = service_address(&cfg.system.state_dir, module);
+    cfg.modules.services.insert(
+        ModuleId::from(module),
+        ServiceEntry {
+            address,
+            key: SecretString::Plaintext(key(module)),
+        },
+    );
+}
+
+/// `hello` сервиса: без токена, идентичность — запись реестра.
+pub fn dialed_hello(capabilities: Capabilities) -> Hello {
+    Hello {
+        version: String::from("1.2.3"),
+        proto_version: ProtoVersion::CURRENT,
+        token: None,
+        capabilities,
+        resume: None,
+    }
+}
+
+/// Слушатель сервиса по `key(name)` на `path`.
+pub async fn bind_service_at(path: &Path, name: &str) -> ServiceListener {
+    bind_keyed(
+        &ServiceListen::Uds(UdsListen {
+            path: path.to_path_buf(),
+            mode: FileMode::default(),
+            group: None,
+        }),
+        &key(name),
+    )
+    .await
+}
+
+/// Секция `module` сервиса на SDK: слушает там, куда его набирает ядро (`with_service`).
+pub fn sdk_service(dir: &Path, name: &str) -> eva_sdk::ServiceConfig {
+    sdk_service_at(
+        ServiceListen::Uds(UdsListen {
+            path: service_socket(dir, name),
+            mode: FileMode::default(),
+            group: None,
+        }),
+        name,
+    )
+}
+
+/// Секция `module` сервиса `name` с ключом `key(name)` на своём слушателе.
+pub fn sdk_service_at(listen: ServiceListen, name: &str) -> eva_sdk::ServiceConfig {
+    eva_sdk::ServiceConfig {
+        listen,
+        key: SecretString::Plaintext(key(name)),
+        kernel_wait: eva::time::HumanDuration(DIAL_WAIT),
+        transport: eva_rpc::Config::default(),
+    }
+}
+
+/// Слушатель сервиса с секретом `key`: uds или tcp.
+pub async fn bind_keyed(listen: &ServiceListen, key: &str) -> ServiceListener {
+    ServiceListener::bind(listen, Psk::derive(key), &eva_rpc::Config::default())
+        .await
+        .expect("service binds")
+}
+
+/// Следующий дозвон ядра: Noise responder и `hello` без токена.
+pub async fn answer<H: ModuleHandler>(
+    listener: &ServiceListener,
+    hello: Hello,
+    handler: H,
+) -> Result<(RpcClient, Welcome), ConnectError> {
+    let incoming = tokio::time::timeout(DIAL_WAIT, listener.accept())
+        .await
+        .expect("the kernel dials in time")
+        .expect("accept");
+    let conn = incoming.secure().await.expect("noise handshake");
+    RpcClient::answer(conn, hello, ClientOptions::default(), handler).await
+}
+
+/// Сессия сервиса по следующему дозвону ядра: `capabilities` и `handler`.
+pub async fn dialed<H: ModuleHandler>(
+    listener: &ServiceListener,
+    capabilities: Capabilities,
+    handler: H,
+) -> (RpcClient, Welcome) {
+    answer(listener, dialed_hello(capabilities), handler)
+        .await
+        .expect("the kernel dials the module")
+}
+
+/// Сколько `answer` ждёт дозвона: повтор после обрыва — через `[0.5s, 1s]`.
+pub const DIAL_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Конфиг теста: всё в `dir`, один мок-провайдер, руки `local` в `dir/work`,
 /// слушатель UDS `dir/modules.sock` без группы.
@@ -470,12 +579,16 @@ impl Harness {
 
     /// Живая сессия модуля без транспорта, как после handshake: по ней ядро
     /// выводит, кто обслуживает surface. Прежняя сессия модуля вытесняется.
-    pub fn live_session(&self, module: &str, kind: TokenKind, ask: bool) -> SessionId {
+    pub fn live_session(&self, module: &str, kind: ModuleKind, ask: bool) -> SessionId {
         let session = SessionId::from(format!("{module}-session"));
+        let source = match kind {
+            ModuleKind::Client => Source::ConfigToken,
+            ModuleKind::Service => Source::ConfigService,
+        };
         let entry = LiveEntry::new(
             session.clone(),
-            Caller::from_token(kind, ModuleId::from(module)),
-            TokenSource::Config,
+            Caller::from_kind(kind, ModuleId::from(module)),
+            source,
             Capabilities {
                 ask,
                 ..Capabilities::default()
@@ -621,8 +734,14 @@ pub fn matrix_callers() -> [(&'static str, Caller); 4] {
 }
 
 impl Harness {
-    /// Слушатели `modules.listen` поверх этого ядра и адрес UDS для модулей;
-    /// токены модулей — `with_module_tokens` в конфиге старта.
+    /// Слушатель сервиса `name` там, куда его набирает ядро (`with_service`):
+    /// поднятый до `listen`, он получит первую же попытку.
+    pub async fn bind_service(&self, name: &str) -> ServiceListener {
+        bind_service_at(&service_socket(self.dir.path(), name), name).await
+    }
+
+    /// Компонент `modules` поверх этого ядра — слушатели и петли дозвона — и
+    /// адрес UDS для клиентов; модули — `with_modules` в конфиге старта.
     pub async fn listen(&self) -> (Listening<Test>, Url) {
         let listening = modules::listen(&self.kernel).await.expect("listen");
         let url = Url::parse(&format!("uds://{}", self.dir.path().join(SOCKET).display()))

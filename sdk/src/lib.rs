@@ -1,15 +1,19 @@
-//! Eva SDK (`06 §10`): модуль ядра поверх `eva-rpc` — handshake, реконнект,
-//! обработчики вызовов ядро → модуль.
+//! Eva SDK (`06 §10`): модуль ядра поверх `eva-rpc` — handshake, смена
+//! соединения, обработчики вызовов ядро → модуль.
+//!
+//! Сервис (мост мессенджера, MCP) адреса ядра не знает: он слушает, ядро
+//! набирает его само по записи `modules.services.<id>` (Noise с общим ключом).
 //!
 //! ```ignore
-//! let connected = Module::new()
+//! let listening = Module::new()
 //!     .about("Messenger X surface")
 //!     .ask(true)
-//!     .connect(&cfg.kernel, &cfg.token)
+//!     .listen(&cfg) // ServiceConfig: module.listen, module.key
 //!     .await?;
 //! // Идемпотентно для создателя: безопасно на каждом старте, `name`/`rules` меняет `surfaces.update`.
-//! connected
+//! listening
 //!     .kernel()
+//!     .await?
 //!     .surfaces()
 //!     .create()
 //!     .call(surfaces::create::Args {
@@ -18,27 +22,31 @@
 //!         rules: Some(RULES.into()),
 //!     })
 //!     .await?;
-//! connected.run(shutdown).await
+//! listening.run(shutdown).await
 //! ```
 //!
-//! Имени у модуля нет: id — имя записи его токена у ядра, приходит в
-//! `welcome` (`Connected::module`). Surface — сущность ядра: модуль её
-//! только создаёт, обслуживание ядро выводит из живой сессии, поэтому после
-//! реконнекта регистрировать нечего.
+//! Клиент хозяина (телефон, TUI) звонит ядру сам с токеном:
+//! `Module::connect_config(&ClientConfig)` → `Connected` с реконнектом.
+//!
+//! Имени у модуля нет: id — ключ записи реестра (сервис) или токена (клиент)
+//! у ядра, приходит в `welcome`. Surface — сущность ядра: модуль её только
+//! создаёт, обслуживание ядро выводит из живой сессии, поэтому после смены
+//! соединения регистрировать нечего.
 //!
 //! `Kernel` — та же `Session`, что внутри ядра: форма вызова одна (`11 §6`);
-//! ручка следует за реконнектом, её можно держать всё время жизни модуля.
+//! ручка следует за сменой соединения, её можно держать всё время жизни модуля.
 //!
-//! Что работает в M1: подключение и ожидание ядра, реконнект с
-//! `hello.resume`, события (ядро уже рассылает `chat.*`/`module.*` по
+//! Что работает в M1: приём ядра и подключение к нему, `hello.resume`,
+//! события (ядро уже рассылает `chat.*`/`module.*` по
 //! `Policy::events().deliver`), запасной вход `.provider()`. Билдеры
 //! `.tool()`/`.hook()` регистрируют обработчики и capability сейчас, но ядро
 //! лишь хранит их: тулы оно зовёт с M4, хуки — с M2. Реплей `turns.attach`
-//! после реконнекта — M2 (`module::replay_attach`).
+//! после смены соединения — M2 (`module::replay_attach`).
 
 pub mod backoff;
 pub mod config;
 pub mod handler;
+pub mod listen;
 pub mod live;
 pub mod module;
 pub mod tool;
@@ -49,6 +57,7 @@ pub mod prelude {
 
     pub use crate::{
         Kernel,
+        listen::Listening,
         module::{Connected, Module},
         tool::{ToolCtx, ToolError},
     };
@@ -58,7 +67,10 @@ pub use eva::utils::SecretString;
 pub use eva_core::{Caller, Provider};
 pub use eva_protocol::{
     self as protocol,
-    types::tool::{Need, ToolContent},
+    types::{
+        module::ServiceAddress,
+        tool::{Need, ToolContent},
+    },
     wire::{
         capabilities::FailMode,
         events::{Event, Publish, Topic},
@@ -66,16 +78,17 @@ pub use eva_protocol::{
         tools::ToolResult,
     },
 };
-pub use eva_rpc::{ClientOptions, ClientTls, ConnectError, RpcClient};
+pub use eva_rpc::{ClientOptions, ClientTls, ConnectError, RpcClient, ServiceListen};
 
 pub use self::{
     backoff::Backoff,
-    config::ModuleConfig,
+    config::{ClientConfig, ServiceConfig},
     handler::HookInput,
+    listen::Listening,
     module::{Connected, Module},
     tool::{ToolCtx, ToolError},
 };
 
 /// Клиент ядра: все неймспейсы операций; каждый вызов идёт через текущее
-/// соединение модуля и переживает реконнект (`live`).
+/// соединение модуля и переживает его смену (`live`).
 pub type Kernel = eva_core::Session<live::LiveSession>;

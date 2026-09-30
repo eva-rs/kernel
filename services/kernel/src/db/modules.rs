@@ -1,13 +1,10 @@
-//! Таблицы `modules`, `module_tokens` (`06 §2`, `§8`, `10 §2.6`) и строка
-//! `spend` инференса вне тура (`09 §2`).
+//! Таблицы `modules`, `module_services`, `module_tokens` (`06 §2`, `§8`,
+//! `10 §2.6`) и строка `spend` инференса вне тура (`09 §2`).
 
 use eva::{data, time::Timestamp};
 use rusqlite::{Connection, OptionalExtension as _, Row, named_params};
 
-use eva_protocol::types::{
-    ModelId, ModuleId, PersonId,
-    module::{State, TokenKind},
-};
+use eva_protocol::types::{ModelId, ModuleId, PersonId, module::State};
 
 use crate::db::{
     DbResult,
@@ -24,21 +21,32 @@ pub struct ModuleRow {
     pub capabilities: Vec<u8>,
     pub first_seen_at: Timestamp,
     pub last_seen_at: Timestamp,
-    /// Вид последнего живого выданного токена.
-    pub token: Option<TokenKind>,
+    /// Есть живой выданный токен.
+    pub live_token: bool,
 }
 
-/// Выданный токен: хранится только `blake3(token)`.
+/// Выданный токен клиента: хранится только `blake3(token)`.
 #[data]
 pub struct TokenRow {
     pub hash: Vec<u8>,
     pub module: ModuleId,
-    pub kind: TokenKind,
     /// Путь тула: актор тура.
     pub issued_by: Option<PersonId>,
     /// Путь операции: модуль выдавшего клиента.
     pub issued_via: Option<ModuleId>,
     pub issued_at: Timestamp,
+}
+
+/// Сервис из `modules.add`; ключ — как есть: ядро само им дозванивается.
+#[data]
+pub struct ServiceRow {
+    pub module: ModuleId,
+    /// `ServiceAddress` строкой.
+    pub address: String,
+    pub key: String,
+    /// Клиент, выполнивший `modules.add`.
+    pub added_via: ModuleId,
+    pub added_at: Timestamp,
 }
 
 /// Строка `spend` инференса вне тура, `op = other` (`09 §2`).
@@ -137,14 +145,13 @@ impl Modules<'_> {
         )?)
     }
 
-    /// Все модули по имени; `token` — живой токен из БД, без конфига.
+    /// Все модули по имени; `live_token` — токен из БД, без конфига.
     pub fn list(&self) -> DbResult<Vec<ModuleRow>> {
         let mut stmt = self.0.prepare(
             "SELECT m.name, m.state, m.version, m.proto_version, m.capabilities,
                     m.first_seen_at, m.last_seen_at,
-                    (SELECT t.kind FROM module_tokens t
-                     WHERE t.module = m.name AND t.revoked_at IS NULL
-                     ORDER BY t.issued_at DESC LIMIT 1) AS token
+                    EXISTS (SELECT 1 FROM module_tokens t
+                            WHERE t.module = m.name AND t.revoked_at IS NULL) AS live_token
              FROM modules m ORDER BY m.name",
         )?;
         let rows = stmt
@@ -175,12 +182,11 @@ impl Modules<'_> {
 
     pub fn insert_token(&self, row: &TokenRow) -> DbResult<()> {
         self.0.execute(
-            "INSERT INTO module_tokens (token_hash, module, kind, issued_by, issued_via, issued_at)
-             VALUES (:hash, :module, :kind, :issued_by, :issued_via, :issued_at)",
+            "INSERT INTO module_tokens (token_hash, module, issued_by, issued_via, issued_at)
+             VALUES (:hash, :module, :issued_by, :issued_via, :issued_at)",
             named_params! {
                 ":hash": row.hash,
                 ":module": row.module.as_str(),
-                ":kind": Text(row.kind),
                 ":issued_by": row.issued_by.as_ref().map(PersonId::as_str),
                 ":issued_via": row.issued_via.as_ref().map(ModuleId::as_str),
                 ":issued_at": Ts(row.issued_at),
@@ -189,21 +195,86 @@ impl Modules<'_> {
         Ok(())
     }
 
-    /// Живой токен по хэшу: модуль и вид — handshake (`06 §2`).
-    pub fn token(&self, hash: &[u8]) -> DbResult<Option<(ModuleId, TokenKind)>> {
+    /// Клиент живого токена по хэшу — handshake (`06 §2`).
+    pub fn token(&self, hash: &[u8]) -> DbResult<Option<ModuleId>> {
         Ok(self
             .0
             .query_row(
-                "SELECT module, kind FROM module_tokens WHERE token_hash = ?1 AND revoked_at IS NULL",
+                "SELECT module FROM module_tokens WHERE token_hash = ?1 AND revoked_at IS NULL",
                 [hash],
-                |row| {
-                    Ok((
-                        ModuleId(row.get("module")?),
-                        row.get::<_, Text<TokenKind>>("kind")?.0,
-                    ))
-                },
+                |row| Ok(ModuleId(row.get("module")?)),
             )
             .optional()?)
+    }
+
+    /// У модуля есть живой выданный токен.
+    pub fn has_live_token(&self, module: &ModuleId) -> DbResult<bool> {
+        Ok(self
+            .0
+            .query_row(
+                "SELECT 1 FROM module_tokens WHERE module = ?1 AND revoked_at IS NULL LIMIT 1",
+                [module.as_str()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Клиенты с живыми выданными токенами.
+    pub fn token_modules(&self) -> DbResult<Vec<ModuleId>> {
+        let mut stmt = self.0.prepare(
+            "SELECT DISTINCT module FROM module_tokens WHERE revoked_at IS NULL ORDER BY module",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok(ModuleId(row.get("module")?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Сервисы `modules.add` по id.
+    pub fn services(&self) -> DbResult<Vec<ServiceRow>> {
+        let mut stmt = self.0.prepare(
+            "SELECT module, address, key, added_via, added_at FROM module_services ORDER BY module",
+        )?;
+        let rows = stmt
+            .query_map([], service_from_row)?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn service_exists(&self, module: &ModuleId) -> DbResult<bool> {
+        Ok(self
+            .0
+            .query_row(
+                "SELECT 1 FROM module_services WHERE module = ?1",
+                [module.as_str()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    pub fn insert_service(&self, row: &ServiceRow) -> DbResult<()> {
+        self.0.execute(
+            "INSERT INTO module_services (module, address, key, added_via, added_at)
+             VALUES (:module, :address, :key, :added_via, :added_at)",
+            named_params! {
+                ":module": row.module.as_str(),
+                ":address": row.address,
+                ":key": row.key,
+                ":added_via": row.added_via.as_str(),
+                ":added_at": Ts(row.added_at),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Строка была и удалена.
+    pub fn delete_service(&self, module: &ModuleId) -> DbResult<bool> {
+        Ok(self.0.execute(
+            "DELETE FROM module_services WHERE module = ?1",
+            [module.as_str()],
+        )? > 0)
     }
 
     pub fn insert_spend(&self, row: &ModuleSpend) -> DbResult<()> {
@@ -258,6 +329,16 @@ fn module_from_row(row: &Row<'_>) -> rusqlite::Result<ModuleRow> {
         capabilities: row.get("capabilities")?,
         first_seen_at: row.get::<_, Ts>("first_seen_at")?.0,
         last_seen_at: row.get::<_, Ts>("last_seen_at")?.0,
-        token: row.get::<_, Option<Text<TokenKind>>>("token")?.map(|t| t.0),
+        live_token: row.get("live_token")?,
+    })
+}
+
+fn service_from_row(row: &Row<'_>) -> rusqlite::Result<ServiceRow> {
+    Ok(ServiceRow {
+        module: ModuleId(row.get("module")?),
+        address: row.get("address")?,
+        key: row.get("key")?,
+        added_via: ModuleId(row.get("added_via")?),
+        added_at: row.get::<_, Ts>("added_at")?.0,
     })
 }

@@ -12,7 +12,7 @@ use rusqlite::{
 
 use eva_protocol::types::{
     ChatId, FolderId, ModelId, ModuleId, SurfaceId, ToolId, TurnId,
-    module::{State, TokenKind},
+    module::State,
     stats::{BreakReason, GroupBy},
 };
 
@@ -30,6 +30,7 @@ pub enum Metric {
     ModulesConnected,
     ModulesDisconnected,
     ModulesReconnects,
+    ModulesDialFailed,
     ModulesRpcErrors,
     ModulesForbidden,
     PersonsCreated,
@@ -44,6 +45,7 @@ impl Metric {
             Self::ModulesConnected => "modules.connected",
             Self::ModulesDisconnected => "modules.disconnected",
             Self::ModulesReconnects => "modules.reconnects",
+            Self::ModulesDialFailed => "modules.dial_failed",
             Self::ModulesRpcErrors => "modules.rpc_errors",
             Self::ModulesForbidden => "modules.forbidden",
             Self::PersonsCreated => "persons.created",
@@ -299,7 +301,8 @@ pub struct CounterRow {
 #[data]
 pub struct ModuleRow {
     pub module: ModuleId,
-    pub kind: Option<TokenKind>,
+    /// Есть живой выданный токен.
+    pub live_token: bool,
     pub state: State,
     pub since: Timestamp,
     /// msgpack `Capabilities`, как в колонке.
@@ -657,20 +660,19 @@ impl Stats<'_> {
         Ok(rows)
     }
 
-    /// Незабытые модули; `kind` — живого токена из `module_tokens`.
+    /// Незабытые модули; `live_token` — живой токен из `module_tokens`.
     pub fn modules(&self) -> DbResult<Vec<ModuleRow>> {
         let mut stmt = self.0.prepare(
             "SELECT m.name, m.state, m.capabilities, m.last_seen_at,
-                    (SELECT t.kind FROM module_tokens t
-                      WHERE t.module = m.name AND t.revoked_at IS NULL
-                      ORDER BY t.issued_at DESC LIMIT 1) AS kind
+                    EXISTS (SELECT 1 FROM module_tokens t
+                            WHERE t.module = m.name AND t.revoked_at IS NULL) AS live_token
                FROM modules m WHERE m.state <> 'forgotten' ORDER BY m.name",
         )?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(ModuleRow {
                     module: ModuleId(row.get("name")?),
-                    kind: row.get::<_, Option<Text<TokenKind>>>("kind")?.map(|t| t.0),
+                    live_token: row.get("live_token")?,
                     state: row.get::<_, Text<State>>("state")?.0,
                     since: row.get::<_, Ts>("last_seen_at")?.0,
                     capabilities: row.get("capabilities")?,

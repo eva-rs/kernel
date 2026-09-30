@@ -1,10 +1,21 @@
-//! Минимальный модуль: своя surface, счётчик запусков в KV, подписка на
-//! события своих чатов и один тул. Конфиг — секция `module`, например:
+//! Минимальный сервис: своя surface, счётчик запусков в KV, подписка на
+//! события своих чатов и один тул. Модуль слушает, ядро набирает его само —
+//! адреса ядра модуль не знает. Конфиг — секция `module`, например:
 //!
 //! ```yaml
 //! module:
-//!   kernel: uds:///run/eva-kernel/modules.sock
-//!   token: { file: /run/credentials/echo.service/token }
+//!   listen: { uds: /run/eva-echo/module.sock, group: eva }
+//!   key: { file: /run/credentials/eva-echo.service/key }
+//! ```
+//!
+//! У ядра — запись с тем же секретом:
+//!
+//! ```yaml
+//! modules:
+//!   services:
+//!     echo:
+//!       address: uds:///run/eva-echo/module.sock
+//!       key: { file: /run/credentials/eva-kernel.service/echo-key }
 //! ```
 //!
 //! Запуск: `cargo run -p eva-sdk --example echo -- --config echo.yaml`.
@@ -15,7 +26,7 @@ use eva::{
     data,
 };
 use eva_sdk::{
-    Event, Kernel, Module, ModuleConfig, ToolContent, ToolCtx, ToolError, ToolResult, Topic,
+    Event, Kernel, Module, ServiceConfig, ToolContent, ToolCtx, ToolError, ToolResult, Topic,
     prelude::*,
     protocol::{
         requests::{kv, surfaces},
@@ -47,24 +58,25 @@ async fn on_chat(_kernel: Kernel, event: Event) {
 }
 
 fn main() -> eyre::Result<()> {
-    ModuleConfig::register(App::default().env_prefix("ECHO_")).run(entrypoint)
+    ServiceConfig::register(App::default().env_prefix("ECHO_")).run(entrypoint)
 }
 
 async fn entrypoint(_: NoArgs, cfgs: ComponentConfigs) -> eyre::Result<()> {
-    let cfg = cfgs.get::<ModuleConfig>();
+    let cfg = cfgs.get::<ServiceConfig>();
 
-    let connected = Module::new()
+    let listening = Module::new()
         .version(env!("CARGO_PKG_VERSION"))
         .about("echo example module")
         .group("echo", "Echo example")
         .tool("echo.say", say)
         .idempotent(true)
         .on_event(Topic::ChatCreated, on_chat)
-        .connect_config(&cfg)
+        .listen(&cfg)
         .await?;
-    log::info!(module:% = connected.module(), caller:? = connected.caller(); "connected");
 
-    let mut kernel = connected.kernel();
+    // Ждёт первого дозвона ядра до `module.kernel_wait`.
+    let mut kernel = listening.kernel().await?;
+    log::info!(module:? = listening.module(), caller:? = kernel.caller(); "kernel connected");
 
     // Идемпотентно для создателя: безопасно звать на каждом старте.
     let surfaces::create::Ok { surface } = kernel
@@ -98,7 +110,8 @@ async fn entrypoint(_: NoArgs, cfgs: ComponentConfigs) -> eyre::Result<()> {
         .await?;
     log::info!(surface:% = surface.id, starts; "ready");
 
-    connected
+    // Рестарт ядра не завершает `run`: ядро перезвонит, `kernel` последует за ним.
+    listening
         .run(async {
             _ = tokio::signal::ctrl_c().await;
         })

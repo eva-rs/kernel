@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use common::{CLIENT, ENDPOINT, FaultyDb, PROVIDER, SVC, client, service, token};
+use common::{CLIENT, ENDPOINT, FaultyDb, PROVIDER, SVC, client, service};
 use eva::{time::Timestamp, url::Url};
 use eva_core::{
     CallStep as _, Caller, SessionMaker as _,
@@ -25,14 +25,14 @@ use eva_kernel::{
     providers::KernelProvider,
     subsystems::modules::{
         self, Listening,
-        live::{Entry, Live, Refused, TokenSource},
+        live::{Entry, Live, Refused, Source},
     },
     world::testing,
 };
 use eva_protocol::{
     errors::Aux,
     requests::{chats, modules as ops, surfaces},
-    types::{ModuleId, SessionId, SurfaceId, module::TokenKind},
+    types::{ModuleId, SessionId, SurfaceId},
     wire::{
         Capabilities, ErrorCode, RpcError,
         capabilities::EventsCap,
@@ -41,7 +41,7 @@ use eva_protocol::{
     },
 };
 use eva_providers::{AnyProvider, mock::MockProvider};
-use eva_rpc::{ClientOptions, ModuleHandler, NoHandler, RpcClient};
+use eva_rpc::{ClientOptions, ModuleHandler, NoHandler, RpcClient, ServiceListener};
 use tokio::sync::mpsc;
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -117,14 +117,22 @@ struct Rig {
     reads: Hooks,
     url: Url,
     listening: Listening<Hooked>,
+    /// Слушатель сервиса `SVC`, если он в реестре: ядро звонит сразу, а без
+    /// записи реестра провалы дозвона не пишут в базу мимо крючка.
+    svc: Option<ServiceListener>,
     _dir: tempfile::TempDir,
 }
 
-async fn rig() -> Rig {
+async fn rig(service: bool) -> Rig {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::create_dir_all(dir.path().join("work")).expect("work dir");
     let mut cfg = common::config(dir.path());
-    common::with_module_tokens(&mut cfg);
+    let svc = if service {
+        common::with_service(&mut cfg, SVC);
+        Some(common::bind_service_at(&common::service_socket(dir.path(), SVC), SVC).await)
+    } else {
+        None
+    };
 
     let (hooks, reads) = (Hooks::default(), Hooks::default());
     let db = HookDb {
@@ -165,6 +173,7 @@ async fn rig() -> Rig {
         reads,
         url,
         listening,
+        svc,
         _dir: dir,
     }
 }
@@ -173,7 +182,7 @@ fn hello(token: &str, capabilities: Capabilities) -> Hello {
     Hello {
         version: String::from("1.0.0"),
         proto_version: ProtoVersion::CURRENT,
-        token: token.into(),
+        token: Some(token.into()),
         capabilities,
         resume: None,
     }
@@ -197,7 +206,7 @@ impl ModuleHandler for Events {
 
 #[tokio::test]
 async fn events_published_during_the_handshake_reach_the_module() {
-    let rig = rig().await;
+    let rig = rig(true).await;
     let module = ModuleId::from(SVC);
     let now = rig.kernel.shared().now();
     let name = module.clone();
@@ -252,14 +261,8 @@ async fn events_published_during_the_handshake_reach_the_module() {
         }),
         ..Capabilities::default()
     };
-    let (_client, _) = RpcClient::connect_with(
-        &rig.url,
-        hello(&token(SVC), caps),
-        ClientOptions::default(),
-        Events(tx),
-    )
-    .await
-    .expect("connects");
+    let svc = rig.svc.as_ref().expect("svc listens");
+    let (_client, _) = common::dialed(svc, caps, Events(tx)).await;
 
     let publish = tokio::time::timeout(WAIT, rx.recv())
         .await
@@ -273,7 +276,7 @@ async fn events_published_during_the_handshake_reach_the_module() {
 
 #[tokio::test]
 async fn a_session_revoked_before_welcome_registers_nothing() {
-    let rig = rig().await;
+    let rig = rig(false).await;
     let issued = rig
         .kernel
         .make_session(client(CLIENT))
@@ -283,7 +286,6 @@ async fn a_session_revoked_before_welcome_registers_nothing() {
         .token_issue()
         .call(ops::token_issue::Args {
             module: ModuleId::from(BRIDGE),
-            kind: TokenKind::Service,
             issued_by: None,
         })
         .await
@@ -345,7 +347,7 @@ async fn requests_of_a_closed_session_are_not_served() {
     let entry = Entry::new(
         SessionId::from(String::from("s1")),
         service(BRIDGE),
-        TokenSource::Issued,
+        Source::IssuedToken,
         Capabilities::default(),
         Timestamp::from_secs(1),
     );
@@ -368,7 +370,7 @@ async fn requests_of_a_closed_session_are_not_served() {
     );
 }
 
-fn entry(session: &str, source: TokenSource) -> Entry {
+fn entry(session: &str, source: Source) -> Entry {
     Entry::new(
         SessionId::from(String::from(session)),
         service(BRIDGE),
@@ -389,29 +391,54 @@ fn a_revoke_between_token_check_and_claim_refuses_the_hello() {
     let seen = live.epoch(&module);
     assert!(!live.revoke(&module, revoked()), "no session to close yet");
 
-    let res = live.claim(module.clone(), entry("s1", TokenSource::Issued), Some(seen));
+    let res = live.claim(module.clone(), entry("s1", Source::IssuedToken), Some(seen));
     assert!(matches!(res, Err(Refused::Revoked)), "{res:?}");
     assert!(live.is_empty());
 
     let fresh = live.epoch(&module);
     let res = live.claim(
         module.clone(),
-        entry("s2", TokenSource::Issued),
+        entry("s2", Source::IssuedToken),
         Some(fresh),
     );
     assert!(matches!(res, Ok(None)), "{res:?}");
-    let res = live.claim(module, entry("s3", TokenSource::Config), None);
+    let res = live.claim(module, entry("s3", Source::ConfigToken), None);
     assert!(
         matches!(res, Ok(Some(_))),
         "a config token ignores revocations"
     );
 }
 
+/// Отзыв токена закрывает только сессию выданного токена, `modules.remove` —
+/// только сессию записи из БД; конфиг не снимает ни то, ни другое.
+#[test]
+fn revoke_and_remove_close_only_their_own_sources() {
+    let removed = || RpcError::new(ErrorCode::Unauthorized, "module removed");
+    for (source, by_revoke, by_remove) in [
+        (Source::IssuedToken, true, false),
+        (Source::RuntimeService, false, true),
+        (Source::ConfigToken, false, false),
+        (Source::ConfigService, false, false),
+    ] {
+        let (live, module) = (Live::default(), ModuleId::from(BRIDGE));
+        let seen = live.epoch(&module);
+        let res = live.claim(module.clone(), entry("s1", source), Some(seen));
+        assert!(matches!(res, Ok(None)), "{source:?}: {res:?}");
+        assert_eq!(live.revoke(&module, revoked()), by_revoke, "{source:?}");
+        assert_eq!(live.remove(&module, removed()), by_remove, "{source:?}");
+        assert_eq!(
+            live.closed(&module).is_some(),
+            by_revoke || by_remove,
+            "{source:?}"
+        );
+    }
+}
+
 #[test]
 fn a_revoked_session_stays_closed_until_released() {
     let (live, module) = (Live::default(), ModuleId::from(BRIDGE));
     let seen = live.epoch(&module);
-    let res = live.claim(module.clone(), entry("s1", TokenSource::Issued), Some(seen));
+    let res = live.claim(module.clone(), entry("s1", Source::IssuedToken), Some(seen));
     assert!(matches!(res, Ok(None)), "{res:?}");
     assert!(live.closed(&module).is_none());
 
@@ -434,7 +461,7 @@ async fn a_handshake_finishing_after_shut_down_gets_no_session() {
         listening,
         _dir,
         ..
-    } = rig().await;
+    } = rig(false).await;
     let issued = kernel
         .make_session(client(CLIENT))
         .await
@@ -443,7 +470,6 @@ async fn a_handshake_finishing_after_shut_down_gets_no_session() {
         .token_issue()
         .call(ops::token_issue::Args {
             module: ModuleId::from(BRIDGE),
-            kind: TokenKind::Service,
             issued_by: None,
         })
         .await

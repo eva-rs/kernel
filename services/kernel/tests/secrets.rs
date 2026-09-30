@@ -1,7 +1,8 @@
 //! Секреты конфига ядра (`00 §5`): `eva::utils::SecretString` в формах
 //! `{plaintext}` и `{file}`, читаются один раз на старте, хвостовой перевод
 //! строки срезается, ошибка чтения называет ключ; `Debug`/`Display` секрет
-//! не выдают.
+//! не выдают. Здесь же — отказы старта по записям `modules.tokens` и
+//! `modules.services` (`06 §2`).
 
 mod common;
 
@@ -13,16 +14,28 @@ use eva::utils::SecretString;
 use eva_hands::Psk;
 use eva_kernel::{
     Kernel, Real,
-    config::{HandsConfig, ModulesConfig, hands::EndpointConfig, modules::TokenEntry},
+    config::{
+        HandsConfig, ModulesConfig,
+        hands::EndpointConfig,
+        modules::{ServiceEntry, TokenEntry},
+    },
     hands,
-    subsystems::modules::tokens::ConfigTokens,
+    subsystems::modules::{Registrations, tokens::ConfigTokens},
 };
-use eva_protocol::types::{ModuleId, module::TokenKind};
+use eva_protocol::types::{ModuleId, module::ServiceAddress};
 
 const CREDENTIALS: &str = "/run/credentials/eva-kernel.service";
+const KEY: &str = "bridge-key-0123456789abcdef0123456789";
 
-fn entry(token: SecretString, kind: TokenKind) -> TokenEntry {
-    TokenEntry { token, kind }
+fn entry(token: SecretString) -> TokenEntry {
+    TokenEntry::new(token)
+}
+
+fn service(key: SecretString) -> ServiceEntry {
+    ServiceEntry {
+        address: ServiceAddress::Uds("/run/eva-bridge/module.sock".into()),
+        key,
+    }
 }
 
 fn plaintext(secret: &str) -> SecretString {
@@ -50,12 +63,27 @@ fn load_error(entries: &[(&str, TokenEntry)]) -> String {
     )
 }
 
+fn registration_error(tweak: impl FnOnce(&mut ModulesConfig)) -> String {
+    let mut cfg = ModulesConfig::default();
+    tweak(&mut cfg);
+    format!(
+        "{:#}",
+        Registrations::load(&cfg)
+            .err()
+            .expect("the start is refused")
+    )
+}
+
 #[test]
 fn every_secret_takes_the_plaintext_and_the_file_form() {
     let modules: ModulesConfig = serde_json::from_value(json!({
         "tokens": {
-            "phone": {"token": {"plaintext": "hunter2"}, "kind": "client"},
-            "bridge": {"token": {"file": format!("{CREDENTIALS}/bridge")}, "kind": "service"},
+            "phone": {"token": {"plaintext": "hunter2"}},
+            "tablet": {"token": {"file": format!("{CREDENTIALS}/tablet")}},
+        },
+        "services": {
+            "bridge": {"address": "uds:///run/eva-bridge/module.sock", "key": {"plaintext": "hunter4"}},
+            "mcp": {"address": "tcp://10.0.0.4:7000", "key": {"file": format!("{CREDENTIALS}/mcp")}},
         },
     }))
     .expect("modules");
@@ -64,8 +92,16 @@ fn every_secret_takes_the_plaintext_and_the_file_form() {
         SecretString::Plaintext(t) if t == "hunter2"
     ));
     assert!(matches!(
-        &modules.tokens[&ModuleId::from("bridge")].token,
-        SecretString::File(p) if p.as_path() == Path::new(&format!("{CREDENTIALS}/bridge"))
+        &modules.tokens[&ModuleId::from("tablet")].token,
+        SecretString::File(p) if p.as_path() == Path::new(&format!("{CREDENTIALS}/tablet"))
+    ));
+    assert!(matches!(
+        &modules.services[&ModuleId::from("bridge")].key,
+        SecretString::Plaintext(k) if k == "hunter4"
+    ));
+    assert!(matches!(
+        &modules.services[&ModuleId::from("mcp")].key,
+        SecretString::File(p) if p.as_path() == Path::new(&format!("{CREDENTIALS}/mcp"))
     ));
 
     let hands: HandsConfig = serde_json::from_value(json!({
@@ -88,16 +124,17 @@ fn every_secret_takes_the_plaintext_and_the_file_form() {
     ));
 
     let bare = serde_json::from_value::<ModulesConfig>(json!({
-        "tokens": {"phone": {"token": "hunter2", "kind": "client"}},
+        "tokens": {"phone": {"token": "hunter2"}},
     }));
     assert!(bare.is_err(), "a bare string is neither form");
 
     let shown = format!(
-        "{modules:?} {hands:?} {}",
-        modules.tokens[&ModuleId::from("phone")].token
+        "{modules:?} {hands:?} {} {}",
+        modules.tokens[&ModuleId::from("phone")].token,
+        modules.services[&ModuleId::from("bridge")].key,
     );
     assert!(
-        !shown.contains("hunter2") && !shown.contains("hunter3"),
+        !shown.contains("hunter2") && !shown.contains("hunter3") && !shown.contains("hunter4"),
         "{shown}"
     );
 }
@@ -105,15 +142,15 @@ fn every_secret_takes_the_plaintext_and_the_file_form() {
 #[test]
 fn a_credential_file_with_a_trailing_newline_is_the_bare_secret() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let secret = "bridge-token-0123456789abcdef0123456789";
+    let secret = "tablet-token-0123456789abcdef0123456789";
     let loaded = ConfigTokens::load(&tokens(&[(
-        "bridge",
-        entry(credential(&dir, "bridge", secret), TokenKind::Service),
+        "tablet",
+        entry(credential(&dir, "tablet", secret)),
     )]))
     .expect("tokens load");
     assert_eq!(
         loaded.find(&blake3::hash(secret.as_bytes())),
-        Some((ModuleId::from("bridge"), TokenKind::Service))
+        Some(ModuleId::from("tablet"))
     );
     assert_eq!(
         loaded.find(&blake3::hash(format!("{secret}\n").as_bytes())),
@@ -130,22 +167,36 @@ fn an_unreadable_secret_fails_the_start_naming_its_key() {
     let dir = tempfile::tempdir().expect("temp dir");
     let missing = SecretString::File(dir.path().join("missing"));
 
-    let error = load_error(&[("bridge", entry(missing.clone(), TokenKind::Service))]);
-    assert!(error.contains("modules.tokens.bridge.token"), "{error}");
+    let error = load_error(&[("tablet", entry(missing.clone()))]);
+    assert!(error.contains("modules.tokens.tablet.token"), "{error}");
     let error = format!(
         "{:#}",
         hands::endpoint_key("laptop", &missing).expect_err("missing key file")
     );
     assert!(error.contains("hands.endpoints.laptop.key"), "{error}");
 
-    let error = load_error(&[("bridge", entry(plaintext("\n"), TokenKind::Service))]);
-    assert!(error.contains("modules.tokens.bridge.token"), "{error}");
+    let error = load_error(&[("tablet", entry(plaintext("\n")))]);
+    assert!(error.contains("modules.tokens.tablet.token"), "{error}");
+
+    let error = registration_error(|cfg| {
+        cfg.services
+            .insert(ModuleId::from("bridge"), service(missing.clone()));
+    });
+    assert!(error.contains("modules.services.bridge.key"), "{error}");
+    let error = registration_error(|cfg| {
+        cfg.services
+            .insert(ModuleId::from("bridge"), service(plaintext("\n")));
+    });
+    assert!(
+        error.contains("modules.services.bridge.key") && error.contains("empty"),
+        "{error}"
+    );
 }
 
 #[test]
 fn reserved_ids_and_shared_tokens_fail_the_start() {
     for reserved in ["kernel", "system", "local"] {
-        let error = load_error(&[(reserved, entry(plaintext("tok"), TokenKind::Client))]);
+        let error = load_error(&[(reserved, entry(plaintext("tok")))]);
         assert!(
             error.contains(&format!("modules.tokens.{reserved}")) && error.contains("reserved"),
             "{error}"
@@ -154,16 +205,88 @@ fn reserved_ids_and_shared_tokens_fail_the_start() {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let error = load_error(&[
-        ("phone", entry(plaintext("same"), TokenKind::Client)),
-        (
-            "bridge",
-            entry(credential(&dir, "bridge", "same"), TokenKind::Service),
-        ),
+        ("phone", entry(plaintext("same"))),
+        ("tablet", entry(credential(&dir, "tablet", "same"))),
     ]);
     assert!(
-        error.contains("modules.tokens.bridge") && error.contains("modules.tokens.phone"),
+        error.contains("modules.tokens.tablet") && error.contains("modules.tokens.phone"),
         "one token cannot name two modules: {error}"
     );
+}
+
+/// Сервис с токеном — ошибка старта, а не молча клиент (`06 §11`).
+#[test]
+fn a_token_kind_fails_the_start_pointing_to_services() {
+    let modules: ModulesConfig = serde_json::from_value(json!({
+        "tokens": {"bridge": {"token": {"plaintext": "bridge-token"}, "kind": "service"}},
+    }))
+    .expect("the old form still parses");
+    let error = format!(
+        "{:#}",
+        Registrations::load(&modules)
+            .err()
+            .expect("the start is refused")
+    );
+    assert!(
+        error.contains("modules.tokens.bridge.kind") && error.contains("modules.services.bridge"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_service_id_is_neither_reserved_nor_a_client() {
+    for reserved in ["kernel", "system", "local"] {
+        let error = registration_error(|cfg| {
+            cfg.services
+                .insert(ModuleId::from(reserved), service(plaintext(KEY)));
+        });
+        assert!(
+            error.contains(&format!("modules.services.{reserved}")) && error.contains("reserved"),
+            "{error}"
+        );
+    }
+    let error = registration_error(|cfg| {
+        cfg.services
+            .insert(ModuleId::from("Bridge"), service(plaintext(KEY)));
+    });
+    assert!(error.contains("modules.services.Bridge"), "{error}");
+
+    let error = registration_error(|cfg| {
+        cfg.services
+            .insert(ModuleId::from("bridge"), service(plaintext(KEY)));
+        cfg.tokens
+            .insert(ModuleId::from("bridge"), entry(plaintext("bridge-token")));
+    });
+    assert!(
+        error.contains("modules.services.bridge") && error.contains("modules.tokens.bridge"),
+        "one id is a service or a client: {error}"
+    );
+
+    let short = ModulesConfig {
+        services: BTreeMap::from([(ModuleId::from("bridge"), service(plaintext("short")))]),
+        ..ModulesConfig::default()
+    };
+    Registrations::load(&short).expect("a short key only warns");
+}
+
+/// Кривой `address` — ошибка разбора конфига, то есть старта.
+#[test]
+fn a_bad_service_address_fails_the_config() {
+    for bad in [
+        "uds://relative.sock",
+        "tcp://bridge.lan",
+        "tcp://bridge.lan:7000/path",
+        "http://bridge.lan:7000",
+    ] {
+        let error = serde_json::from_value::<ModulesConfig>(json!({
+            "services": {"bridge": {"address": bad, "key": {"plaintext": KEY}}},
+        }))
+        .expect_err(bad);
+        assert!(
+            error.to_string().contains(bad),
+            "names the address: {error}"
+        );
+    }
 }
 
 async fn refused(cfg: eva_kernel::Config) -> String {
@@ -194,10 +317,16 @@ async fn the_kernel_refuses_to_start_on_an_unreadable_secret() {
     assert!(error.contains("hands.endpoints.laptop.key"), "{error}");
 
     let mut cfg = common::config(dir.path());
-    cfg.modules.tokens.insert(
-        ModuleId::from("bridge"),
-        entry(missing.clone(), TokenKind::Service),
-    );
+    cfg.modules
+        .tokens
+        .insert(ModuleId::from("tablet"), entry(missing.clone()));
     let error = refused(cfg).await;
-    assert!(error.contains("modules.tokens.bridge.token"), "{error}");
+    assert!(error.contains("modules.tokens.tablet.token"), "{error}");
+
+    let mut cfg = common::config(dir.path());
+    cfg.modules
+        .services
+        .insert(ModuleId::from("bridge"), service(missing));
+    let error = refused(cfg).await;
+    assert!(error.contains("modules.services.bridge.key"), "{error}");
 }

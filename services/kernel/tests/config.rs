@@ -9,7 +9,7 @@ use eva_kernel::config::{
     ChatsConfig, DbConfig, HandsConfig, LlmConfig, ModulesConfig, NotesConfig, SystemConfig,
     WorkConfig, hands::EndpointConfig, llm::ProviderEntry,
 };
-use eva_protocol::types::{Effort, chat, module::TokenKind};
+use eva_protocol::types::{Effort, ModuleId, chat, module::ServiceAddress};
 use eva_providers::{ProviderConfig, mock::Exhausted};
 
 #[test]
@@ -30,6 +30,7 @@ fn empty_sections_take_chapter_defaults() {
         Duration::from_secs(10)
     );
     assert_eq!(modules.listen.len(), 1);
+    assert!(modules.tokens.is_empty() && modules.services.is_empty());
     assert_eq!(*modules.hooks.timeout, Duration::from_secs(2));
 
     let work: WorkConfig = serde_json::from_value(json!({})).expect("work");
@@ -126,13 +127,32 @@ fn hands_endpoints_are_local_or_remote() {
 }
 
 #[test]
-fn module_tokens_hide_their_secret() {
+fn module_tokens_and_services_hide_their_secret() {
     let modules: ModulesConfig = serde_json::from_value(json!({
-        "tokens": {"phone": {"token": {"plaintext": "hunter2"}, "kind": "client"}},
+        "tokens": {"phone": {"token": {"plaintext": "hunter2"}}},
+        "services": {"bridge": {
+            "address": "tcp://bridge.lan:7000",
+            "key": {"plaintext": "correct-horse-battery-staple"},
+        }},
     }))
     .expect("modules");
-    let entry = &modules.tokens[&eva_protocol::types::ModuleId::from("phone")];
-    assert_eq!(entry.kind, TokenKind::Client);
+    let entry = &modules.tokens[&ModuleId::from("phone")];
     assert_eq!(entry.token.read().expect("plaintext"), "hunter2");
-    assert!(!format!("{modules:?} {}", entry.token).contains("hunter2"));
+    let service = &modules.services[&ModuleId::from("bridge")];
+    assert_eq!(
+        service.address,
+        ServiceAddress::Tcp {
+            host: String::from("bridge.lan"),
+            port: 7000,
+        }
+    );
+    assert_eq!(
+        service.key.read().expect("plaintext"),
+        "correct-horse-battery-staple"
+    );
+    let shown = format!("{modules:?} {} {}", entry.token, service.key);
+    assert!(
+        !shown.contains("hunter2") && !shown.contains("correct-horse"),
+        "{shown}"
+    );
 }

@@ -7,4 +7,5 @@ mod loopback;
 mod methods;
 mod protocol;
 mod reverse;
+mod service;
 mod tls;

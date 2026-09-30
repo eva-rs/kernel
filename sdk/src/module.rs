@@ -1,5 +1,5 @@
-//! `Module` — билдер модуля и `Connected` — живое подключение с
-//! реконнектом (`06 §8`, `§10`).
+//! `Module` — билдер модуля; сервис из него — `Listening` (`listen`),
+//! клиент — `Connected` с реконнектом (`06 §8`, `§10`).
 
 use std::{collections::BTreeMap, pin::pin, sync::Arc, time::Duration};
 
@@ -22,13 +22,14 @@ use eva_protocol::{
         tools::ToolResult,
     },
 };
-use eva_rpc::{ClientOptions, Conn, ConnectError, IdSeq, RpcClient};
+use eva_rpc::{ClientOptions, ClientTls, Conn, ConnectError, IdSeq, Psk, RpcClient};
 
 use crate::{
     Kernel,
     backoff::{self, Backoff},
-    config::{DEFAULT_CONNECT_WAIT, ModuleConfig, read_token},
+    config::{ClientConfig, DEFAULT_WAIT, ServiceConfig, read_token},
     handler::{ConnState, DynProvider, EventFn, HookInput, HookSlots, Registry, SdkHandler},
+    listen::{self, Listening},
     live::{Current, Link},
     tool::{self, ToolCtx, ToolEntry, ToolError},
 };
@@ -51,7 +52,8 @@ impl<T: Send, E: std::fmt::Display + Send> EventOutcome for Result<T, E> {
 }
 
 /// Модуль до подключения: capability и обработчики. Имени нет: id модуля —
-/// имя записи его токена у ядра, приходит в `welcome` (`06 §2`).
+/// ключ записи реестра (сервис) или токена (клиент) у ядра, приходит в
+/// `welcome` (`06 §2`).
 pub struct Module {
     version: String,
     about: Option<String>,
@@ -84,7 +86,7 @@ impl Default for Module {
             fail_mode: FailMode::default(),
             provider: None,
             options: ClientOptions::default(),
-            connect_wait: DEFAULT_CONNECT_WAIT,
+            connect_wait: DEFAULT_WAIT,
             backoff: (backoff::MIN, backoff::MAX),
         }
     }
@@ -289,13 +291,13 @@ impl Module {
         self
     }
 
-    /// Сколько ждать ядро при первом подключении.
+    /// Клиент: сколько ждать ядро при первом подключении.
     pub fn connect_wait(mut self, wait: Duration) -> Self {
         self.connect_wait = wait;
         self
     }
 
-    /// Пауза между попытками: от `min`, вдвое до `max` (`1s..60s`).
+    /// Клиент: пауза между попытками, от `min` вдвое до `max` (`1s..60s`).
     pub fn reconnect_backoff(mut self, min: Duration, max: Duration) -> Self {
         self.backoff = (min, max);
         self
@@ -329,8 +331,24 @@ impl Module {
         }
     }
 
-    /// Подключение по конфигу секции `module`.
-    pub async fn connect_config(self, cfg: &ModuleConfig) -> Result<Connected, ConnectError> {
+    /// Сервис: слушает `module.listen` (или сокет от менеджера служб) и
+    /// возвращается сразу после bind; соединения ядра принимаются в фоне.
+    /// Нечитаемый или пустой `module.key` и занятый адрес — ошибка.
+    pub async fn listen(self, cfg: &ServiceConfig) -> Result<Listening, ConnectError> {
+        let psk =
+            Psk::read(&cfg.key).map_err(|e| ConnectError::Config(format!("module.key: {e}")))?;
+        let listener = listen::bind(&cfg.listen, psk, &cfg.transport).await?;
+        let options = ClientOptions {
+            config: cfg.transport.clone(),
+            tls: ClientTls::default(),
+            ids: self.options.ids.clone(),
+        };
+        let runtime = self.options(options).into_runtime(None, None);
+        Ok(Listening::start(runtime, listener, *cfg.kernel_wait))
+    }
+
+    /// Клиент: подключение по конфигу секции `module`.
+    pub async fn connect_config(self, cfg: &ClientConfig) -> Result<Connected, ConnectError> {
         let token = read_token(&cfg.token, "module.token")?;
         let options = ClientOptions {
             config: cfg.transport.clone(),
@@ -361,7 +379,7 @@ impl Module {
         token: String,
     ) -> Result<Connected, ConnectError> {
         let deadline = Instant::now() + self.connect_wait;
-        let runtime = self.into_runtime(Some(target.clone()), token);
+        let runtime = self.into_runtime(Some(target.clone()), Some(token));
         let mut backoff = runtime.backoff();
 
         loop {
@@ -380,7 +398,7 @@ impl Module {
         }
     }
 
-    /// Handshake поверх готового соединения (`Conn::pair` в тестах);
+    /// Handshake клиента поверх готового соединения (`Conn::pair` в тестах);
     /// без адреса `run` не переподключается.
     pub async fn handshake(
         self,
@@ -388,13 +406,13 @@ impl Module {
         token: &SecretString,
     ) -> Result<Connected, ConnectError> {
         let token = read_token(token, "token")?;
-        let runtime = self.into_runtime(None, token);
+        let runtime = self.into_runtime(None, Some(token));
         let ids = runtime.options.ids.clone();
         runtime.establish_over(conn, None, ids).await?;
         Ok(Connected { runtime })
     }
 
-    fn into_runtime(self, target: Option<Url>, token: String) -> Arc<Runtime> {
+    fn into_runtime(self, target: Option<Url>, token: Option<String>) -> Arc<Runtime> {
         let capabilities = self.capabilities();
         let Self {
             version,
@@ -436,17 +454,18 @@ impl Module {
 }
 
 /// Всё, что нужно для (пере)подключения.
-struct Runtime {
+pub(crate) struct Runtime {
     version: String,
     about: Option<String>,
-    /// Прочитан из секрета один раз: реконнект файл не перечитывает.
-    token: String,
+    /// Только у клиента; прочитан из секрета один раз: реконнект файл не перечитывает.
+    token: Option<String>,
+    /// Адрес ядра клиента; без него `run` не переподключается.
     target: Option<Url>,
     capabilities: Capabilities,
     options: ClientOptions,
     backoff: (Duration, Duration),
     registry: Arc<Registry>,
-    link: Arc<Link>,
+    pub(crate) link: Arc<Link>,
 }
 
 impl Runtime {
@@ -454,14 +473,29 @@ impl Runtime {
         Backoff::new(self.backoff.0, self.backoff.1)
     }
 
+    pub(crate) fn about(&self) -> &str {
+        self.about.as_deref().unwrap_or("")
+    }
+
     fn hello(&self, resume: Option<SessionId>) -> Hello {
         Hello {
             version: self.version.clone(),
             proto_version: ProtoVersion::CURRENT,
-            token: self.token.as_str().into(),
+            token: self.token.as_deref().map(Into::into),
             capabilities: self.capabilities.clone(),
             resume: resume.map(|session_id| Resume { session_id }),
         }
+    }
+
+    /// Обработчик и опции нового соединения.
+    fn prepare(&self, ids: IdSeq) -> (Arc<ConnState>, SdkHandler, ClientOptions) {
+        let conn_state = Arc::new(ConnState::default());
+        let handler = SdkHandler::new(self.registry.clone(), conn_state.clone());
+        let options = ClientOptions {
+            ids,
+            ..self.options.clone()
+        };
+        (conn_state, handler, options)
     }
 
     async fn establish(&self, resume: Option<SessionId>, ids: IdSeq) -> Result<(), ConnectError> {
@@ -470,15 +504,11 @@ impl Runtime {
                 "the module was connected without an address".to_owned(),
             ));
         };
-        let conn_state = Arc::new(ConnState::default());
-        let handler = SdkHandler::new(self.registry.clone(), conn_state.clone());
-        let options = ClientOptions {
-            ids,
-            ..self.options.clone()
-        };
+        let (conn_state, handler, options) = self.prepare(ids);
         let (client, welcome) =
             RpcClient::connect_with(target, self.hello(resume), options, handler).await?;
-        self.install(client, welcome, &conn_state);
+        // Прежнее соединение клиента уже закрыто: реконнект идёт после обрыва.
+        drop(self.install(client, welcome, &conn_state));
         Ok(())
     }
 
@@ -488,21 +518,47 @@ impl Runtime {
         resume: Option<SessionId>,
         ids: IdSeq,
     ) -> Result<(), ConnectError> {
-        let conn_state = Arc::new(ConnState::default());
-        let handler = SdkHandler::new(self.registry.clone(), conn_state.clone());
-        let options = ClientOptions {
-            ids,
-            ..self.options.clone()
-        };
+        let (conn_state, handler, options) = self.prepare(ids);
         let (client, welcome) =
             RpcClient::handshake(conn, self.hello(resume), options, handler).await?;
-        self.install(client, welcome, &conn_state);
+        drop(self.install(client, welcome, &conn_state));
         Ok(())
     }
 
-    /// Новое соединение — текущее. Обслуживание surface ядро выводит из
-    /// сессии само, поэтому после `welcome` модулю регистрировать нечего.
-    fn install(&self, client: RpcClient, welcome: Welcome, conn: &Arc<ConnState>) {
+    /// Сервис: `hello` без токена на соединении, которое набрало ядро.
+    /// `resume` и счётчик id — от текущего соединения процесса, если оно было;
+    /// прежнее соединение закрывается `conflict "superseded"` (`06 §2`).
+    pub(crate) async fn answer(&self, conn: Conn) -> Result<RpcClient, ConnectError> {
+        let (resume, ids) = self
+            .current(|c| {
+                (
+                    Some(c.welcome.session_id.clone()),
+                    c.client.peer().ids().clone(),
+                )
+            })
+            .unwrap_or_else(|| (None, self.options.ids.clone()));
+        let (conn_state, handler, options) = self.prepare(ids);
+        let (client, welcome) =
+            RpcClient::answer(conn, self.hello(resume), options, handler).await?;
+        if let Some(previous) = self.install(client.clone(), welcome, &conn_state) {
+            previous
+                .client
+                .peer()
+                .close(RpcError::new(ErrorCode::Conflict, "superseded"));
+            replay_attach(self).await;
+        }
+        Ok(client)
+    }
+
+    /// Новое соединение — текущее, прежнее отдаётся вызывающему. Обслуживание
+    /// surface ядро выводит из сессии само, поэтому после `welcome` модулю
+    /// регистрировать нечего.
+    fn install(
+        &self,
+        client: RpcClient,
+        welcome: Welcome,
+        conn: &Arc<ConnState>,
+    ) -> Option<Current> {
         conn.bind(&client, &welcome);
         for warning in &welcome.warnings {
             log::warn!(module:% = welcome.module, subject = warning.subject.as_str(), code:% = warning.code, message = warning.message.as_str(); "kernel rejected part of hello");
@@ -511,18 +567,19 @@ impl Runtime {
             module:% = welcome.module,
             session:% = welcome.session_id,
             kind:% = welcome.kind,
-            about = self.about.as_deref().unwrap_or("");
+            resumed = welcome.resumed,
+            about = self.about();
             "connected to the kernel"
         );
-        self.link.install(Current { client, welcome });
+        self.link.install(Current { client, welcome })
     }
 
-    fn current<T>(&self, f: impl FnOnce(&Current) -> T) -> Option<T> {
+    pub(crate) fn current<T>(&self, f: impl FnOnce(&Current) -> T) -> Option<T> {
         self.link.current(f)
     }
 
     /// Id модуля из последнего `welcome`.
-    fn module(&self) -> Option<ModuleId> {
+    pub(crate) fn module(&self) -> Option<ModuleId> {
         self.current(|c| c.welcome.module.clone())
     }
 }
@@ -620,7 +677,7 @@ impl Connected {
 
             let reason = tokio::select! {
                 () = &mut shutdown => {
-                    client.peer().close(RpcError::new(ErrorCode::Unavailable, "module is shutting down"));
+                    runtime.link.close();
                     return Ok(());
                 }
                 reason = client.closed() => reason,
@@ -639,11 +696,17 @@ impl Connected {
             loop {
                 let delay = backoff.next_delay();
                 tokio::select! {
-                    () = &mut shutdown => return Ok(()),
+                    () = &mut shutdown => {
+                        runtime.link.close();
+                        return Ok(());
+                    }
                     () = tokio::time::sleep(delay) => {}
                 }
                 let attempt = tokio::select! {
-                    () = &mut shutdown => return Ok(()),
+                    () = &mut shutdown => {
+                        runtime.link.close();
+                        return Ok(());
+                    }
                     attempt = runtime.establish(Some(session.clone()), ids.clone()) => attempt,
                 };
                 match attempt {
@@ -664,9 +727,9 @@ impl Connected {
     }
 }
 
-/// M2: после реконнекта `turns.attach{chat, since_seq}` по каждому чату из
-/// `chats.list{live: true}` (`06 §8`); пока ядро отвечает на них `M2_PENDING`.
-async fn replay_attach(_runtime: &Runtime) {}
+/// M2: после смены соединения `turns.attach{chat, since_seq}` по каждому чату
+/// из `chats.list{live: true}` (`06 §8`); пока ядро отвечает на них `M2_PENDING`.
+pub(crate) async fn replay_attach(_runtime: &Runtime) {}
 
 impl std::fmt::Debug for Connected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

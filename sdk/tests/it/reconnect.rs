@@ -74,7 +74,10 @@ async fn reconnects_with_resume_and_registers_nothing() {
         .unwrap();
     let first = sessions.recv().await.unwrap();
     assert!(first.hello.resume.is_none());
-    assert_eq!(first.hello.token.expose(), "token");
+    assert_eq!(
+        first.hello.token.as_ref().map(|t| t.expose()),
+        Some("token")
+    );
     assert!(first.hello.capabilities.ask);
 
     let (stop, stopped) = oneshot::channel::<()>();
@@ -120,12 +123,12 @@ async fn reconnects_with_resume_and_registers_nothing() {
 
 /// Ядро, которое записывает вызов и не отвечает: обрыв застаёт его в полёте.
 #[derive(Clone, Default)]
-struct Silent {
-    calls: Arc<Mutex<Vec<(u64, String)>>>,
+pub struct Silent {
+    pub calls: Arc<Mutex<Vec<(u64, String)>>>,
 }
 
 impl Silent {
-    async fn wait_calls(&self, n: usize) {
+    pub async fn wait_calls(&self, n: usize) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while self.calls.lock().unwrap().len() < n {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -272,7 +275,7 @@ impl Outage {
     }
 }
 
-async fn get(mut kernel: Kernel) -> Response<get::Ok, get::Err> {
+pub async fn get(mut kernel: Kernel) -> Response<get::Ok, get::Err> {
     kernel
         .surfaces()
         .get()
@@ -282,7 +285,7 @@ async fn get(mut kernel: Kernel) -> Response<get::Ok, get::Err> {
         .await
 }
 
-async fn update(mut kernel: Kernel) -> Response<update::Ok, update::Err> {
+pub async fn update(mut kernel: Kernel) -> Response<update::Ok, update::Err> {
     kernel
         .surfaces()
         .update()
@@ -294,7 +297,7 @@ async fn update(mut kernel: Kernel) -> Response<update::Ok, update::Err> {
 }
 
 /// id запросов метода `method` в порядке прихода.
-fn id_of(requests: &[(u64, String)], method: &str) -> Vec<u64> {
+pub fn id_of(requests: &[(u64, String)], method: &str) -> Vec<u64> {
     requests
         .iter()
         .filter(|(_, m)| m == method)
@@ -303,7 +306,7 @@ fn id_of(requests: &[(u64, String)], method: &str) -> Vec<u64> {
 }
 
 /// `surfaces.*` поддельного ядра с одной строкой `x`.
-fn surface_x(name: &str) -> Surfaces {
+pub fn surface_x(name: &str) -> Surfaces {
     let surfaces = Surfaces::default();
     surfaces.rows.lock().unwrap().insert(
         SurfaceId::from("x"),
@@ -746,7 +749,7 @@ async fn rejected_hello_is_not_retried() {
     }
 }
 
-mod tools {
+pub mod tools {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -765,13 +768,13 @@ mod tools {
     use super::*;
     use crate::dispatch::EchoInput;
 
-    struct Counters {
-        started: AtomicUsize,
-        finished: AtomicUsize,
-        gate: Notify,
+    pub struct Counters {
+        pub started: AtomicUsize,
+        pub finished: AtomicUsize,
+        pub gate: Notify,
     }
 
-    fn slow(counters: Arc<Counters>) -> Module {
+    pub fn slow(counters: Arc<Counters>) -> Module {
         Module::new()
             .reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
             .tool("x.slow", move |_: ToolCtx, _: EchoInput| {
@@ -785,7 +788,7 @@ mod tools {
             })
     }
 
-    fn call() -> ToolCall {
+    pub fn call() -> ToolCall {
         let mut ctx = fake::turn();
         ctx.chat = ChatId(9);
         ToolCall {
@@ -797,7 +800,7 @@ mod tools {
         }
     }
 
-    async fn wait(what: &str, check: impl Fn() -> bool) {
+    pub async fn wait(what: &str, check: impl Fn() -> bool) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while !check() {
                 tokio::time::sleep(Duration::from_millis(5)).await;

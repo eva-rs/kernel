@@ -16,8 +16,8 @@
 | `protocol/` | `eva-protocol` | типы, `requests/<ns>.rs` (`Args/Ok/Err`), `errors/`, wire; без I/O |
 | `macros/` | `eva-kernel-macros` | список операций `endpoints!` (`eva-api-builder`) → трейты неймспейсов + `for_each_op!` |
 | `core/` | `eva-core` | `Session`, трейты и `for_each_op!` из списка, `Caller`, `Provider`, `prelude` |
-| `rpc/` | `eva-rpc` | кадры msgpack, uds/ws/wss, пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
-| `sdk/` | `eva-sdk` | `Module` → `Connected`, `Kernel = Session<LiveSession>` (переживает реконнект) |
+| `rpc/` | `eva-rpc` | кадры msgpack, клиенты uds/ws/wss, сервисы uds/tcp под Noise (`Psk`, дозвон), пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
+| `sdk/` | `eva-sdk` | `Module` → `Listening` (сервис слушает ядро) / `Connected` (клиент звонит сам), `Kernel = Session<LiveSession>` (переживает смену соединения) |
 | `providers/{openai,mock}` | `eva-provider-*` | `impl Provider` одного вендора |
 | `providers/all/` | `eva-providers` | `ProviderConfig` (тег `kind`), `AnyProvider`, `build` |
 | `services/kernel/` | `eva-kernel` | бинарь и библиотека ядра |
@@ -25,7 +25,7 @@
 ## Слои
 
 - Рёбра: `{protocol, macros} ← core ← {rpc, providers/*}`, `rpc ← sdk`, `kernel ← {core, rpc, eva-providers, eva-hands}`. Обратных нет.
-- Авторизация только в `state/policy/`; транспорт лишь выводит `Caller` из токена.
+- Авторизация только в `state/policy/`; транспорт лишь выводит `Caller` из соединения.
 - SQL только в `db/`, хендлеры (`#[eva::endpoint]` + `#[fastrace::trace]`) только в `handling/`, строки БД → типы в `convert/` (`tests/k3_layer_lint.rs`).
 - Одна реализация операции: RPC-метод и тул — обёртки. Список операций — только `macros/src/lib.rs`; остальные берут `eva_core::for_each_op!`.
 - Новая операция: модуль в `protocol/src/requests/<ns>.rs` → строка в `macros/src/lib.rs` (мутация — флаг `mutating`, тесты его не ловят) → хендлер в `handling/`, правило в `state/policy/`, строка `project!` в `impls/` → строки в `tests/k3_policy_all.rs`, `tests/contract.rs`, `rpc/tests/it/errors.rs`.

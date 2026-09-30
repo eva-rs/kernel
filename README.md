@@ -1,6 +1,6 @@
 # Eva kernel
 
-Ядро Евы — персонального агента, который работает постоянно. Один процесс поверх одного SQLite-файла — единственный владелец её состояния: чатов, поверхностей (surface), личностей, памяти, заметок, статистики и расхода. Всё остальное — модули: отдельные процессы (клиенты хозяина, мосты в мессенджеры, MCP-обвязки), которые подключаются к ядру по msgpack-RPC через unix-сокет, WebSocket или WebSocket поверх TLS и работают с ним тем же библиотечным API, что и код внутри ядра. Инференс — встроенные провайдеры за трейтом `Provider`: OpenAI-совместимый (OpenRouter, либо vLLM и llama-server в диалекте `plain`) и сценарный `mock` для запуска без ключей.
+Ядро Евы — персонального агента, который работает постоянно. Один процесс поверх одного SQLite-файла — единственный владелец её состояния: чатов, поверхностей (surface), личностей, памяти, заметок, статистики и расхода. Всё остальное — модули: отдельные процессы, которые говорят с ядром по msgpack-RPC и работают с ним тем же библиотечным API, что и код внутри ядра. Сервисы (мосты в мессенджеры, MCP-обвязки) слушают unix-сокет или TCP, и ядро само звонит им по реестру под Noise; клиенты хозяина (телефон, TUI) звонят ядру сами — через unix-сокет, WebSocket или WebSocket поверх TLS. Инференс — встроенные провайдеры за трейтом `Provider`: OpenAI-совместимый (OpenRouter, либо vLLM и llama-server в диалекте `plain`) и сценарный `mock` для запуска без ключей.
 
 Построено на фреймворке [eva](https://git.desu.church/VienDesu/eva) (конфиг, `Supervisor`, логи, время); руки — библиотека [eva-hands](https://git.desu.church/eva/hands).
 
@@ -24,7 +24,7 @@
 | `eva-kernel-macros` | [`macros/`](macros/README.md) | единственный список операций (`endpoints!` на `eva-api-builder`) |
 | `eva-core` | [`core/`](core/README.md) | библиотечное API: `Session`, трейты неймспейсов, `Caller`, трейт `Provider` |
 | `eva-rpc` | [`rpc/`](rpc/README.md) | msgpack-кадры поверх uds/ws/wss, сервер-диспетчер, клиентская `RpcSession` |
-| `eva-sdk` | [`sdk/`](sdk/README.md) | модуль ядра: подключение, реконнект, тулы, события, хуки |
+| `eva-sdk` | [`sdk/`](sdk/README.md) | модуль ядра: сервис слушает звонок ядра, клиент подключается сам; смена соединения, тулы, события, хуки |
 | `eva-provider-openai` | [`providers/openai/`](providers/openai/README.md) | OpenAI-совместимый Chat Completions |
 | `eva-provider-mock` | [`providers/mock/`](providers/mock/README.md) | сценарный провайдер для тестов и смоука |
 | `eva-providers` | [`providers/all/`](providers/all/README.md) | `ProviderConfig` под тегом `kind`, диспетчер `AnyProvider` |
@@ -81,15 +81,18 @@ llm:
 modules:
   listen:
     - uds: modules.sock              # относительный путь — от state_dir
-  tokens:
+  tokens:                            # клиенты хозяина звонят сами, с токеном
     phone:                           # ключ записи — id модуля
-      kind: client                   # client — клиент хозяина, service — служебный модуль
       token: {file: /run/secrets/eva-phone}
+  services:                          # сервисы слушают, ядро звонит им само
+    bridge:
+      address: uds:///run/eva-bridge/module.sock   # или tcp://host:port
+      key: {file: /run/secrets/eva-bridge}         # тот же секрет — module.key у модуля
 ```
 
 Без ключей: `llm: {providers: {mock: {kind: mock}}, default_model: mock}`.
 
-Секреты (`llm.providers.*.api_key`, `modules.tokens.*.token`, `hands.endpoints.*.key`, `module.token` модуля на SDK) — `{file: /путь}` или `{plaintext: "…"}`. Читаются один раз на старте, хвостовой перевод строки срезается; нечитаемый секрет — отказ старта с путём ключа. Форму `plaintext` держите вне файлов, которые видят другие. Id `kernel`, `system`, `local` зарезервированы.
+Секреты (`llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`, `module.token` и `module.key` модуля на SDK) — `{file: /путь}` или `{plaintext: "…"}`. Читаются один раз на старте, хвостовой перевод строки срезается; нечитаемый секрет — отказ старта с путём ключа. Форму `plaintext` держите вне файлов, которые видят другие. Id `kernel`, `system`, `local` зарезервированы.
 
 ## NixOS
 
@@ -101,16 +104,17 @@ services.eva-kernel = {
   settings = {
     llm.providers.router.kind = "openai";
     llm.default_model = "vendor/model";
-    modules.tokens.phone.kind = "client";
+    modules.services.bridge.address = "uds:///run/eva-bridge/module.sock";
   };
   secrets = {
     "llm.providers.router.api_key" = "/run/secrets/router-key";
     "modules.tokens.phone.token" = "/run/secrets/eva-phone";
+    "modules.services.bridge.key" = "/run/secrets/eva-bridge";
   };
 };
 ```
 
-`settings` попадают в мирочитаемый Nix store, поэтому модуль отвергает сборку, если секрет стоит в `settings` формой `plaintext`, в `environment` переменной `EVA_…__PLAINTEXT` или если файл секрета, `extraConfigFiles` или `environmentFiles` лежит в сторе. Сокет модулей по умолчанию — `/run/eva-kernel/modules.sock` с группой `eva`.
+`settings` попадают в мирочитаемый Nix store, поэтому модуль отвергает сборку, если секрет стоит в `settings` формой `plaintext`, в `environment` переменной `EVA_…__PLAINTEXT` или если файл секрета, `extraConfigFiles` или `environmentFiles` лежит в сторе. Сокет клиентов по умолчанию — `/run/eva-kernel/modules.sock` с группой `eva`; сервисы машины слушают `/run/eva-<id>/module.sock` с той же группой, ядро в ней состоит.
 
 ## Документация
 

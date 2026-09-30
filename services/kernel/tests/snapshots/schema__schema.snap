@@ -112,6 +112,8 @@ index sqlite_autoindex_messages_2 (messages)
   -
 index sqlite_autoindex_module_kv_1 (module_kv)
   -
+index sqlite_autoindex_module_services_1 (module_services)
+  -
 index sqlite_autoindex_module_tokens_1 (module_tokens)
   -
 index sqlite_autoindex_modules_1 (modules)
@@ -224,8 +226,10 @@ table module_kv (module_kv)
   CREATE TABLE module_kv (module TEXT NOT NULL, key TEXT NOT NULL, value BLOB NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (module, key)) STRICT
 table module_kv_usage (module_kv_usage)
   CREATE TABLE module_kv_usage (module TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK (bytes >= 0)) STRICT, WITHOUT ROWID
+table module_services (module_services)
+  CREATE TABLE module_services (module TEXT PRIMARY KEY, address TEXT NOT NULL, key TEXT NOT NULL CHECK (key <> ''), added_via TEXT NOT NULL, added_at INTEGER NOT NULL) STRICT
 table module_tokens (module_tokens)
-  CREATE TABLE module_tokens (token_hash BLOB PRIMARY KEY, module TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('client','service')), issued_by TEXT REFERENCES persons(id) ON DELETE RESTRICT, issued_via TEXT, issued_at INTEGER NOT NULL, revoked_at INTEGER, CHECK (issued_by IS NOT NULL OR issued_via IS NOT NULL)) STRICT
+  CREATE TABLE module_tokens (token_hash BLOB PRIMARY KEY, module TEXT NOT NULL, issued_by TEXT REFERENCES persons(id) ON DELETE RESTRICT, issued_via TEXT, issued_at INTEGER NOT NULL, revoked_at INTEGER, CHECK (issued_by IS NOT NULL OR issued_via IS NOT NULL)) STRICT
 table modules (modules)
   CREATE TABLE modules (name TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('connected','offline','forgotten')), version TEXT NOT NULL, proto_version TEXT NOT NULL, capabilities BLOB NOT NULL, first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL) STRICT
 table notes_state (notes_state)

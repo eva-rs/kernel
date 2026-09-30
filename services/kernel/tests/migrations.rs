@@ -92,6 +92,7 @@ async fn applies_on_empty_database_once() {
         "chat_speech_fts",
         "chat_speech_vec",
         "modules",
+        "module_services",
         "module_tokens",
         "module_kv",
         "agents",
@@ -296,7 +297,8 @@ async fn module_kv_usage_backfills_existing_rows() {
     })
     .await
     .expect("rows before 0002");
-    assert_eq!(migrate(&db, MIGRATIONS).await.expect("migrate"), 1);
+    let upto_kv: &'static [Migration] = MIGRATIONS.get(..2).expect("0002");
+    assert_eq!(migrate(&db, upto_kv).await.expect("migrate"), 1);
 
     let usage: Vec<(String, i64)> = query(&db, |c| {
         let mut stmt = c.prepare("SELECT module, bytes FROM module_kv_usage ORDER BY module")?;
@@ -316,4 +318,55 @@ async fn module_kv_usage_backfills_existing_rows() {
             ),
         ]
     );
+}
+
+/// `0003`: токены сервисов отзываются (аудит `issued_by` остаётся), колонка
+/// `kind` уходит, реестр `module_services` пуст.
+#[tokio::test]
+async fn module_services_revoke_service_tokens() {
+    let db = memory().await;
+    let upto_kv: &'static [Migration] = MIGRATIONS.get(..2).expect("0002");
+    migrate(&db, upto_kv).await.expect("up to 0002");
+    db.write(|tx| -> DbResult<()> {
+        tx.execute_batch(
+            "INSERT INTO module_tokens (token_hash, module, kind, issued_via, issued_at, revoked_at) VALUES
+               (x'01', 'bridge', 'service', 'phone', 1, NULL),
+               (x'02', 'tablet', 'client', 'phone', 1, NULL),
+               (x'03', 'old', 'service', 'phone', 1, 5)",
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("tokens before 0003");
+    assert_eq!(migrate(&db, MIGRATIONS).await.expect("migrate"), 1);
+
+    let (tokens, columns, services) = query(&db, |c| {
+        let mut stmt = c.prepare(
+            "SELECT module, revoked_at IS NOT NULL, revoked_at FROM module_tokens ORDER BY module",
+        )?;
+        let tokens: Vec<(String, bool, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut stmt = c.prepare("SELECT name FROM pragma_table_info('module_tokens')")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let services: i64 =
+            c.query_row("SELECT count(*) FROM module_services", [], |r| r.get(0))?;
+        Ok((tokens, columns, services))
+    })
+    .await;
+
+    let [bridge, old, tablet] = tokens.as_slice() else {
+        panic!("three tokens: {tokens:?}");
+    };
+    assert!(bridge.1, "a live service token is revoked: {bridge:?}");
+    assert!(
+        bridge.2.is_some_and(|at| at > 1_000_000_000_000_000_000),
+        "revoked_at is a timestamp in ns: {bridge:?}"
+    );
+    assert_eq!(*old, (String::from("old"), true, Some(5)));
+    assert_eq!(*tablet, (String::from("tablet"), false, None));
+    assert!(!columns.iter().any(|c| c == "kind"), "{columns:?}");
+    assert_eq!(services, 0);
 }

@@ -7,8 +7,7 @@ mod common;
 use std::path::PathBuf;
 
 use common::{
-    Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, token,
-    with_module_tokens,
+    Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, with_modules,
 };
 use eva::bytesize::ByteSize;
 use eva_core::{CallStep as _, service::fs::Fs as _};
@@ -16,12 +15,9 @@ use eva_protocol::{
     errors::{Aux, Generic},
     requests::fs::{EntryKind, list, read, remove, stat, write},
     types::Bytes,
-    wire::{
-        Capabilities,
-        handshake::{Hello, ProtoVersion},
-    },
+    wire::Capabilities,
 };
-use eva_rpc::{ClientOptions, NoHandler, RpcClient};
+use eva_rpc::NoHandler;
 
 fn root(h: &Harness, module: &str) -> PathBuf {
     h.dir.path().join("modules").join(module).join("fs")
@@ -529,26 +525,18 @@ async fn entry_count_is_capped() {
 #[tokio::test]
 async fn read_leaves_room_for_the_frame() {
     let h = common::start_with(|cfg| {
-        with_module_tokens(cfg);
+        with_modules(cfg);
         cfg.modules.transport.max_frame = ByteSize::kib(4);
     })
     .await;
-    let (_listening, url) = h.listen().await;
+    let listener = h.bind_service(SVC).await;
+    let (_listening, _url) = h.listen().await;
     let mut svc = h.session(service(SVC)).await;
     let max = usize::try_from(h.kernel.shared().cfg().modules.max_payload()).expect("usize");
     write_ok(&mut svc, "near", &vec![7; 4000], false).await;
     write_ok(&mut svc, "fits", &vec![7; max], false).await;
 
-    let hello = Hello {
-        version: String::from("1.0.0"),
-        proto_version: ProtoVersion::CURRENT,
-        token: token(SVC).into(),
-        capabilities: Capabilities::default(),
-        resume: None,
-    };
-    let (client, _) = RpcClient::connect_with(&url, hello, ClientOptions::default(), NoHandler)
-        .await
-        .expect("module connects");
+    let (client, _) = common::dialed(&listener, Capabilities::default(), NoHandler).await;
     let mut remote = client.session();
 
     let res = remote

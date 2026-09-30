@@ -1,6 +1,7 @@
-//! Компонент `modules` (`06`): слушатели `modules.listen`, handshake,
-//! RPC-сервер над `Kernel<C>`, живые сессии и их состояние — строка
-//! `modules`, провайдер запасной двери, рассылка событий.
+//! Компонент `modules` (`06`): петли дозвона сервисов реестра, слушатели
+//! клиентов `modules.listen`, handshake, RPC-сервер над `Kernel<C>`, живые
+//! сессии и их состояние — строка `modules`, провайдер запасной двери,
+//! рассылка событий.
 //!
 //! Capability `tools` и `hooks` в M1 только проверяются и хранятся (строка
 //! `modules`, `Entry::capabilities`): вызовы `tools.call` приходят с реестром
@@ -9,11 +10,11 @@
 use std::{path::Path, pin::pin, time::Duration};
 
 use tokio::{
-    sync::{broadcast, watch},
+    sync::{broadcast, mpsc, watch},
     task::JoinSet,
     time::{Instant, MissedTickBehavior},
 };
-use tokio_util::task::TaskTracker;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use eva_core::Caller;
 use eva_protocol::{
@@ -23,22 +24,31 @@ use eva_protocol::{
         events::{Event, ModuleEvent},
     },
 };
-use eva_rpc::{Accepted, Listener, Server, config::Listen};
+use eva_rpc::{Accepted, Listener, Psk, Server, config::Listen};
 
 use crate::{
     bus::Published,
     components::Components,
+    config::ModulesConfig,
+    convert,
     db::{Db as _, DbResult, Queries as _, stats::Metric},
     kernel::Kernel,
     shared::Shared,
-    subsystems::modules::live::{Attach, Entry},
+    subsystems::modules::{
+        dial::Dialer,
+        live::{Attach, Entry, Source},
+        services::{Control, Service, Services, trimmed},
+        tokens::ConfigTokens,
+    },
 };
 
 pub use self::auth::KernelAuth;
 
 pub mod auth;
+pub mod dial;
 mod events;
 pub mod live;
+pub mod services;
 pub mod tokens;
 
 /// Сколько остановка ждёт, пока сессии приберут за собой.
@@ -47,15 +57,37 @@ const DRAIN: Duration = Duration::from_secs(5);
 /// Как часто давно молчащие модули переводятся в `forgotten` (`06 §8`).
 pub const FORGET_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// Поднятые слушатели; `shutdown` закрывает их и все сессии.
+/// Модули из конфига: токены клиентов и реестр сервисов (`06 §2`).
+pub struct Registrations {
+    pub tokens: ConfigTokens,
+    pub services: Services,
+}
+
+impl Registrations {
+    pub fn load(cfg: &ModulesConfig) -> eyre::Result<Self> {
+        Ok(Self {
+            tokens: ConfigTokens::load(&cfg.tokens)?,
+            services: Services::load(&cfg.services, &cfg.tokens)?,
+        })
+    }
+
+    /// Строка БД с этим id инертна: конфиг сильнее.
+    pub fn shadowed(&self, module: &ModuleId) -> bool {
+        self.services.shadowed(module, &self.tokens)
+    }
+}
+
+/// Поднятые слушатели и петли дозвона; `shutdown` гасит их и все сессии.
 pub struct Listening<C: Components> {
     shared: Shared<C>,
     stop: watch::Sender<bool>,
+    dials: CancellationToken,
     tasks: JoinSet<()>,
     sessions: TaskTracker,
 }
 
-/// Слушатели `modules.listen`; относительный путь сокета — от `system.state_dir`.
+/// Слушатели `modules.listen` (относительный путь сокета — от
+/// `system.state_dir`) и петли дозвона записей реестра.
 pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening<C>> {
     let shared = kernel.shared().clone();
     let cfg = &shared.cfg().modules;
@@ -91,6 +123,33 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
         });
     }
 
+    let dials = CancellationToken::new();
+    let (control, commands) = mpsc::unbounded_channel();
+    {
+        // Под замком `modules.add/remove`: запись, добавленная между чтением
+        // строк и подключением петель, не потеряется и не задвоится.
+        let services = shared.services();
+        let _ops = services.ops().await;
+        let runtime = runtime_services(&shared).await?;
+        services.attach(control.clone());
+        let config = services
+            .config()
+            .iter()
+            .map(|(module, service)| (module.clone(), service.clone()));
+        for (module, service) in config.chain(runtime) {
+            _ = control.send(Control::Start(module, service));
+        }
+    }
+    tasks.spawn(
+        Dialer {
+            server,
+            shared: shared.clone(),
+            sessions: sessions.clone(),
+            stop: dials.clone(),
+        }
+        .run(commands),
+    );
+
     let mut stopped = stopped.clone();
     tasks.spawn(forget_every(shared.clone(), FORGET_EVERY, async move {
         _ = stopped.wait_for(|stop| *stop).await;
@@ -99,19 +158,55 @@ pub async fn listen<C: Components>(kernel: &Kernel<C>) -> eyre::Result<Listening
     Ok(Listening {
         shared,
         stop,
+        dials,
         tasks,
         sessions,
     })
 }
 
-impl<C: Components> Listening<C> {
-    /// Перестаёт принимать, закрывает сессии и ждёт их уборки.
-    pub async fn shutdown(mut self) {
-        _ = self.stop.send(true);
-        while self.tasks.join_next().await.is_some() {}
+/// Строки `module_services`, не затенённые конфигом; битая строка — в лог.
+async fn runtime_services<C: Components>(
+    shared: &Shared<C>,
+) -> eyre::Result<Vec<(ModuleId, Service)>> {
+    let rows = shared
+        .db()
+        .reader()
+        .await?
+        .run(|c| c.modules().services())
+        .await?;
+    let mut services = Vec::with_capacity(rows.len());
+    for row in rows {
+        if shared.services().shadowed(&row.module, shared.tokens()) {
+            continue;
+        }
+        let address = match convert::module::service_address(&row) {
+            Ok(address) => address,
+            Err(e) => {
+                log::error!(module:% = row.module, error:% = e; "module_services row is not dialable");
+                continue;
+            }
+        };
+        let service = Service {
+            address,
+            psk: Psk::derive(trimmed(&row.key)),
+            source: Source::RuntimeService,
+        };
+        services.push((row.module, service));
+    }
+    Ok(services)
+}
 
+impl<C: Components> Listening<C> {
+    /// Петли дозвона и приём встают первыми, затем закрываются сессии:
+    /// попытка в полёте после `shut_down` сессией уже не станет.
+    pub async fn shutdown(mut self) {
+        self.dials.cancel();
+        _ = self.stop.send(true);
+        self.shared.services().detach();
         let reason = RpcError::new(ErrorCode::Unavailable, "kernel is shutting down");
         self.shared.live().shut_down(&reason);
+        while self.tasks.join_next().await.is_some() {}
+
         // Ждём сами задачи уборки, а не пустой реестр: запись `offline` должна
         // лечь до финального чекпойнта базы.
         self.sessions.close();
@@ -193,7 +288,11 @@ fn describe(listen: &Listen) -> String {
 
 /// Сессия прошла handshake: пир в реестр живых, провайдер запасной двери —
 /// в реестр моделей, подписка на события; уборка — по закрытию соединения.
-fn on_session<C: Components>(shared: &Shared<C>, sessions: &TaskTracker, accepted: Accepted) {
+pub(super) fn on_session<C: Components>(
+    shared: &Shared<C>,
+    sessions: &TaskTracker,
+    accepted: Accepted,
+) {
     let module = accepted.welcome.module.clone();
     let session = accepted.welcome.session_id.clone();
     let peer = accepted.peer.clone();

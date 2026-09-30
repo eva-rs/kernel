@@ -1,6 +1,7 @@
-//! Транспорты (`06 §1`): uds (`u32 BE` длина + кадр), ws и wss (один
-//! binary-message — один кадр). Выше транспорта все три — `Conn`: поток
-//! сырых кадров туда и обратно.
+//! Транспорты (`06 §1`): клиенты звонят ядру по uds (`u32 BE` длина + кадр),
+//! ws и wss (один binary-message — один кадр); ядро набирает сервисы по uds
+//! и tcp под Noise (`service`). Выше транспорта все они — `Conn`: поток сырых
+//! кадров туда и обратно.
 
 use std::{
     fmt,
@@ -25,8 +26,12 @@ use self::meter::Meter;
 
 pub mod framed;
 pub(crate) mod meter;
+pub mod noise;
+pub mod service;
 pub mod tls;
 pub mod ws;
+
+pub use self::service::{Incoming, ServiceListener, dial};
 
 /// Путь Upgrade у ws/wss.
 pub const WS_PATH: &str = "/v1/modules";
@@ -45,6 +50,9 @@ pub enum TransportError {
     Target(String),
     #[display("tls: {_0}")]
     Tls(String),
+    /// Noise не сошёлся: чужой PSK, не тот пир, битое сообщение.
+    #[display("noise: {_0}")]
+    Noise(String),
 }
 
 impl TransportError {
@@ -204,7 +212,10 @@ enum ListenerKind {
 impl Listener {
     pub async fn bind(listen: &Listen, cfg: &Config) -> Result<Self, TransportError> {
         let kind = match listen {
-            Listen::Uds(uds) => bind_uds(uds)?,
+            Listen::Uds(uds) => ListenerKind::Uds {
+                listener: bind_uds(uds)?,
+                path: uds.path.clone(),
+            },
             Listen::Ws(ws) => ListenerKind::Ws {
                 listener: TcpListener::bind(ws.addr)
                     .await
@@ -313,7 +324,7 @@ impl RawConn {
     }
 }
 
-fn bind_uds(uds: &UdsListen) -> Result<ListenerKind, TransportError> {
+pub(crate) fn bind_uds(uds: &UdsListen) -> Result<UnixListener, TransportError> {
     use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 
     let UdsListen { path, mode, group } = uds;
@@ -340,10 +351,7 @@ fn bind_uds(uds: &UdsListen) -> Result<ListenerKind, TransportError> {
         std::os::unix::fs::chown(path, None, Some(gid)).map_err(TransportError::io)?;
     }
 
-    Ok(ListenerKind::Uds {
-        listener,
-        path: path.clone(),
-    })
+    Ok(listener)
 }
 
 /// gid числом либо по имени из `/etc/group`.

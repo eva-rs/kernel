@@ -117,7 +117,7 @@ impl RpcClient {
         Self::establish(conn, request, options, handler).await
     }
 
-    /// Handshake поверх готового соединения (в том числе `Conn::pair`).
+    /// Handshake клиента поверх готового соединения (в том числе `Conn::pair`).
     pub async fn handshake<H: ModuleHandler>(
         conn: Conn,
         hello: Hello,
@@ -125,6 +125,23 @@ impl RpcClient {
         handler: H,
     ) -> Result<(Self, Welcome), ConnectError> {
         let request = HelloRequest::encode(&hello, &options)?;
+        Self::establish(conn, request, options, handler).await
+    }
+
+    /// Handshake сервиса на соединении, которое набрало ядро
+    /// (`Incoming::secure`): `hello` без токена, ограничен лишь `max_frame`.
+    pub async fn answer<H: ModuleHandler>(
+        conn: Conn,
+        hello: Hello,
+        options: ClientOptions,
+        handler: H,
+    ) -> Result<(Self, Welcome), ConnectError> {
+        if hello.token.is_some() {
+            return Err(ConnectError::Config(
+                "a dialed module sends no token".to_owned(),
+            ));
+        }
+        let request = HelloRequest::encode_dialed(&hello, &options)?;
         Self::establish(conn, request, options, handler).await
     }
 
@@ -144,7 +161,7 @@ impl RpcClient {
             }
         };
 
-        let caller = Caller::from_token(welcome.kind, welcome.module.clone());
+        let caller = Caller::from_kind(welcome.kind, welcome.module.clone());
         let service = ModuleService::new(handler, config.stream_buffer());
         let peer = Peer::spawn(conn, config, ids, service);
 
@@ -213,6 +230,19 @@ struct HelloRequest {
 
 impl HelloRequest {
     fn encode(hello: &Hello, options: &ClientOptions) -> Result<Self, ConnectError> {
+        Self::capped(hello, options, "max_hello", options.config.max_hello())
+    }
+
+    fn encode_dialed(hello: &Hello, options: &ClientOptions) -> Result<Self, ConnectError> {
+        Self::capped(hello, options, "max_frame", options.config.max_frame())
+    }
+
+    fn capped(
+        hello: &Hello,
+        options: &ClientOptions,
+        name: &str,
+        max: usize,
+    ) -> Result<Self, ConnectError> {
         let id = options.ids.next();
         let params = codec::encode(hello).map_err(|e| ConnectError::Config(e.to_string()))?;
         let raw = codec::encode_frame(&Frame::Request(Request {
@@ -221,10 +251,9 @@ impl HelloRequest {
             params,
         }))
         .map_err(|e| ConnectError::Config(e.to_string()))?;
-        let max = options.config.max_hello();
         if raw.len() > max {
             return Err(ConnectError::Config(format!(
-                "hello of {} bytes exceeds max_hello of {max} bytes",
+                "hello of {} bytes exceeds {name} of {max} bytes",
                 raw.len()
             )));
         }

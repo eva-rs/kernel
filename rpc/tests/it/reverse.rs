@@ -26,12 +26,9 @@ use eva_protocol::{
         tools::{ToolCall, ToolItem, ToolResult},
     },
 };
-use eva_rpc::{ModuleHandler, Progress};
+use eva_rpc::{ModuleHandler, NoHandler, Progress};
 
-use crate::{
-    harness::{Harness, Via, hello},
-    kernel::SERVICE_TOKEN,
-};
+use crate::harness::{Dial, Harness, Via, service_hello};
 
 struct Module {
     events: mpsc::UnboundedSender<Publish>,
@@ -120,15 +117,15 @@ struct Connected {
     hung_dropped: Arc<Notify>,
 }
 
-async fn connect(via: Via) -> Connected {
-    let mut h = Harness::start(via).await;
+async fn connect(dial: Dial) -> Connected {
+    let h = Harness::start(Via::Uds).await;
     let (events_tx, events) = mpsc::unbounded_channel();
     let hung_dropped = Arc::new(Notify::new());
     let module = Module {
         events: events_tx,
         hung_dropped: hung_dropped.clone(),
     };
-    let (client, accepted) = h.connect_with(hello(SERVICE_TOKEN), module).await;
+    let (client, accepted) = h.dial_with(dial, service_hello(), module).await;
     Connected {
         _h: h,
         _client: client,
@@ -180,8 +177,8 @@ fn request(model: &str) -> GenerateRequest {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_call_with_progress() {
-    for via in [Via::Uds, Via::Ws] {
-        let c = connect(via).await;
+    for dial in [Dial::Uds, Dial::Tcp] {
+        let c = connect(dial).await;
         let module = c.accepted.module();
 
         let items: Vec<_> = module
@@ -217,7 +214,7 @@ async fn tools_call_with_progress() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_call_cancel_reaches_the_module() {
-    let c = connect(Via::Uds).await;
+    let c = connect(Dial::Uds).await;
     let mut items = c
         .accepted
         .module()
@@ -239,8 +236,8 @@ async fn tools_call_cancel_reaches_the_module() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_call_without_handler() {
-    let mut h = Harness::start(Via::Uds).await;
-    let (_client, accepted) = h.connect(SERVICE_TOKEN).await;
+    let h = Harness::start(Via::Uds).await;
+    let (_client, accepted) = h.dial_with(Dial::Uds, service_hello(), NoHandler).await;
     // Тул исполняется внутри потока: отказ — его единственный элемент.
     let items: Vec<_> = accepted
         .module()
@@ -258,7 +255,7 @@ async fn tools_call_without_handler() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hooks() {
-    let c = connect(Via::Uds).await;
+    let c = connect(Dial::Uds).await;
     let module = c.accepted.module();
 
     let decision = module
@@ -294,7 +291,7 @@ async fn hooks() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn events_keep_order() {
-    let mut c = connect(Via::Ws).await;
+    let mut c = connect(Dial::Tcp).await;
     let module = c.accepted.module();
 
     for seq in 0..20 {
@@ -321,7 +318,7 @@ async fn events_keep_order() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn module_provider() {
-    let c = connect(Via::Uds).await;
+    let c = connect(Dial::Uds).await;
     let provider = c.accepted.module().provider(ProviderCap {
         decl: ProviderDecl {
             local: false,

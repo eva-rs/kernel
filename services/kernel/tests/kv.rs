@@ -5,9 +5,7 @@ mod common;
 
 use std::sync::atomic::Ordering;
 
-use common::{
-    OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, token, with_module_tokens,
-};
+use common::{OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, with_modules};
 use eva::bytesize::ByteSize;
 use eva_core::{CallStep as _, service::kv::Kv as _};
 use eva_protocol::{
@@ -18,7 +16,7 @@ use eva_protocol::{
     },
     types::{Bytes, Value},
 };
-use eva_sdk::{Module, SecretString};
+use eva_sdk::Module;
 use serde_json::json;
 
 async fn put(session: &mut TestSession, key: &str, value: impl Into<Value>) {
@@ -100,17 +98,17 @@ async fn bytes_roundtrip_in_process_and_over_uds() {
             ]),
         ),
     ]);
-    let h = common::start_with(with_module_tokens).await;
+    let h = common::start_with(with_modules).await;
     let mut svc = h.session(service(SVC)).await;
     put(&mut svc, "near", value.clone()).await;
     assert_eq!(read(&mut svc, "near").await, Some(value.clone()));
 
-    let (_listening, url) = h.listen().await;
     let module = Module::new()
-        .connect(&url, &SecretString::Plaintext(token(SVC)))
+        .listen(&common::sdk_service(h.dir.path(), SVC))
         .await
-        .expect("module connects");
-    let mut kernel = module.kernel();
+        .expect("module listens");
+    let (_listening, _url) = h.listen().await;
+    let mut kernel = module.kernel().await.expect("the kernel dials the module");
     let far = kernel
         .kv()
         .get()

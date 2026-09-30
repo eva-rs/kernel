@@ -26,7 +26,7 @@ use crate::{
     hands::Endpoints,
     providers::Settle as _,
     registry::{self, Models, Snapshot},
-    subsystems::modules::{live::Live, tokens::ConfigTokens},
+    subsystems::modules::{Registrations, live::Live, services::Services, tokens::ConfigTokens},
     world::{Demiurge, World},
 };
 
@@ -51,6 +51,7 @@ struct Inner<C: Components> {
     hands: Endpoints<C::Hands>,
     bus: Bus,
     tokens: ConfigTokens,
+    services: Services,
     live: Live,
     /// Дочитывание каталогов встроенных провайдеров; снимаются вместе с ядром.
     settling: std::sync::Mutex<JoinSet<()>>,
@@ -68,7 +69,7 @@ impl<C: Components> Shared<C> {
         demiurge: C::Demiurge,
         providers: BTreeMap<String, C::Provider>,
         hands: Endpoints<C::Hands>,
-        tokens: ConfigTokens,
+        registrations: Registrations,
     ) -> Self {
         let started_at = demiurge.now();
         let providers: ProvidersOf<C> = providers
@@ -93,7 +94,8 @@ impl<C: Components> Shared<C> {
             registry: std::sync::Mutex::default(),
             hands,
             bus: Bus::new(BUS_CAPACITY),
-            tokens,
+            tokens: registrations.tokens,
+            services: registrations.services,
             live: Live::default(),
             settling: std::sync::Mutex::default(),
         }))
@@ -244,6 +246,11 @@ impl<C: Components> Shared<C> {
     /// Токены `modules.tokens`, прочитанные на старте.
     pub fn tokens(&self) -> &ConfigTokens {
         &self.0.tokens
+    }
+
+    /// Реестр сервисов и причины провалов дозвона.
+    pub fn services(&self) -> &Services {
+        &self.0.services
     }
 
     /// Живые сессии модулей по имени.

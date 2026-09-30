@@ -44,8 +44,7 @@ modules:
   listen:
     - uds: modules.sock          # относительный путь — от state_dir
   tokens:
-    phone:                       # ключ записи — id модуля
-      kind: client
+    phone:                       # ключ записи — id клиента
       token: {file: /tmp/eva-dev/phone.token}
 llm:
   providers:
@@ -89,20 +88,22 @@ export EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/secrets/openrouter
 
 ## Секреты
 
-Каждый секрет — `eva::utils::SecretString` фреймворка [`eva`](https://git.desu.church/VienDesu/eva) в одной из двух форм: `{file: "/путь"}` или `{plaintext: "…"}`. Читается один раз при старте, хвостовые пробельные символы (перевод строки в конце файла) срезаются; ошибка чтения — отказ старта с путём ключа (`modules.tokens.phone.token: …`), пустой токен модуля или ключ рук — тоже.
+Каждый секрет — `eva::utils::SecretString` фреймворка [`eva`](https://git.desu.church/VienDesu/eva) в одной из двух форм: `{file: "/путь"}` или `{plaintext: "…"}`. Читается один раз при старте, хвостовые пробельные символы (перевод строки в конце файла) срезаются; ошибка чтения — отказ старта с путём ключа (`modules.tokens.phone.token: …`), пустой токен клиента, ключ сервиса или ключ рук — тоже.
 
 Предпочтительна форма `file`: в конфиге остаётся только путь. Форма `plaintext` годится лишь там, где значение не попадёт в мирочитаемое место, то есть вне Nix: в Nix store читать может любой пользователь машины, и NixOS-модуль её отвергает (см. ниже).
 
 | Секрет | Ключ | Переменная окружения |
 |---|---|---|
-| Токен модуля в конфиге ядра | `modules.tokens.<module>.token` | `EVA_MODULES__TOKENS__<MODULE>__TOKEN__FILE` |
+| Токен клиента в конфиге ядра | `modules.tokens.<module>.token` | `EVA_MODULES__TOKENS__<MODULE>__TOKEN__FILE` |
+| Ключ сервиса в конфиге ядра | `modules.services.<module>.key` | `EVA_MODULES__SERVICES__<MODULE>__KEY__FILE` |
 | Ключ API провайдера `openai` | `llm.providers.<name>.api_key` | `EVA_LLM__PROVIDERS__<NAME>__API_KEY__FILE` |
 | Ключ удалённого endpoint'а рук | `hands.endpoints.<name>.key` | `EVA_HANDS__ENDPOINTS__<NAME>__KEY__FILE` |
-| Токен в конфиге модуля на SDK | `module.token` | `EVA_MODULE__TOKEN__FILE` (если модуль читает env с префиксом `EVA_`) |
+| Токен в конфиге клиента на SDK | `module.token` | `EVA_MODULE__TOKEN__FILE` (если модуль читает env с префиксом `EVA_`) |
+| Ключ в конфиге сервиса на SDK | `module.key` | `EVA_MODULE__KEY__FILE` (так же) |
 
 Имена переменных приводятся к нижнему регистру, поэтому `<MODULE>` и `<NAME>` соответствуют строчным ключам конфига. Вне Nix вместо `…__FILE` допустимо `…__PLAINTEXT`.
 
-`Debug` и `Display` секрета — `<secret>`: значение не попадает в логи. От токенов модулей ядро держит в памяти только blake3-хэши.
+`Debug` и `Display` секрета — `<secret>`: значение не попадает в логи. От токенов клиентов ядро держит в памяти только blake3-хэши, от ключей сервисов — выведенный из них PSK.
 
 ## NixOS
 
@@ -126,13 +127,15 @@ export EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/secrets/openrouter
                 providers.router.kind = "openai";
                 default_model = "vendor/model";
               };
-              modules.tokens.phone.kind = "client";
+              # сервис этой машины слушает сокет в своём RuntimeDirectory с группой eva
+              modules.services.bridge.address = "uds:///run/eva-bridge/module.sock";
             };
             # файл → LoadCredential; в settings встаёт
             # <ключ> = { file = "/run/credentials/eva-kernel.service/<ключ>"; }
             secrets = {
               "llm.providers.router.api_key" = "/run/secrets/openrouter";
               "modules.tokens.phone.token" = "/run/secrets/eva-phone";
+              "modules.services.bridge.key" = "/run/secrets/eva-bridge";
             };
           };
         }
@@ -158,25 +161,27 @@ export EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/secrets/openrouter
 Что задаёт модуль:
 
 - `StateDirectory = eva-kernel`: systemd передаёт `$STATE_DIRECTORY`, и `system.state_dir` по умолчанию становится `/var/lib/eva-kernel`.
-- `RuntimeDirectory = eva-kernel` (сохраняется между рестартами) и слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock"; group = "eva";}]`: сокет с правами `0660` и группой `eva`. Модуль объявляет `users.groups.eva` и даёт сервису `SupplementaryGroups = [ "eva" ]`, иначе процесс не смог бы отдать сокет этой группе. Локальным модулям на той же машине нужно то же: `SupplementaryGroups = [ "eva" ]`. Если задать `settings.modules.listen`, список заменяется целиком.
+- `RuntimeDirectory = eva-kernel` (сохраняется между рестартами) и слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock"; group = "eva";}]`: сокет с правами `0660` и группой `eva`. Модуль объявляет `users.groups.eva` и даёт сервису `SupplementaryGroups = [ "eva" ]`, иначе процесс не смог бы отдать сокет этой группе. Локальному клиенту на той же машине нужно то же: `SupplementaryGroups = [ "eva" ]`. По этой же группе ядро дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock` с правами `0660` и группой `eva` — сам (`module.listen = {uds: /run/eva-<id>/module.sock, group: eva}`, юниту — `RuntimeDirectory = eva-<id>` и та же группа) или через socket-юнит (`SocketGroup = eva`, `SocketMode = 0660`; SDK принимает унаследованный сокет по `LISTEN_FDS`). Один файл ключа отдаётся обоим юнитам: ядру — `secrets."modules.services.<id>.key"`, модулю — `LoadCredential` в `module.key`. Если задать `settings.modules.listen`, список заменяется целиком.
 - `TimeoutStopSec = 180`, `Restart = on-failure`, `RestartSec = 5`.
 
 Assertions — сборка системы отказывает, если секрет попал бы в мирочитаемый Nix store:
 
 | Что | Почему отказ |
 |---|---|
-| `settings.llm.providers.*.api_key`, `settings.modules.tokens.*.token`, `settings.hands.endpoints.*.key` в форме `plaintext` | `settings` рендерятся в Nix store; нужен `secrets."<ключ>"` |
+| `settings.llm.providers.*.api_key`, `settings.modules.tokens.*.token`, `settings.modules.services.*.key`, `settings.hands.endpoints.*.key` в форме `plaintext` | `settings` рендерятся в Nix store; нужен `secrets."<ключ>"` |
 | Те же ключи в форме `file` с путём в Nix store, путь в `secrets` из Nix store | файл читаем всеми |
 | Переменная `EVA_*__PLAINTEXT` (в любом регистре) в `environment` | окружение юнита лежит в Nix store |
 | Путь из Nix store в `extraConfigFiles` или `environmentFiles` | файл читаем всеми |
 
 ## Подключение клиентского модуля
 
-1. Выдайте модулю токен. Два способа:
-   - **в конфиге ядра**: `modules.tokens.<module> = {token, kind: client | service}`, `token` — `{file: …}` (на NixOS — через `secrets`). Такой токен сильнее выданного операцией: если конфиг называет модуль, принимается только конфиговый токен;
-   - **операцией** `modules.token_issue {module, kind}` от уже подключённого клиента хозяина. Токен показывается один раз, ядро хранит только его blake3-хэш. Повторная выдача — ротация: старый токен отзывается, его сессии закрываются. Отказы: модуль, который называет `modules.tokens`, — `conflict` (правьте конфиг); собственный модуль вызывающего — `conflict` (ротация закрыла бы сессию, которая получает единственную копию нового токена); зарезервированный или невалидный id — `invalid_params`.
-2. Ключ записи токена — id модуля: ядро узнаёт модуль по токену (имени в `hello` нет) и возвращает id в `welcome.module`. Формат `[a-z][a-z0-9_-]{0,63}`; `kernel`, `system`, `local` зарезервированы. Зарезервированный или невалидный ключ `modules.tokens`, пустой токен и один токен у двух ключей не дают ядру стартовать; токен короче 32 символов — предупреждение в логе.
-3. Адрес ядра для модуля: `uds:///run/eva-kernel/modules.sock`, `ws://host:port/v1/modules` или `wss://host:port/v1/modules`.
+Клиент хозяина (телефон, TUI) звонит в ядро сам, с токеном. Сервис — наоборот: слушает, а ядро набирает его ([ниже](#подключение-сервисного-модуля)).
+
+1. Выдайте клиенту токен. Два способа:
+   - **в конфиге ядра**: `modules.tokens.<module> = {token}`, `token` — `{file: …}` (на NixOS — через `secrets`). Такой токен сильнее выданного операцией: если конфиг называет модуль, принимается только конфиговый токен;
+   - **операцией** `modules.token_issue {module}` от уже подключённого клиента хозяина. Токен показывается один раз, ядро хранит только его blake3-хэш. Повторная выдача — ротация: старый токен отзывается, его сессии закрываются. Отказы: id, который называет `modules.tokens` или `modules.services` или занял `modules.add`, — `conflict`; собственный модуль вызывающего — `conflict` (ротация закрыла бы сессию, которая получает единственную копию нового токена); зарезервированный или невалидный id — `invalid_params`.
+2. Ключ записи токена — id клиента: ядро узнаёт клиента по токену (имени в `hello` нет) и возвращает id в `welcome.module`. Формат `[a-z][a-z0-9_-]{0,63}`; `kernel`, `system`, `local` зарезервированы. Зарезервированный или невалидный ключ `modules.tokens`, пустой токен, один токен у двух ключей и ключ `kind` не дают ядру стартовать; токен короче 32 символов — предупреждение в логе.
+3. Адрес ядра для клиента: `uds:///run/eva-kernel/modules.sock`, `ws://host:port/v1/modules` или `wss://host:port/v1/modules`.
 
 Модуль на `eva-sdk`, клиент хозяина на встроенной поверхности `local`:
 
@@ -189,11 +194,11 @@ module:
 
 ```rust
 use eva_sdk::prelude::*;
-use eva_sdk::{ModuleConfig, protocol::requests::surfaces};
+use eva_sdk::{ClientConfig, protocol::requests::surfaces};
 
 let connected = Module::new()
     .ask(true)                     // рисует кнопки pending-запросов (с M5)
-    .connect_config(&cfg)          // cfg: ModuleConfig из секции `module`
+    .connect_config(&cfg)          // cfg: ClientConfig из секции `module`
     .await?;
 log::info!(module:% = connected.module(); "connected");   // "phone" — ключ записи токена
 
@@ -210,3 +215,40 @@ connected.run(shutdown).await?;
 Surface не объявляются: ядро выводит, кто их обслуживает, из живых сессий. Клиент обслуживает `local`. Служебный модуль создаёт свою surface сам — `kernel.surfaces().create()` сразу после подключения (`surfaces::create::Args {id, name, rules}`); ядро записывает модуль-создателя в `surface.module`, и обслуживает surface его живая сессия. Для создателя вызов идемпотентен, поэтому безопасен на каждом старте; `name`/`rules` меняет `surfaces.update`.
 
 `connect_config` ждёт ядро до `module.connect_wait` (по умолчанию 3 минуты); `run` переподключается с `hello.resume`, и регистрировать после реконнекта нечего: surface уже в базе ядра, обслуживание ядро выводит из новой сессии. Подробно — в главе [SDK модулей](sdk.md).
+
+## Подключение сервисного модуля
+
+Сервис (мост, MCP) адреса ядра не знает: он слушает `uds` или `tcp`, а ядро звонит ему по записи реестра и шифрует соединение Noise с общим ключом.
+
+```sh
+openssl rand -hex 32 > /tmp/eva-dev/bridge.key
+chmod 600 /tmp/eva-dev/bridge.key
+```
+
+1. Зарегистрируйте сервис у ядра. Два способа:
+   - **в конфиге ядра**: `modules.services.<module> = {address, key}`, например `{address: "uds:///tmp/eva-dev/bridge.sock", key: {file: /tmp/eva-dev/bridge.key}}`. Такая запись сильнее добавленной операцией;
+   - **операцией** `modules.add {module, address, key?}` от клиента хозяина. Без `key` ядро генерирует его и возвращает один раз в ответе. Ключ хранится в базе ядра как есть — ядро само им дозванивается. `modules.remove {module}` убирает такую запись и закрывает сессию.
+2. Ключ записи — id сервиса; модулю его знать не нужно, он приходит в `welcome.module`. Ключ короче 32 символов — предупреждение на старте (у `modules.add` — отказ).
+3. Конфиг модуля — адрес, где слушать, и тот же ключ:
+
+```yaml
+# конфиг модуля
+module:
+  listen: {uds: /tmp/eva-dev/bridge.sock}
+  key: {file: /tmp/eva-dev/bridge.key}
+```
+
+```rust
+let listening = Module::new()
+    .listen(&cfg)                  // cfg: ServiceConfig из секции `module`
+    .await?;
+let mut kernel = listening.kernel().await?;   // ждёт первого звонка до `module.kernel_wait`
+kernel
+    .surfaces()
+    .create()
+    .call(surfaces::create::Args { id: "bridge".into(), name: "Bridge".into(), rules: None })
+    .await?;
+listening.run(shutdown).await?;
+```
+
+Порядок запуска не важен: ядро звонит сразу при старте и при `modules.add`, а не дозвонившись — повторяет с паузой от 1 s до 60 s; причина провала видна в `modules.list` (`dial.error`). Рестарт ядра — новое соединение вытесняет прежнее, `Kernel` модуля продолжает работать. Подробно — в главе [SDK модулей](sdk.md#сервис-listen--listening).

@@ -17,7 +17,7 @@ use eva_protocol::{
         Limit, Patch, chats, folders,
         surfaces::{create, get, list, update},
     },
-    types::{ChatId, Effort, FolderId, SurfaceId, module::TokenKind},
+    types::{ChatId, Effort, FolderId, SurfaceId, module::ModuleKind},
 };
 
 fn create_args(id: &str, name: &str) -> create::Args {
@@ -353,23 +353,23 @@ async fn the_creator_session_serves_its_surface() {
     assert!(h.serving(SVC).await.is_empty());
     assert!(!h.ask_ui(SVC).await);
 
-    let quiet = h.live_session(SVC, TokenKind::Service, false);
+    let quiet = h.live_session(SVC, ModuleKind::Service, false);
     assert_eq!(h.serving(SVC).await, [SVC]);
     assert!(!h.ask_ui(SVC).await, "serving without ask draws no buttons");
     h.drop_session(SVC, &quiet);
 
-    let asking = h.live_session(SVC, TokenKind::Service, true);
+    let asking = h.live_session(SVC, ModuleKind::Service, true);
     assert!(h.ask_ui(SVC).await);
 
-    let _phone = h.live_session(CLIENT, TokenKind::Client, true);
-    let _other = h.live_session(OTHER, TokenKind::Service, true);
+    let _phone = h.live_session(CLIENT, ModuleKind::Client, true);
+    let _other = h.live_session(OTHER, ModuleKind::Service, true);
     assert_eq!(h.serving(SVC).await, [SVC], "only the creator serves it");
 
     h.drop_session(SVC, &asking);
     assert!(!h.ask_ui(SVC).await, "gone with the creator's session");
 
     // Реконнект — новая сессия того же модуля: регистрировать снова нечего.
-    h.live_session(SVC, TokenKind::Service, true);
+    h.live_session(SVC, ModuleKind::Service, true);
     assert!(h.ask_ui(SVC).await);
 }
 
@@ -379,15 +379,15 @@ async fn every_client_serves_local_and_no_service_does() {
     let h = common::start().await;
     h.service_with_surface(SVC).await;
 
-    let _svc = h.live_session(SVC, TokenKind::Service, true);
+    let _svc = h.live_session(SVC, ModuleKind::Service, true);
     assert!(
         h.serving("local").await.is_empty(),
         "a service never serves local"
     );
     assert!(!h.ask_ui("local").await);
 
-    let phone = h.live_session(CLIENT, TokenKind::Client, true);
-    let _tui = h.live_session(CLIENT2, TokenKind::Client, false);
+    let phone = h.live_session(CLIENT, ModuleKind::Client, true);
+    let _tui = h.live_session(CLIENT2, ModuleKind::Client, false);
     assert_eq!(h.serving("local").await, [CLIENT, CLIENT2]);
     assert!(h.ask_ui("local").await);
     assert!(h.serving("system").await.is_empty());

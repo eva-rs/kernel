@@ -1,6 +1,11 @@
-//! Сервер на uds/ws с тестовым ядром и сырой uds-клиент для проверок протокола.
+//! Сервер на uds/ws с тестовым ядром, набираемый им сервис на uds/tcp и сырой
+//! uds-клиент для проверок протокола.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::{
@@ -12,7 +17,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use eva::{time::HumanDuration, url::Url};
 use eva_protocol::{
-    types::SessionId,
+    types::{ModuleId, SessionId},
     wire::{
         Capabilities, Frame, RpcError,
         frame::{Payload, Request},
@@ -21,17 +26,29 @@ use eva_protocol::{
     },
 };
 use eva_rpc::{
-    Accepted, ClientOptions, Config, Listener, ModuleHandler, NoHandler, RpcClient, Server, codec,
-    config::{FileMode, Listen, UdsListen, WsListen},
+    Accepted, ClientOptions, Config, Listener, ModuleHandler, NoHandler, Psk, RpcClient, Server,
+    ServiceListen, ServiceListener, codec,
+    config::{FileMode, Listen, TcpListen, UdsListen, WsListen},
 };
 
-use crate::kernel::{Auth, Kernel};
+use crate::kernel::{Auth, Kernel, SERVICE};
 
+/// Слушатель ядра, куда звонит клиент.
 #[derive(Debug, Clone, Copy)]
 pub enum Via {
     Uds,
     Ws,
 }
+
+/// Слушатель сервиса, который набирает ядро.
+#[derive(Debug, Clone, Copy)]
+pub enum Dial {
+    Uds,
+    Tcp,
+}
+
+/// Секрет сервиса `SERVICE` у обеих сторон.
+pub const KEY: &str = "0123456789abcdef0123456789abcdef";
 
 pub fn ms(ms: u64) -> HumanDuration {
     HumanDuration(Duration::from_millis(ms))
@@ -48,12 +65,13 @@ pub fn config() -> Config {
 
 pub struct Harness {
     pub kernel: Kernel,
+    pub server: Server<Kernel, Auth>,
     pub target: Url,
     pub socket: Option<PathBuf>,
     pub config: Config,
     pub sessions: mpsc::UnboundedReceiver<Accepted>,
     _stop: oneshot::Sender<()>,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl Harness {
@@ -94,7 +112,9 @@ impl Harness {
         let server = Server::new(kernel.clone(), Auth::default(), config.clone());
         let (sessions_tx, sessions) = mpsc::unbounded_channel();
         let (stop, stopped) = oneshot::channel::<()>();
+        let serving = server.clone();
         tokio::spawn(async move {
+            let server = serving;
             let shutdown = async {
                 _ = stopped.await;
             };
@@ -107,13 +127,59 @@ impl Harness {
 
         Self {
             kernel,
+            server,
             target,
             socket,
             config,
             sessions,
             _stop: stop,
-            _dir: dir,
+            dir,
         }
+    }
+
+    /// Слушатель сервиса с PSK из `key`; у tcp порт выбирает система.
+    pub async fn listen(&self, dial: Dial, key: &str) -> ServiceListener {
+        static SOCKETS: AtomicUsize = AtomicUsize::new(0);
+        let listen = match dial {
+            Dial::Uds => ServiceListen::Uds(UdsListen {
+                path: self.dir.path().join(format!(
+                    "service-{}.sock",
+                    SOCKETS.fetch_add(1, Ordering::Relaxed)
+                )),
+                mode: FileMode::default(),
+                group: None,
+            }),
+            Dial::Tcp => ServiceListen::Tcp(TcpListen {
+                addr: "127.0.0.1:0".parse().unwrap(),
+            }),
+        };
+        ServiceListener::bind(&listen, Psk::derive(key), &self.config)
+            .await
+            .unwrap()
+    }
+
+    /// Ядро набирает сервис `SERVICE`, тот отвечает `hello` с `handler`.
+    pub async fn dial_with<H: ModuleHandler>(
+        &self,
+        dial: Dial,
+        hello: Hello,
+        handler: H,
+    ) -> (RpcClient, Accepted) {
+        let listener = self.listen(dial, KEY).await;
+        let address = listener.local_addr().unwrap();
+        let options = self.options();
+        let module = tokio::spawn(async move {
+            let conn = listener.accept().await.unwrap().secure().await.unwrap();
+            RpcClient::answer(conn, hello, options, handler).await
+        });
+        let accepted = self
+            .server
+            .dial(&address, &Psk::derive(KEY), &ModuleId::from(SERVICE))
+            .await
+            .unwrap();
+        let (client, welcome) = module.await.unwrap().unwrap();
+        assert_eq!(accepted.welcome.session_id, welcome.session_id);
+        (client, accepted)
     }
 
     pub fn options(&self) -> ClientOptions {
@@ -156,9 +222,17 @@ impl Harness {
 
 pub fn hello(token: &str) -> Hello {
     Hello {
+        token: Some(token.into()),
+        ..service_hello()
+    }
+}
+
+/// `hello` набранного сервиса: без токена.
+pub fn service_hello() -> Hello {
+    Hello {
         version: "0.0.0".to_owned(),
         proto_version: ProtoVersion::CURRENT,
-        token: token.into(),
+        token: None,
         capabilities: Capabilities::default(),
         resume: None,
     }

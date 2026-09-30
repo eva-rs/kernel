@@ -18,7 +18,7 @@ eva-kernel --config base.yaml --config secrets.toml
 | Обязательность | секция `llm` обязательна; остальные необязательны и целиком берут умолчания |
 | Незнакомые ключи | молча игнорируются (опечатка не даёт ошибки); исключение — `models.<id>` провайдера `openai` и его `caps` |
 
-Из-за приведения регистра ключ словаря, заданный в файле с заглавными буквами (например, имя провайдера `Router`), из окружения не адресуется. Имена в `llm.providers`, `modules.tokens`, `hands.endpoints` лучше писать строчными.
+Из-за приведения регистра ключ словаря, заданный в файле с заглавными буквами (например, имя провайдера `Router`), из окружения не адресуется. Имена в `llm.providers`, `modules.tokens`, `modules.services`, `hands.endpoints` лучше писать строчными.
 
 ```sh
 EVA_LLM__DEFAULT_MODEL=vendor/model
@@ -42,7 +42,8 @@ EVA_SYSTEM__LOGGING__DEFAULT_LEVEL=debug
 | Ключ | Что |
 |---|---|
 | `llm.providers.<name>.api_key` (`kind: openai`) | ключ API; ошибка — `llm.providers.<name>: api_key: …` |
-| `modules.tokens.<module>.token` | токен модуля; пустой — отказ старта |
+| `modules.tokens.<module>.token` | токен клиента; пустой — отказ старта |
+| `modules.services.<module>.key` | секрет PSK сервиса, тот же, что `module.key` у модуля; пустой — отказ старта, короче 32 символов — предупреждение |
 | `hands.endpoints.<name>.key` | pre-shared key демона рук; пустой — отказ старта |
 | `system.logging.append[].otel.basic_auth` | учётка OTel-экспорта (читает фреймворк; только при сборке с `otel`) |
 
@@ -51,6 +52,7 @@ EVA_SYSTEM__LOGGING__DEFAULT_LEVEL=debug
 ```sh
 EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/credentials/eva-kernel.service/router
 EVA_MODULES__TOKENS__PHONE__TOKEN__FILE=/run/credentials/eva-kernel.service/phone
+EVA_MODULES__SERVICES__BRIDGE__KEY__FILE=/run/credentials/eva-kernel.service/bridge
 EVA_HANDS__ENDPOINTS__LAPTOP__KEY__FILE=/run/credentials/eva-kernel.service/laptop
 ```
 
@@ -65,7 +67,7 @@ llm:
   default_model: vendor/model
 modules:
   tokens:
-    phone: {token: {file: /run/credentials/eva-kernel.service/phone}, kind: client}
+    phone: {token: {file: /run/credentials/eva-kernel.service/phone}}
 ```
 
 Без ключей и сети — провайдер `mock` (см. [Провайдеры](providers.md)):
@@ -145,12 +147,13 @@ llm:
 
 ## `modules`
 
-Слушатели и транспорт RPC модулей, токены и лимиты пространств модулей. Протокол — в главе [Протокол модулей](protocol.md).
+Реестр сервисов, которые набирает ядро, слушатели клиентов, транспорт RPC, токены клиентов и лимиты пространств модулей. Протокол — в главе [Протокол модулей](protocol.md).
 
 | Ключ | Тип | По умолчанию | Смысл |
 |---|---|---|---|
-| `listen` | список слушателей | `[{uds: modules.sock, mode: 0o660, group: eva}]` | см. ниже; заданный список заменяет умолчание целиком. NixOS-модуль ставит своё умолчание (см. [NixOS](#nixos)) |
-| `tokens` | `{модуль: {token, kind}}` | `{}` | статические токены; ключ — id модуля (ядро узнаёт модуль по токену), `token` — секрет (см. [Секреты](#секреты)), `kind`: `client` (клиент хозяина) или `service`. Токен из конфига сильнее выданного операцией `modules.token_issue`. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}`, ключ `kernel`/`system`/`local`, пустой токен, один токен у двух ключей. Токен короче 32 символов — предупреждение |
+| `listen` | список слушателей | `[{uds: modules.sock, mode: 0o660, group: eva}]` | слушатели клиентов, см. ниже; заданный список заменяет умолчание целиком. NixOS-модуль ставит своё умолчание (см. [NixOS](#nixos)) |
+| `services` | `{модуль: {address, key}}` | `{}` | реестр сервисов: ключ — id модуля, `address` — куда звонит ядро (см. [Сервисы](#сервисы-modulesservices)), `key` — секрет PSK (см. [Секреты](#секреты)). Запись конфига сильнее добавленной операцией `modules.add` |
+| `tokens` | `{модуль: {token}}` | `{}` | токены клиентов хозяина; ключ — id модуля (ядро узнаёт клиента по токену), `token` — секрет. Токен из конфига сильнее выданного операцией `modules.token_issue`. Ключ `kind` — ошибка старта с указанием на `modules.services`: сервисы токенов не носят. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}`, ключ `kernel`/`system`/`local`, пустой токен, один токен у двух ключей. Токен короче 32 символов — предупреждение |
 | `call_reconnect_grace` | длительность | `30s` | сколько незавершённый `tools.call` ждёт реконнекта модуля (M4) |
 | `offline_forget` | длительность | `7d` | модуль offline дольше — `forgotten`; проверяется на старте и раз в час |
 | `hooks.timeout` | длительность | `2s` | потолок таймаута хука модуля (хуки вызываются турами, M2) |
@@ -162,9 +165,33 @@ llm:
 | `kv_quota` | размер | `64MiB` | ключи и значения `kv.*` одного модуля вместе, плюс 64 байта на запись |
 | `kv_value_max` | размер | `1MiB` | потолок одного значения `kv.set` |
 
+### Сервисы `modules.services`
+
+Сервисный модуль (мост мессенджера, MCP, удалённый провайдер) адреса ядра не знает: он слушает, а ядро само набирает каждую запись реестра — `modules.services` плюс записи, добавленные операцией `modules.add`. Адрес — строка:
+
+| Форма | Поток |
+|---|---|
+| `uds:///<абсолютный путь>` | Unix-сокет |
+| `tcp://<host>:<port>` | TCP; имя хоста резолвится на каждой попытке, IPv6 — в скобках: `tcp://[::1]:7000` |
+
+Относительный путь, адрес без порта, путь/query/userinfo у `tcp` и другие схемы — ошибка старта. На обоих транспортах соединение шифрует Noise с PSK из `key`; сервис на SDK держит тот же секрет в `module.key` ([SDK](sdk.md)). Ключ — секрет высокой энтропии (например, `openssl rand -hex 32`): угадываемый подбирается офлайн по перехваченному handshake.
+
+```yaml
+modules:
+  services:
+    bridge:
+      address: uds:///run/eva-bridge/module.sock
+      key: {file: /run/credentials/eva-kernel.service/bridge}
+    mcp:
+      address: tcp://10.0.0.4:7000
+      key: {file: /run/credentials/eva-kernel.service/mcp}
+```
+
+На каждую запись — петля дозвона: первая попытка сразу при старте, затем повтор с паузой 1s, 2s, 4s… до 60s (со случайным разбросом вниз до половины); сессия дольше `ping_timeout` сбрасывает паузу. Петля не сдаётся: сервис, поднятый после ядра, подхватывается следующей попыткой. Причина последнего провала видна в `modules.list` (`dial.error`), счётчик — `modules.dial_failed`. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}` или `kernel`/`system`/`local`, один id и в `services`, и в `tokens`, пустой или нечитаемый `key`. Id — одно пространство имён с токенами клиентов: строка базы (`modules.add`, `modules.token_issue`) с id из конфига игнорируется с предупреждением на старте.
+
 ### Слушатели `modules.listen`
 
-Вид слушателя задаётся ключом адреса:
+Слушатели принимают только клиентов хозяина (телефон, TUI) с токеном. Вид слушателя задаётся ключом адреса:
 
 | Форма | Поля |
 |---|---|
@@ -180,7 +207,7 @@ llm:
 
 | Ключ | Тип | По умолчанию | Смысл |
 |---|---|---|---|
-| `handshake_timeout` | длительность | `10s` | TLS, Upgrade и `hello` должны уложиться в это время |
+| `handshake_timeout` | длительность | `10s` | всё до `welcome` укладывается в это время: у клиента — TLS, Upgrade и `hello` от accept, у сервиса — connect, Noise и `hello` от начала дозвона |
 | `ping_interval` | длительность | `15s` | период `ping` и heartbeat долгих потоков |
 | `ping_timeout` | длительность | `45s` | тишина дольше — соединение закрывается, сессия offline |
 | `request_timeout` | длительность | `60s` | ответ на не-потоковый запрос и первый кадр потока |
@@ -189,7 +216,7 @@ llm:
 | `max_inflight` | целое 1..=4096 | `64` | одновременных не-потоковых запросов и загрузок сессии; сверх — `quota` |
 | `max_streams` | целое 1..=4096 | `256` | одновременных потоков сессии; сверх — `quota` |
 | `max_frame` | размер | `16MiB` | кадр больше — соединение закрывается с `invalid_params` |
-| `max_hello` | размер | `4MiB` | потолок кадра `hello`, не больше `max_frame`; больше — отказ `invalid_params`, на который SDK не переподключается |
+| `max_hello` | размер | `4MiB` | потолок кадра `hello` на слушателе клиентов, не больше `max_frame`; больше — отказ `invalid_params`, на который SDK не переподключается. Набранный ядром сервис уже доказал PSK: его `hello` ограничен лишь `max_frame` |
 | `blob_chunk` | размер | `1MiB` | потолок чанка `blobs.put`; больше — `invalid_params`. Непрочитанные чанки всех загрузок сессии вместе — не больше `stream_buffer × blob_chunk`, сверх — `quota` этой загрузке |
 | `idempotency_window` | длительность | `10m` | сколько помнится ответ мутирующего запроса по `(session_id, request.id)` |
 | `proto_min_major` | u16 \| null | null — только текущий | наименьший принимаемый MAJOR версии протокола в `hello` |
@@ -265,4 +292,4 @@ llm:
 | `environment`, `environmentFiles` | переменные окружения и `EnvironmentFile` systemd |
 | `user`, `group` | по умолчанию `eva-kernel`; модуль их не создаёт |
 
-Модуль задаёт `StateDirectory=eva-kernel` (отсюда `state_dir` по умолчанию — `/var/lib/eva-kernel`), `RuntimeDirectory=eva-kernel`, `TimeoutStopSec=180`, значение по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock"; group = "eva";}]`, группу `users.groups.eva` и `SupplementaryGroups = [ "eva" ]` сервиса. Assertions отвергают `plaintext`-секреты в `settings`, переменные `EVA_*__PLAINTEXT` в `environment` и пути из Nix store в секретах, `extraConfigFiles` и `environmentFiles`. Подробно — в [Быстром старте](quickstart.md#nixos).
+Модуль задаёт `StateDirectory=eva-kernel` (отсюда `state_dir` по умолчанию — `/var/lib/eva-kernel`), `RuntimeDirectory=eva-kernel`, `TimeoutStopSec=180`, значение по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock"; group = "eva";}]`, группу `users.groups.eva` и `SupplementaryGroups = [ "eva" ]` сервиса. По группе `eva` ядро и дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock` с правами `0660` и группой `eva` (сам, `module.listen.group = eva`, или через socket-юнит с `SocketGroup=eva`, `SocketMode=0660`), а один файл ключа отдаётся обоим юнитам — ядру как `secrets."modules.services.<id>.key"`. Assertions отвергают `plaintext`-секреты в `settings`, переменные `EVA_*__PLAINTEXT` в `environment` и пути из Nix store в секретах, `extraConfigFiles` и `environmentFiles`. Подробно — в [Быстром старте](quickstart.md#nixos).
