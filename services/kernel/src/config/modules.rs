@@ -4,7 +4,6 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use eva::{bytesize::ByteSize, data, time::HumanDuration, utils::SecretString};
-use serde::{Deserialize as _, Deserializer, de::IgnoredAny};
 
 use eva_protocol::types::{ModuleId, module::ServiceAddress};
 use eva_rpc::config::{Listen, UdsListen};
@@ -81,21 +80,12 @@ const fn secs(n: u64) -> HumanDuration {
 pub struct TokenEntry {
     /// `{plaintext: …}` или `{file: …}`; читается один раз на старте.
     pub token: SecretString,
-    /// Ключ `kind` задан — с любым значением, даже пустым: сервис с токеном
-    /// стал бы клиентом с правами хозяина, поэтому это ошибка старта.
-    #[serde(default, deserialize_with = "present", skip_serializing)]
-    #[schemars(skip)]
-    pub kind: bool,
 }
 
 impl TokenEntry {
     pub const fn new(token: SecretString) -> Self {
-        Self { token, kind: false }
+        Self { token }
     }
-}
-
-fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-    IgnoredAny::deserialize(deserializer).map(|_| true)
 }
 
 /// Сервис из конфига: куда звонить и общий с модулем секрет PSK (`06 §2.1`).

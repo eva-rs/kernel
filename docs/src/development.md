@@ -13,7 +13,7 @@
 | `providers/all/` | `eva-providers` | `ProviderConfig` под тегом `kind`, `AnyProvider`, `build` |
 | `services/kernel/` | `eva-kernel` | библиотека ядра и бинарь `eva-kernel` |
 | `docs/` | — | эта книга (mdBook) |
-| `flake.nix` | — | пакеты, devShell, NixOS-модуль, проверка NixOS-модуля |
+| `flake.nix` | — | `eva.lib.mkServiceFlake` фреймворка: пакет, devShell, NixOS-модуль |
 
 Внутри `services/kernel/src/`:
 
@@ -36,8 +36,7 @@
 nix develop -c cargo check --workspace
 nix develop -c cargo test -p eva-provider-openai
 nix build .#eva-kernel        # ./result/bin/eva-kernel
-nix build .#docs              # книга в ./result
-nix flake check               # включая проверку assertions NixOS-модуля
+nix develop -c mdbook build docs   # книга в docs/book
 ```
 
 Почему devShell обязателен:

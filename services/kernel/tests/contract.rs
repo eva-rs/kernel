@@ -28,7 +28,7 @@ use eva::{
     time::{Clock as _, Date, HumanDuration},
     url::Url,
 };
-use eva_core::{ByteStream, prelude::*};
+use eva_core::prelude::*;
 use eva_kernel::{
     Config,
     db::{Db as _, DbResult, Queries as _, hands_grants::NewGrant},
@@ -36,8 +36,8 @@ use eva_kernel::{
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
-        Patch, Response, agents, blobs, chats, cron, folders, fs, hands_grants, inference, kv,
-        memory, models, modules, notes, persons, sleep,
+        ByteStream, Patch, Response, agents, blobs, chats, cron, folders, fs, hands_grants,
+        inference, kv, memory, models, modules, notes, persons, sleep,
         sqlite::{self, Statement},
         stats, surfaces,
     },

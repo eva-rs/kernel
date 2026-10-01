@@ -57,7 +57,7 @@ graph LR
 nix develop                                # devShell: toolchain, sqlite, cargo-insta, mdbook
 nix develop -c cargo test --workspace      # тесты
 nix build .#eva-kernel                     # бинарь: ./result/bin/eva-kernel
-nix build .#docs                           # книга: ./result/index.html
+nix develop -c mdbook build docs           # книга: docs/book/index.html
 nix develop -c mdbook serve docs           # книга с живой пересборкой
 ```
 
@@ -96,9 +96,12 @@ modules:
 
 ## NixOS
 
-`nixosModules.default` даёт `services.eva-kernel`: несекретное — в `settings`, секреты — `secrets."<ключ>" = <файл>`. systemd отдаёт файл сервису через `LoadCredential`, в конфиг встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}`.
+Флейк — `eva.lib.mkServiceFlake` фреймворка: `nixosModules.default` даёт `services.eva-kernel`, где несекретное — в `settings`, а секреты — `secrets."<ключ>" = <файл>`. systemd отдаёт файл сервису через `LoadCredential`, в конфиг встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}`. Пользователя `eva-kernel` и группу `eva` модуль не создаёт — их объявляет хост.
 
 ```nix
+users.users.eva-kernel = { isSystemUser = true; group = "eva-kernel"; };
+users.groups = { eva-kernel = { }; eva = { }; };
+
 services.eva-kernel = {
   enable = true;
   settings = {
@@ -114,7 +117,7 @@ services.eva-kernel = {
 };
 ```
 
-`settings` попадают в мирочитаемый Nix store, поэтому модуль отвергает сборку, если секрет стоит в `settings` формой `plaintext`, в `environment` переменной `EVA_…__PLAINTEXT` или если файл секрета, `extraConfigFiles` или `environmentFiles` лежит в сторе. Права файлов задаёт не код, а модуль: база (в ней ключи сервисов из `modules.add`), blob'ы и песочницы — только пользователю ядра (`StateDirectoryMode = 0700`, `UMask = 0077`); сокет клиентов `/run/eva-kernel/modules.sock` держит socket-юнит `eva-kernel.socket` с группой `eva`; сервисы машины слушают `/run/eva-<id>/module.sock` с той же группой, ядро в ней состоит. Подробно — [Быстрый старт](docs/src/quickstart.md#nixos).
+`settings` попадают в мирочитаемый Nix store, поэтому сборка отказывает, если секрет (`llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`) стоит в `settings` формой `plaintext`, и если ключ `secrets` не совпадает ни с одним из этих полей. Права файлов задаёт не код, а модуль: база (в ней ключи сервисов из `modules.add`), blob'ы и песочницы — только пользователю ядра (`StateDirectoryMode = 0700`, `UMask = 0077`); сокет клиентов `/run/eva-kernel/modules.sock` ядро связывает само в своём `RuntimeDirectory`, и при таком `UMask` он доступен только пользователю ядра; сервисы машины слушают `/run/eva-<id>/module.sock` с группой `eva`, ядро в ней состоит. Подробно — [Быстрый старт](docs/src/quickstart.md#nixos).
 
 ## Документация
 

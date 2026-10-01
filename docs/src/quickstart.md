@@ -6,12 +6,12 @@
 
 ```sh
 nix build .#eva-kernel                     # бинарь: ./result/bin/eva-kernel
-nix build .#docs                           # эта книга: ./result/index.html
 nix develop -c cargo build -p eva-kernel   # то же из devShell
 nix develop -c cargo test --workspace      # тесты всего воркспейса
+nix develop -c mdbook build docs           # эта книга: docs/book/index.html
 ```
 
-Флейк отдаёт `packages.<system>.eva-kernel` (он же `default`), `packages.<system>.docs`, `devShells.default` (с `sqlite`, `cargo-insta`, `mdbook`, `mdbook-mermaid`), `checks.<system>.nixos-secrets` и `nixosModules.default`.
+Флейк — `eva.lib.mkServiceFlake` фреймворка [`eva`](https://git.desu.church/VienDesu/eva): `packages.<system>.eva-kernel` (он же `default`), `devShells.default` (с `sqlite`, `cargo-insta`, `mdbook`, `mdbook-mermaid`) и `nixosModules.default`.
 
 ## Запуск
 
@@ -117,8 +117,9 @@ export EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/secrets/openrouter
       modules = [
         eva-kernel.nixosModules.default
         {
+          # модуль не создаёт ни пользователя сервиса, ни группу eva сокетов сервисов
           users.users.eva-kernel = { isSystemUser = true; group = "eva-kernel"; };
-          users.groups.eva-kernel = { };
+          users.groups = { eva-kernel = { }; eva = { }; };
 
           services.eva-kernel = {
             enable = true;
@@ -152,7 +153,7 @@ export EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/secrets/openrouter
 | `enable` | `false` | Включить сервис |
 | `package` | пакет флейка | Какой бинарь запускать |
 | `settings` | `{}` | Несекретная часть конфига; рендерится в YAML в Nix store |
-| `secrets` | `{}` | Файлы секретов по ключу конфига через точку (`"hands.endpoints.laptop.key" = "/run/secrets/…"`): systemd отдаёт каждый через `LoadCredential` (файлу хватает прав root), в `settings` встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}` |
+| `secrets` | `{}` | Файлы секретов по ключу конфига через точку (`"hands.endpoints.laptop.key" = "/run/secrets/…"`); ключ — одно из полей `llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`. systemd отдаёт каждый через `LoadCredential` (файлу хватает прав root), в `settings` встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}` |
 | `extraConfigFiles` | `[]` | Дополнительные `--config` поверх `settings`, читаются при старте (пути sops-nix/agenix); должны быть доступны пользователю сервиса |
 | `environment` | `{}` | Переменные окружения |
 | `environmentFiles` | `[]` | `EnvironmentFile` systemd |
@@ -162,17 +163,16 @@ export EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/secrets/openrouter
 
 - `StateDirectory = eva-kernel`: systemd передаёт `$STATE_DIRECTORY`, и `system.state_dir` по умолчанию становится `/var/lib/eva-kernel`.
 - `StateDirectoryMode = 0700` и `UMask = 0077`: база (в ней лежат ключи сервисов из `modules.add`), blob'ы и песочницы модулей доступны только пользователю ядра. Ядро само права файлов не ставит — ни базе, ни сокетам.
-- Слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock";}]`. Каждый абсолютный `uds` из `modules.listen` держит socket-юнит `eva-kernel.socket` (`SocketMode = 0660`, `SocketGroup = eva`): ядро берёт готовый сокет по адресу (`LISTEN_FDS`), а не привязывает свой, так что при `UMask = 0077` сокет всё же доступен группе `eva`. Относительный `uds` живёт в закрытом `StateDirectory` и socket-юнита не получает. Модуль объявляет `users.groups.eva` и даёт сервису `SupplementaryGroups = [ "eva" ]`. Локальному клиенту на той же машине нужно то же: `SupplementaryGroups = [ "eva" ]`. По этой же группе ядро дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock`, доступный группе `eva`, а права задаёт его окружение — юнит (`RuntimeDirectory = eva-<id>`, `Group = eva`, `UMask = 0007`; `module.listen = {uds: /run/eva-<id>/module.sock}`) или socket-юнит (`SocketGroup = eva`, `SocketMode = 0660`, `Accept = no`; SDK берёт унаследованный сокет по адресу). Один файл ключа отдаётся обоим юнитам: ядру — `secrets."modules.services.<id>.key"`, модулю — `LoadCredential` в `module.key`. Если задать `settings.modules.listen`, список заменяется целиком.
+- `RuntimeDirectory = eva-kernel` и слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock";}]`: ядро связывает сокет клиентов само, и при `UMask = 0077` файл сокета доступен только пользователю ядра. Нужен сокет для группы — хост объявляет socket-юнит с тем же путём (`systemd.sockets.eva-kernel`: `ListenStream`, `SocketMode = 0660`, `SocketGroup`), ядро берёт готовый сокет по адресу (`LISTEN_FDS`) вместо своего bind. Если задать `settings.modules.listen`, список заменяется целиком.
+- `SupplementaryGroups = [ "eva" ]`: по группе `eva` (её объявляет хост) ядро дозванивается до сервисов машины. Сервис слушает `/run/eva-<id>/module.sock`, доступный группе `eva`, а права задаёт его окружение — юнит (`RuntimeDirectory = eva-<id>`, `Group = eva`, `UMask = 0007`; `module.listen = {uds: /run/eva-<id>/module.sock}`) или socket-юнит (`SocketGroup = eva`, `SocketMode = 0660`, `Accept = no`; SDK берёт унаследованный сокет по адресу). Один файл ключа отдаётся обоим юнитам: ядру — `secrets."modules.services.<id>.key"`, модулю — `LoadCredential` в `module.key`.
 - `TimeoutStopSec = 180`, `Restart = on-failure`, `RestartSec = 5`.
 
-Assertions — сборка системы отказывает, если секрет попал бы в мирочитаемый Nix store:
+Assertions фреймворка — сборка системы отказывает:
 
 | Что | Почему отказ |
 |---|---|
-| `settings.llm.providers.*.api_key`, `settings.modules.tokens.*.token`, `settings.modules.services.*.key`, `settings.hands.endpoints.*.key` в форме `plaintext` | `settings` рендерятся в Nix store; нужен `secrets."<ключ>"` |
-| Те же ключи в форме `file` с путём в Nix store, путь в `secrets` из Nix store | файл читаем всеми |
-| Переменная `EVA_*__PLAINTEXT` (в любом регистре) в `environment` | окружение юнита лежит в Nix store |
-| Путь из Nix store в `extraConfigFiles` или `environmentFiles` | файл читаем всеми |
+| `settings.llm.providers.*.api_key`, `settings.modules.tokens.*.token`, `settings.modules.services.*.key`, `settings.hands.endpoints.*.key` в форме `plaintext` | `settings` рендерятся в мирочитаемый Nix store; нужен `secrets."<ключ>"` |
+| Ключ `secrets`, не совпадающий ни с одним из этих полей | опечатка в ключе тихо оставила бы секрет без адресата |
 
 ## Подключение клиентского модуля
 
@@ -181,7 +181,7 @@ Assertions — сборка системы отказывает, если сек
 1. Выдайте клиенту токен. Два способа:
    - **в конфиге ядра**: `modules.tokens.<module> = {token}`, `token` — `{file: …}` (на NixOS — через `secrets`). Такой токен сильнее выданного операцией: если конфиг называет модуль, принимается только конфиговый токен;
    - **операцией** `modules.token_issue {module}` от уже подключённого клиента хозяина. Токен показывается один раз, ядро хранит только его blake3-хэш. Повторная выдача — ротация: старый токен отзывается, его сессии закрываются. Отказы: id, который называет `modules.tokens` или `modules.services` или занял `modules.add`, — `conflict`; собственный модуль вызывающего — `conflict` (ротация закрыла бы сессию, которая получает единственную копию нового токена); зарезервированный или невалидный id — `invalid_params`.
-2. Ключ записи токена — id клиента: ядро узнаёт клиента по токену (имени в `hello` нет) и возвращает id в `welcome.module`. Формат `[a-z][a-z0-9_-]{0,63}`; `kernel`, `system`, `local` зарезервированы. Зарезервированный или невалидный ключ `modules.tokens`, пустой токен, один токен у двух ключей и ключ `kind` не дают ядру стартовать; токен короче 32 символов — предупреждение в логе.
+2. Ключ записи токена — id клиента: ядро узнаёт клиента по токену (имени в `hello` нет) и возвращает id в `welcome.module`. Формат `[a-z][a-z0-9_-]{0,63}`; `kernel`, `system`, `local` зарезервированы. Зарезервированный или невалидный ключ `modules.tokens`, пустой токен и один токен у двух ключей не дают ядру стартовать; токен короче 32 символов — предупреждение в логе.
 3. Адрес ядра для клиента: `uds:///run/eva-kernel/modules.sock`, `ws://host:port/v1/modules` или `wss://host:port/v1/modules`.
 
 Модуль на `eva-sdk`, клиент хозяина на встроенной поверхности `local`:

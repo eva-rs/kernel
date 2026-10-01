@@ -37,7 +37,7 @@ let surfaces::get::Ok { surface } = session
 | stream | `stream` | `Response<Items<Item, Err>, Err>`; отказ до первого элемента — `Err` самого вызова, `Err` внутри потока — последний элемент, drop `Items` — отмена |
 | upload | `upload` | `Response<Ok, Err>`; `body: ByteStream` — поток чанков `Result<Bytes, Aux>`, обрыв источника — `Aux` |
 
-`Items` и `ByteStream` — типы `eva_protocol::requests` (реэкспорт в `eva_core`).
+`Items` и `ByteStream` — типы `eva_protocol::requests`.
 
 ```rust
 use futures::StreamExt as _;

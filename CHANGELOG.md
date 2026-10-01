@@ -1,18 +1,35 @@
 # Changelog
 
+## Флейк фреймворка и одна миграция — не датировано
+
+Флейк ядра — `eva.lib.mkServiceFlake` фреймворка, как у остальных сервисов Евы; схема базы — один файл.
+
+### Сборка и NixOS
+
+- `flake.nix` — вызов `eva.lib.mkServiceFlake`: `packages.eva-kernel`/`default`, `devShells.default`, `nixosModules.default`. Секреты — `secretFields` фреймворка (`llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`): `services.eva-kernel.secrets."<ключ>" = <файл>` → `LoadCredential` и `{file = "/run/credentials/eva-kernel.service/<ключ>";}` в `settings`; assertions фреймворка — `plaintext` в `settings` и ключ `secrets` мимо полей. Собственных assertions, опции `secrets`, `checks.nixos-secrets`, `packages.docs`, socket-юнита клиентов, `users.groups.eva` и входа `flake-utils` у флейка нет.
+- Сервис: `RuntimeDirectory = eva-kernel`, слушатель по умолчанию `/run/eva-kernel/modules.sock` ядро связывает само (при `UMask = 0077` — только своему пользователю; сокет для группы — socket-юнит хоста с тем же путём, ядро берёт его по адресу); `SupplementaryGroups = [ "eva" ]`, группу объявляет хост.
+- Книга — `mdbook build docs` из devShell (`docs/book` в `.gitignore`).
+- Фреймворк `eva` c58e04c: `eva::schemars` (форк), `hashbrown` 0.17, nixpkgs `nixos-26.05`; записи `for_each_op!` несут `docs: [...]`.
+
+### База и конфиг
+
+- Одна миграция `0001_init` со всей схемой: `module_services`, `module_kv_usage` с триггерами, `module_tokens` без колонки `kind`. Раннер миграций и его проверки (префикс, blake3, чужая база) — без изменений.
+- `modules.tokens.<id>`: только `{token}`; прочие ключи игнорируются, как везде в конфиге.
+- `Items` и `ByteStream` — только `eva_protocol::requests`; в `eva_core` реэкспорта нет.
+
 ## Ядро звонит сервисам — не датировано
 
 Сервисный модуль (мост, MCP, удалённый провайдер) адреса ядра больше не знает: он слушает, а ядро набирает его по реестру. Клиенты хозяина (телефон, TUI) по-прежнему звонят ядру сами, с токеном.
 
-### Провод и конфиг (ломает развёртывание сервисов)
+### Провод и конфиг
 
 - Реестр сервисов: `modules.services.<id> = {address, key}` в конфиге ядра; `address` — `uds:///<абсолютный путь>` или `tcp://<host>:<port>`, `key` — `SecretString`. Оба транспорта под Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = HKDF-SHA256(key, `eva-module psk v1`); кадры `u32 BE + msgpack` — внутри зашифрованного потока.
-- Токены только у клиентов: `modules.tokens.<id> = {token}`; ключ `kind` — ошибка старта с указанием на `modules.services`. Один id в `services` и `tokens`, зарезервированный id, пустой ключ, кривой `address` — ошибка старта; ключ короче 32 символов — предупреждение. Строка базы под id из конфига игнорируется с предупреждением.
+- Токены только у клиентов: `modules.tokens.<id> = {token}`. Один id в `services` и `tokens`, зарезервированный id, пустой ключ, кривой `address` — ошибка старта; ключ короче 32 символов — предупреждение. Строка базы под id из конфига игнорируется с предупреждением.
 - `hello.token` необязателен: набранный ядром сервис его не шлёт (с токеном — `invalid_params`); клиенту без токена — `unauthorized`. `welcome.kind` — вид соединения. `max_hello`, лимит handshake'ей на сеть и пауза отказа — только у слушателя клиентов; `modules.listen` принимает только клиентов.
 - Петля дозвона на запись: сразу при старте и на `modules.add`, повтор с паузой в `[d/2, d]`, `d` от 1 s до 60 s; `d` провалов сбрасывает `welcome`, `d` коротких сессий — сессия дольше `ping_timeout`, простой модуля до первого соединения не удлиняет паузу после его сессии; не сдаётся. Петля запущена с номером отзыва имени: после `modules.remove` ни одна её попытка сессией не становится. Один `address` у двух записей — ошибка старта, у `modules.add` — `conflict`. Новый счётчик `modules.dial_failed{module}`.
 - Права файлов ядро и SDK не ставят: у `{uds}` слушателей нет ключей `mode`/`group`, права задаёт окружение — umask процесса или socket-юнит.
 - Socket activation у ядра и SDK: унаследованные сокеты (`LISTEN_PID`/`LISTEN_FDS`) сопоставляются слушателям по адресу (uds — путь, tcp/ws/wss — `ip:port`) и берутся вместо bind; сокет без слушателя или не слушающий (`Accept=yes`) — ошибка старта; `LISTEN_*` не снимаются.
-- NixOS: `modules.services.*.key` — секрет (`secrets."modules.services.<id>.key"`, assertion на `plaintext`); `StateDirectoryMode = 0700` и `UMask = 0077` — база (хранит ключи сервисов как есть), blob'ы и песочницы только пользователю ядра; клиентский сокет `/run/eva-kernel/modules.sock` держит socket-юнит `eva-kernel.socket` (`0660`, группа `eva`), ядро берёт его по адресу; сервис машины слушает `/run/eva-<id>/module.sock`, права — его юнит или socket-юнит.
+- NixOS: `modules.services.*.key` — секрет (`secrets."modules.services.<id>.key"`); `StateDirectoryMode = 0700` и `UMask = 0077` — база (хранит ключи сервисов как есть), blob'ы и песочницы только пользователю ядра; сервис машины слушает `/run/eva-<id>/module.sock`, права — его юнит или socket-юнит.
 
 ### Библиотечное API
 
@@ -23,7 +40,7 @@
 
 ### База
 
-- Миграция `0003_module_services`: таблица `module_services (module, address, key, added_via, added_at)`; живые токены `kind = 'service'` отзываются (аудит `issued_by` остаётся), колонка `module_tokens.kind` удалена. Сервисы с такими токенами нужно перевести в `modules.services` или `modules.add`.
+- Таблица `module_services (module, address, key, added_via, added_at)`; у `module_tokens` нет колонки `kind`.
 
 ### SDK
 
@@ -35,20 +52,20 @@
 ### Тесты
 
 - Контракт `tests/contract.rs`: SDK-сервис ядро набирает по uds и по tcp под Noise — ответы побайтно равны прогону в процессе; клиенты с токеном по uds, ws и wss; чужой ключ — сессии нет, причина у обеих сторон; рестарт модуля — ядро перезванивает само; рестарт ядра — модуль принимает новое соединение с `hello.resume`; `modules.add` без ключа выдаёт рабочий ключ, запись конфига `modules.remove` не снимает.
-- `tests/dial.rs`: `modules.add` звонит сразу, `modules.remove` закрывает сессию и гасит петлю (попытка после отзыва имени сессией не становится), паузы `Pacing`, второй адрес на модуль — `conflict`. `tests/secrets.rs`: ключ рук не открывает модуль (Noise между `eva-hands` и `eva-rpc` не сходится), `kind` у токена с любым значением — ошибка старта, два сервиса на один адрес — тоже. Матрица `Policy` и `rpc/tests/it/errors.rs` — со строками `modules.add/remove`.
+- `tests/dial.rs`: `modules.add` звонит сразу, `modules.remove` закрывает сессию и гасит петлю (попытка после отзыва имени сессией не становится), паузы `Pacing`, второй адрес на модуль — `conflict`. `tests/secrets.rs`: ключ рук не открывает модуль (Noise между `eva-hands` и `eva-rpc` не сходится), два сервиса на один адрес — ошибка старта. Матрица `Policy` и `rpc/tests/it/errors.rs` — со строками `modules.add/remove`.
 - `rpc/tests/it/activation.rs` — унаследованные сокеты по адресу у ядра и сервиса, `Accept=yes` и лишний сокет — ошибка; `reverse.rs` — `tools.call` и события к клиенту по ws; `service.rs` — поздний Noise не даёт `hello` отдельного бюджета; `sdk/tests/it/listen.rs` — поток молчащих сокетов не запирает ядро.
 
 ## API на eva-api-builder — 2026-09-27
 
-Один список операций вместо нескольких сверяемых копий. Провод не изменился: те же методы, кадры, msgpack-тела и идемпотентность — выпущенные клиенты разницы не видят.
+Один список операций вместо нескольких сверяемых копий.
 
-### Библиотечное API (ломает Rust-код модулей)
+### Библиотечное API
 
 - Новый крейт `eva-kernel-macros` (`macros/`): `endpoints!` на `eva-api-builder` фреймворка — единственный список операций с флагами `mutating`, `stream`, `upload`. Из него трейты неймспейсов и X-макро `eva_core::for_each_op!`.
 - `CallStep` — `eva::handling::CallStep` (реэкспорт `eva_core::CallStep`). `StreamStep` и `UploadStep` удалены: поток и загрузка зовутся `.call(args)`.
 - Поток (`turns.attach`, `blobs.get`): `.open(args)` → `.call(args)`, `Ok = Items<Item, Err>`.
 - Загрузка (`blobs.put`): `.call(args, body)` → `.call(put::Args { meta, body })`; прежние поля `put::Args` теперь `put::Meta`, она и идёт в `params`.
-- `Items` и `ByteStream` — типы `eva_protocol::requests` (прежние пути в `eva_core` остались реэкспортом).
+- `Items` и `ByteStream` — типы `eva_protocol::requests`.
 
 ### Внутри
 
@@ -61,7 +78,7 @@
 ### Тесты
 
 - Удалены сверки копий списка: сверщик меток SDK и таблица «операция → вид» в `core/tests/namespaces.rs` (она повторяла список). Вид операции теперь задаёт только флаг в `macros/src/lib.rs`, тестом он не сверяется. Совпадение таблицы диспетчера с `NAMESPACES` по-прежнему проверяет `rpc/tests/it/methods.rs`.
-- `eva-protocol`: `params` `blobs.put` — голая `Meta`, как у выпущенных клиентов.
+- `eva-protocol`: `params` `blobs.put` — голая `Meta`, без обёртки `meta`.
 
 ## M1 — 2026-09-26
 
@@ -72,7 +89,7 @@
 Операции и хранилище:
 
 - Все операции M1 без туров: surfaces, folders, chats (кроме `ingest`/`compact`/`notify`/`search`), persons, memory, notes, models, cron, sleep, agents, stats, modules, hands_grants, blobs, inference, fs, sqlite, kv. Отложенные отвечают `Aux::Unavailable` с `M2_PENDING`/`M3_PENDING`/`M4_PENDING`: `turns.*`, `chats.ingest/compact/notify` (M2), `chats.search` (M3), `tools.catalog` (M4).
-- SQLite: схема миграциями `0001_init` и `0002_module_kv_usage`, раннер с blake3-чексуммами, один писатель, сид `local`/`system`/хозяина из конфига.
+- SQLite: схема миграцией `0001_init`, раннер с blake3-чексуммами, один писатель, сид `local`/`system`/хозяина из конфига.
 - Читатели БД — жёсткий потолок `db.readers`: соединение берётся на один запрос, ожидание свободного не дольше `db.busy_timeout` (иначе `Aux::Db`), отменённый запрос держит слот до конца.
 - `folders.delete`, `folders.update{trusted}` и `surfaces.update{trusted}`, меняющие действующее доверие чата, ставят ему `reset_pending`.
 - `memory.restore` публикует `memory.changed`.
@@ -99,7 +116,7 @@
 
 - `sqlite`: `modules.sqlite_quota` (1 GiB) ограничивает файл базы и временные файлы каждого вызова (сортировки, промежуточные b-tree, журналы) через VFS ядра `eva-module`, сверх — `quota`; PRAGMA вне allow-list, `ATTACH`/`DETACH`/`VACUUM` — `forbidden`, управление транзакцией — `invalid_params`.
 - `sqlite.query` принимает только читающие инструкции, ответ ограничен кадром (иначе `quota`), BLOB возвращается как msgpack `bin`; отмена и дедлайн прерывают инструкцию.
-- `kv`: `modules.kv_value_max` (1 MiB) на значение и `modules.kv_quota` (64 MiB) на модуль; расход ведёт таблица `module_kv_usage` на триггерах (миграция `0002` заполняет её из существующих строк).
+- `kv`: `modules.kv_value_max` (1 MiB) на значение и `modules.kv_quota` (64 MiB) на модуль; расход ведёт таблица `module_kv_usage` на триггерах.
 - `blobs`: `work.blob_quota` (4 GiB) на владельца surface, каждый живой блоб стоит не меньше 4 KiB; загрузка принимается в `blob_dir/.staging` и не оставляет файлов при отмене, остатки подметаются на старте.
 - `fs`: `modules.fs_max_entries` (100 000) и `modules.fs_quota` без гонок параллельных записей; `fs.read` укладывается в кадр с конвертом.
 

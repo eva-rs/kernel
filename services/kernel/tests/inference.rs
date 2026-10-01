@@ -10,13 +10,13 @@ use std::{
 
 use common::{CountingHands, FaultyDb, Outcome, SVC, outcome, service};
 use eva_core::{
-    ByteStream, CallStep as _, Caller, GenSink, Provider, SessionMaker as _,
+    CallStep as _, Caller, GenSink, Provider, SessionMaker as _,
     service::{self, blobs::Blobs as _, inference::Inference as _},
 };
 use eva_hands::Limits;
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{blobs::put, inference::complete},
+    requests::{ByteStream, blobs::put, inference::complete},
     types::{
         BlobId, ChatId, Effort, ModelId, ModuleId,
         blob::Kind,

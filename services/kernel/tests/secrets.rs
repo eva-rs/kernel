@@ -215,35 +215,6 @@ fn reserved_ids_and_shared_tokens_fail_the_start() {
     );
 }
 
-/// Ключ `kind` у токена — ошибка старта с любым значением, даже пустым: сервис
-/// с токеном молча стал бы клиентом с правами хозяина (`06 §11`).
-#[test]
-fn a_token_kind_fails_the_start_pointing_to_services() {
-    for kind in [json!("service"), json!("client"), json!(null)] {
-        let modules: ModulesConfig = serde_json::from_value(json!({
-            "tokens": {"bridge": {"token": {"plaintext": "bridge-token"}, "kind": kind}},
-        }))
-        .expect("the key parses to be refused by name");
-        let error = format!(
-            "{:#}",
-            Registrations::load(&modules)
-                .err()
-                .expect("the start is refused")
-        );
-        assert!(
-            error.contains("modules.tokens.bridge.kind")
-                && error.contains("modules.services.bridge"),
-            "{kind}: {error}"
-        );
-    }
-
-    let modules: ModulesConfig = serde_json::from_value(json!({
-        "tokens": {"bridge": {"token": {"plaintext": "bridge-token"}}},
-    }))
-    .expect("a token entry");
-    Registrations::load(&modules).expect("no kind, no refusal");
-}
-
 #[test]
 fn a_service_id_is_neither_reserved_nor_a_client() {
     for reserved in ["kernel", "system", "local"] {

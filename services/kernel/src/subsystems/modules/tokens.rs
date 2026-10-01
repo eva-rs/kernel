@@ -26,8 +26,8 @@ struct Entry {
 pub struct ConfigTokens(Vec<Entry>);
 
 impl ConfigTokens {
-    /// Ключ `kind`, нечитаемый или пустой секрет, зарезервированное или
-    /// невалидное имя и один токен у двух записей — ошибка старта с путём ключа.
+    /// Нечитаемый или пустой секрет, зарезервированное или невалидное имя и
+    /// один токен у двух записей — ошибка старта с путём ключа.
     pub fn load(tokens: &BTreeMap<ModuleId, TokenEntry>) -> eyre::Result<Self> {
         let mut entries: Vec<Entry> = Vec::with_capacity(tokens.len());
         for (module, entry) in tokens {
@@ -36,11 +36,6 @@ impl ConfigTokens {
             }
             if let Err(e) = check_name(module) {
                 bail!("modules.tokens.{module}: {e}");
-            }
-            if entry.kind {
-                bail!(
-                    "modules.tokens.{module}.kind: a token entry is always a client and takes no kind; a service module goes to modules.services.{module} = {{address, key}}"
-                );
             }
             let read = entry
                 .token

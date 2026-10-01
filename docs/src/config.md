@@ -153,7 +153,7 @@ llm:
 |---|---|---|---|
 | `listen` | список слушателей | `[{uds: modules.sock}]` | слушатели клиентов, см. ниже; заданный список заменяет умолчание целиком. NixOS-модуль ставит своё умолчание (см. [NixOS](#nixos)) |
 | `services` | `{модуль: {address, key}}` | `{}` | реестр сервисов: ключ — id модуля, `address` — куда звонит ядро (см. [Сервисы](#сервисы-modulesservices)), `key` — секрет PSK (см. [Секреты](#секреты)). Запись конфига сильнее добавленной операцией `modules.add` |
-| `tokens` | `{модуль: {token}}` | `{}` | токены клиентов хозяина; ключ — id модуля (ядро узнаёт клиента по токену), `token` — секрет. Токен из конфига сильнее выданного операцией `modules.token_issue`. Ключ `kind` — ошибка старта с указанием на `modules.services`: сервисы токенов не носят. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}`, ключ `kernel`/`system`/`local`, пустой токен, один токен у двух ключей. Токен короче 32 символов — предупреждение |
+| `tokens` | `{модуль: {token}}` | `{}` | токены клиентов хозяина; ключ — id модуля (ядро узнаёт клиента по токену), `token` — секрет. Токен из конфига сильнее выданного операцией `modules.token_issue`. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}`, ключ `kernel`/`system`/`local`, пустой токен, один токен у двух ключей. Токен короче 32 символов — предупреждение |
 | `call_reconnect_grace` | длительность | `30s` | сколько незавершённый `tools.call` ждёт реконнекта модуля (M4) |
 | `offline_forget` | длительность | `7d` | модуль offline дольше — `forgotten`; проверяется на старте и раз в час |
 | `hooks.timeout` | длительность | `2s` | потолок таймаута хука модуля (хуки вызываются турами, M2) |
@@ -284,14 +284,14 @@ Socket activation: если `LISTEN_PID` — pid ядра, сокеты мене
 
 ## NixOS
 
-Флейк экспортирует `nixosModules.default` с опциями `services.eva-kernel`:
+Флейк — `eva.lib.mkServiceFlake` фреймворка; `nixosModules.default` даёт `services.eva-kernel`:
 
 | Опция | Смысл |
 |---|---|
 | `settings` | несекретная часть конфига; рендерится в YAML в Nix store (мирочитаемо) |
-| `secrets` | `{"<ключ.через.точку>" = "<файл>";}`: systemd отдаёт файл через `LoadCredential`, в `settings` встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}` |
+| `secrets` | `{"<ключ.через.точку>" = "<файл>";}` для полей `llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`: systemd отдаёт файл через `LoadCredential`, в `settings` встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}` |
 | `extraConfigFiles` | дополнительные `--config`, сливаются поверх `settings` в рантайме |
 | `environment`, `environmentFiles` | переменные окружения и `EnvironmentFile` systemd |
 | `user`, `group` | по умолчанию `eva-kernel`; модуль их не создаёт |
 
-Модуль задаёт `StateDirectory=eva-kernel` (отсюда `state_dir` по умолчанию — `/var/lib/eva-kernel`) с `StateDirectoryMode=0700` и `UMask=0077` (база с ключами сервисов, blob'ы и песочницы — только пользователю ядра), `TimeoutStopSec=180`, значение по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock";}]`, socket-юнит `eva-kernel.socket` на каждый абсолютный `uds` из `modules.listen` (`SocketMode=0660`, `SocketGroup=eva`; ядро берёт сокет по адресу через `LISTEN_FDS`), группу `users.groups.eva` и `SupplementaryGroups = [ "eva" ]` сервиса. Права файлов ядро не ставит — только окружение. По группе `eva` ядро и дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock`, доступный группе `eva` (через `RuntimeDirectory`, `Group=eva` и `UMask=0007` своего юнита или через socket-юнит с `SocketGroup=eva`, `SocketMode=0660`, `Accept=no`), а один файл ключа отдаётся обоим юнитам — ядру как `secrets."modules.services.<id>.key"`. Assertions отвергают `plaintext`-секреты в `settings`, переменные `EVA_*__PLAINTEXT` в `environment` и пути из Nix store в секретах, `extraConfigFiles` и `environmentFiles`. Подробно — в [Быстром старте](quickstart.md#nixos).
+Модуль задаёт `StateDirectory=eva-kernel` (отсюда `state_dir` по умолчанию — `/var/lib/eva-kernel`) с `StateDirectoryMode=0700` и `UMask=0077` (база с ключами сервисов, blob'ы и песочницы — только пользователю ядра), `TimeoutStopSec=180`, `RuntimeDirectory=eva-kernel` и в нём слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock";}]` (ядро связывает сокет само; при таком `UMask` он доступен только пользователю ядра, сокет для группы даёт socket-юнит хоста с тем же путём — ядро берёт его по адресу через `LISTEN_FDS`), `SupplementaryGroups = [ "eva" ]` сервиса; группу `eva` объявляет хост. Права файлов ядро не ставит — только окружение. По группе `eva` ядро дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock`, доступный группе `eva` (через `RuntimeDirectory`, `Group=eva` и `UMask=0007` своего юнита или через socket-юнит с `SocketGroup=eva`, `SocketMode=0660`, `Accept=no`), а один файл ключа отдаётся обоим юнитам — ядру как `secrets."modules.services.<id>.key"`. Assertions отвергают `plaintext`-секреты в `settings` и ключ `secrets`, не совпадающий ни с одним полем-секретом. Подробно — в [Быстром старте](quickstart.md#nixos).

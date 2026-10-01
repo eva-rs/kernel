@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, client, outcome, service};
 use eva::{bytes::Bytes, time::Clock as _};
-use eva_core::{ByteStream, NAMESPACES, prelude::*};
+use eva_core::{NAMESPACES, prelude::*};
 use eva_kernel::db::{Db as _, DbError, Queries as _, hands_grants::NewGrant};
 use eva_protocol::{
     errors::Aux,
     requests::{
-        Patch, agents, blobs, chats, cron, folders, fs, hands_grants, inference, kv, memory,
-        models, modules, notes, persons, sleep,
+        ByteStream, Patch, agents, blobs, chats, cron, folders, fs, hands_grants, inference, kv,
+        memory, models, modules, notes, persons, sleep,
         sqlite::{self, Statement},
         stats, surfaces, tools, turns,
     },

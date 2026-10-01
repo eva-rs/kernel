@@ -10,11 +10,11 @@ use futures::{StreamExt as _, stream};
 use tokio::sync::{mpsc, oneshot};
 
 use eva::url::Url;
-use eva_core::{ByteStream, prelude::*};
+use eva_core::prelude::*;
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
-        Response,
+        ByteStream, Response,
         blobs::{get as blob_get, put as blob_put},
         surfaces::{get, update},
     },

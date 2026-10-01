@@ -7,12 +7,10 @@ use fastrace::{Span, future::FutureExt as _, prelude::SpanContext};
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Serialize, de::DeserializeOwned};
 
-use eva_core::{
-    ByteStream, CallStep, Caller, IsSession, Items, OpKind, Session, SessionMaker, service::op_name,
-};
+use eva_core::{CallStep, Caller, IsSession, OpKind, Session, SessionMaker, service::op_name};
 use eva_protocol::{
     errors::HasCode,
-    requests::Response,
+    requests::{ByteStream, Items, Response},
     wire::{ErrorCode, RpcError, frame::Payload},
 };
 
@@ -127,6 +125,7 @@ macro_rules! routes {
                     ok: $Ok:ty,
                     err: $Err:ty,
                     output: $Output:ty,
+                    docs: [$($doc:literal),*],
                 }
             )*}
         )*}

@@ -21,23 +21,11 @@ impl Migration {
 }
 
 /// Все миграции бинаря по возрастанию версии, без пропусков.
-pub const MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        name: "init",
-        sql: include_str!("migrations/0001_init.sql"),
-    },
-    Migration {
-        version: 2,
-        name: "module_kv_usage",
-        sql: include_str!("migrations/0002_module_kv_usage.sql"),
-    },
-    Migration {
-        version: 3,
-        name: "module_services",
-        sql: include_str!("migrations/0003_module_services.sql"),
-    },
-];
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "init",
+    sql: include_str!("migrations/0001_init.sql"),
+}];
 
 #[data(error)]
 pub enum MigrateError {

@@ -1,5 +1,6 @@
 -- 0001: схема 10 §2 целиком. Правка относительно документа одна: триггеры
--- chat_speech_ai/_ad/_au, заданные там комментарием, выписаны явно.
+-- chat_speech_ai/_ad/_au и module_kv_usage_ai/_au/_ad, заданные там
+-- комментарием, выписаны явно.
 
 -- 2.1 Транскрипт (01)
 CREATE TABLE segments (
@@ -171,13 +172,31 @@ CREATE TABLE chat_speech_vec (chunk_id INTEGER PRIMARY KEY REFERENCES chat_speec
 CREATE TABLE modules (name TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('connected','offline','forgotten')),
   version TEXT NOT NULL, proto_version TEXT NOT NULL, capabilities BLOB NOT NULL,   -- capability hands не существует (руки — библиотека eva-hands в ядре, 07 §3); provider — запасная дверь, принимается только если модуль назван в llm.providers с kind: module (06 §3)
   first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL) STRICT;
-CREATE TABLE module_tokens (token_hash BLOB PRIMARY KEY, module TEXT NOT NULL,   -- module без FK: токен выдаётся до первого hello
-  kind TEXT NOT NULL CHECK (kind IN ('client','service')),                       -- единственный бит прав: Caller::Client | Caller::Service (06 §2); конфиг modules.tokens.<module>.kind сильнее
+CREATE TABLE module_services (module TEXT PRIMARY KEY,   -- ядро само набирает сервис, поэтому ключ PSK хранится как есть — хэш не годится; таблица и бэкапы БД — секрет
+  address TEXT NOT NULL,
+  key TEXT NOT NULL CHECK (key <> ''),
+  added_via TEXT NOT NULL,
+  added_at INTEGER NOT NULL) STRICT;
+CREATE TABLE module_tokens (token_hash BLOB PRIMARY KEY, module TEXT NOT NULL,   -- токен клиента; module без FK: токен выдаётся до первого hello
   issued_by TEXT REFERENCES persons(id) ON DELETE RESTRICT,                      -- путь тула: актор тура
   issued_via TEXT,                                                               -- путь операции modules.token_issue: caller.module() выдавшего Client
   issued_at INTEGER NOT NULL, revoked_at INTEGER, CHECK (issued_by IS NOT NULL OR issued_via IS NOT NULL)) STRICT;
 CREATE INDEX module_tokens_live ON module_tokens(module) WHERE revoked_at IS NULL;
 CREATE TABLE module_kv (module TEXT NOT NULL, key TEXT NOT NULL, value BLOB NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (module, key)) STRICT;
+-- Вес KV модуля в квоте modules.kv_quota (06 §5): kv.set читает одну строку под писателем вместо SUM по ключам модуля. Цена строки — как db::kv::row_cost.
+CREATE TABLE module_kv_usage (module TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK (bytes >= 0)) STRICT, WITHOUT ROWID;
+CREATE TRIGGER module_kv_usage_ai AFTER INSERT ON module_kv BEGIN
+  INSERT INTO module_kv_usage (module, bytes) VALUES (new.module, octet_length(new.key) + length(new.value) + 64)
+    ON CONFLICT (module) DO UPDATE SET bytes = bytes + excluded.bytes;
+END;
+CREATE TRIGGER module_kv_usage_au AFTER UPDATE ON module_kv BEGIN
+  UPDATE module_kv_usage SET bytes = bytes - (octet_length(old.key) + length(old.value) + 64) WHERE module = old.module;
+  INSERT INTO module_kv_usage (module, bytes) VALUES (new.module, octet_length(new.key) + length(new.value) + 64)
+    ON CONFLICT (module) DO UPDATE SET bytes = bytes + excluded.bytes;
+END;
+CREATE TRIGGER module_kv_usage_ad AFTER DELETE ON module_kv BEGIN
+  UPDATE module_kv_usage SET bytes = bytes - (octet_length(old.key) + length(old.value) + 64) WHERE module = old.module;
+END;
 
 -- 2.7 Рабочие туры (07)
 CREATE TABLE agents (id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,

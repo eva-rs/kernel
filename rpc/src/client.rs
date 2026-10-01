@@ -14,12 +14,12 @@ use futures::{SinkExt as _, Stream, StreamExt as _};
 use serde::{Serialize, de::DeserializeOwned};
 
 use eva_core::{
-    ByteStream, CallStep, Caller, Items, Session, SessionMaker,
+    CallStep, Caller, Session, SessionMaker,
     service::{AuxFut, op_name},
 };
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::Response as OpResponse,
+    requests::{ByteStream, Items, Response as OpResponse},
     wire::{
         ErrorCode, Frame, RpcError,
         frame::Request,
@@ -526,6 +526,7 @@ macro_rules! client_impls {
                     ok: $Ok:ty,
                     err: $Err:ty,
                     output: $Output:ty,
+                    docs: [$($doc:literal),*],
                 }
             )*}
         )*}

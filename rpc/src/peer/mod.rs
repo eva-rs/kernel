@@ -19,8 +19,8 @@ use tokio::{
     time::Instant,
 };
 
-use eva_core::ByteStream;
 use eva_protocol::{
+    requests::ByteStream,
     types::Bytes,
     wire::{
         RpcError,

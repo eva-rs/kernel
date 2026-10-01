@@ -5,12 +5,13 @@ use std::time::Duration;
 use futures::{StreamExt as _, stream};
 
 use eva_core::{
-    ByteStream, CallStep as _, Caller, SessionMaker as _,
+    CallStep as _, Caller, SessionMaker as _,
     service::{blobs::Blobs as _, surfaces::Surfaces as _, turns::Turns as _},
 };
 use eva_protocol::{
     errors::{self, Aux, Generic},
     requests::{
+        ByteStream,
         blobs::put,
         surfaces::{create, get, list},
         turns::attach,

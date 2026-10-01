@@ -8,10 +8,13 @@ use std::time::Duration;
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome};
 use eva::bytesize::ByteSize;
-use eva_core::{ByteStream, CallStep as _, service::blobs::Blobs as _};
+use eva_core::{CallStep as _, service::blobs::Blobs as _};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::blobs::{get, put, stat},
+    requests::{
+        ByteStream,
+        blobs::{get, put, stat},
+    },
     types::{BlobId, ChatId, blob::Kind},
 };
 use futures::StreamExt as _;

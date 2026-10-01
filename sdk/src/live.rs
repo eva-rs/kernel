@@ -21,10 +21,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::{sync::watch, time::Instant};
 
 use eva::fut::Fut;
-use eva_core::{CallStep, Items, Session, service::op_name};
+use eva_core::{CallStep, Session, service::op_name};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::Response,
+    requests::{Items, Response},
     wire::{ErrorCode, RpcError, Welcome, frame::Payload},
 };
 use eva_rpc::{Peer, RpcClient, RpcSession, client::from_rpc, codec};
@@ -433,6 +433,7 @@ macro_rules! live_impls {
                     ok: $Ok:ty,
                     err: $Err:ty,
                     output: $Output:ty,
+                    docs: [$($doc:literal),*],
                 }
             )*}
         )*}

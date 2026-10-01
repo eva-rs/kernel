@@ -1166,8 +1166,7 @@ fn requests_roundtrip() {
     ));
 }
 
-/// `params` у `blobs.put` — поля `Meta` верхним уровнем: так пишут уже
-/// выпущенные клиенты.
+/// `params` у `blobs.put` — поля `Meta` верхним уровнем, без обёртки `meta`.
 #[test]
 fn blobs_put_params_are_bare_meta() {
     let wire = json!({

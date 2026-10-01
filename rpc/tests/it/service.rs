@@ -7,11 +7,11 @@ use futures::stream;
 
 use eva::bytesize::ByteSize;
 use eva_core::{
-    ByteStream, CallStep as _,
+    CallStep as _,
     service::{blobs::Blobs as _, surfaces::Surfaces as _},
 };
 use eva_protocol::{
-    requests::{blobs::put, surfaces::create},
+    requests::{ByteStream, blobs::put, surfaces::create},
     types::{ModuleId, blob::Kind as BlobKind, module::ModuleKind},
     wire::ErrorCode,
 };

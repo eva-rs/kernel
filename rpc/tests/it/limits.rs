@@ -210,7 +210,7 @@ async fn transport_connect_has_a_deadline() {
     );
 }
 
-/// `params` литералом, как их пишут выпущенные клиенты: поля `Meta` верхним уровнем.
+/// `params` литералом: поля `Meta` верхним уровнем, без обёртки `meta`.
 fn put(size: usize) -> Value {
     json!({
         "chat": 1,

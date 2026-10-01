@@ -14,11 +14,11 @@ use futures::{StreamExt as _, stream};
 use tokio::sync::Notify;
 
 use eva::{fut::Fut, time::Timestamp};
-use eva_core::{CallStep, Caller, Items, Session, SessionMaker, service::AuxFut};
+use eva_core::{CallStep, Caller, Session, SessionMaker, service::AuxFut};
 use eva_protocol::{
     errors::{self, Aux, Generic},
     requests::{
-        Response,
+        Items, Response,
         blobs::put,
         surfaces::{create, get, list},
         turns::attach,
@@ -185,6 +185,7 @@ macro_rules! test_session {
                     ok: $Ok:ty,
                     err: $Err:ty,
                     output: $Output:ty,
+                    docs: [$($doc:literal),*],
                 }
             )*}
         )*}
