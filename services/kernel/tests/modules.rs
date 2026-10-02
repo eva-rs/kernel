@@ -67,10 +67,10 @@ async fn live(h: &common::Harness, token: &str) -> Option<ModuleId> {
 }
 
 /// Живая строка `module_tokens` в обход `token_issue`.
-async fn legacy_token(h: &common::Harness, module: &str) {
+async fn db_token(h: &common::Harness, module: &str) {
     use eva::time::Clock as _;
     let row = TokenRow {
-        hash: hash(&format!("{module}-legacy")),
+        hash: hash(&format!("{module}-db")),
         module: ModuleId::from(module),
         issued_by: None,
         issued_via: Some(ModuleId::from(CLIENT)),
@@ -81,7 +81,7 @@ async fn legacy_token(h: &common::Harness, module: &str) {
         .db()
         .write(move |tx| tx.modules().insert_token(&row))
         .await
-        .expect("legacy token");
+        .expect("db token");
 }
 
 async fn list_modules(session: &mut TestSession) -> Vec<eva_protocol::types::module::Module> {
@@ -175,8 +175,8 @@ async fn list_kind_comes_from_the_registry_and_live_tokens() {
         .await
         .expect("add");
     // Токены, выданные до того, как конфиг назвал модуль: инертны.
-    legacy_token(&h, OTHER).await;
-    legacy_token(&h, SVC).await;
+    db_token(&h, OTHER).await;
+    db_token(&h, SVC).await;
 
     let modules = list_modules(&mut client).await;
     let kinds: Vec<_> = modules

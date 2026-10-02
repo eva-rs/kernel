@@ -42,8 +42,6 @@ pub struct Config {
     pub blob_chunk: ByteSize,
     /// Сколько помнится ответ мутирующего запроса по `(session_id, request.id)`.
     pub idempotency_window: HumanDuration,
-    /// Наименьший принимаемый MAJOR `hello.proto_version`; `None` — текущий.
-    pub proto_min_major: Option<u16>,
 }
 
 impl Default for Config {
@@ -61,7 +59,6 @@ impl Default for Config {
             max_hello: ByteSize::mib(4),
             blob_chunk: ByteSize::mib(1),
             idempotency_window: secs(600),
-            proto_min_major: None,
         }
     }
 }
@@ -104,11 +101,9 @@ impl Config {
         usize::from(self.max_streams.into_inner())
     }
 
-    /// Допустимые MAJOR: `[proto_min_major, текущий]`.
+    /// Принимается только текущий MAJOR.
     pub fn accepts(&self, version: ProtoVersion) -> bool {
-        let current = ProtoVersion::CURRENT.major;
-        let min = self.proto_min_major.unwrap_or(current);
-        (min..=current).contains(&version.major)
+        version.major == ProtoVersion::CURRENT.major
     }
 }
 

@@ -356,11 +356,10 @@ where
         let hello: Hello =
             codec::decode(&request.params).map_err(|e| (Some(id), codec::bad_params(e)))?;
         if !cfg.accepts(hello.proto_version) {
-            let current = ProtoVersion::CURRENT.major;
-            let min = cfg.proto_min_major.unwrap_or(current);
             let message = format!(
-                "protocol {} is not supported: major {min}..={current}",
-                hello.proto_version
+                "protocol {} is not supported: major {}",
+                hello.proto_version,
+                ProtoVersion::CURRENT.major
             );
             return Err((Some(id), RpcError::new(ErrorCode::ProtoVersion, message)));
         }

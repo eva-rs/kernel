@@ -157,7 +157,7 @@ fn strip(value: &mut Value) {
     }
 }
 
-/// Модель пишет числа и булевы в кавычках (legacy: id в кавычках) — строка
+/// Модель пишет числа и булевы в кавычках — строка
 /// приводится к типу схемы, где разбирается однозначно.
 pub fn coerce(value: &mut Value, schema: &Value) {
     let Value::Object(schema) = schema else {

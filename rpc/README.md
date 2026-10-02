@@ -48,7 +48,6 @@ msgpack-RPC Евы: кадры поверх unix-сокета, WebSocket и WebS
 | `max_frame` / `max_hello` | `16 MiB` / `4 MiB` | потолок кадра; кадра `hello` клиента |
 | `blob_chunk` | `1 MiB` | потолок чанка `blobs.put` |
 | `idempotency_window` | `600s` | сколько помнится ответ мутации по `(session_id, request.id)` |
-| `proto_min_major` | текущий MAJOR | наименьший принимаемый MAJOR `hello.proto_version` |
 
 ## Пример
 

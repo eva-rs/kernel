@@ -14,8 +14,7 @@ pub struct ModulesConfig {
     /// Слушатели клиентов; относительный путь сокета — от `system.state_dir`.
     pub listen: Vec<Listen>,
     /// `handshake_timeout`, `ping_*`, `request_timeout`, `stream_*`, `max_inflight`,
-    /// `max_streams`, `max_frame`, `max_hello`, `blob_chunk`, `idempotency_window`,
-    /// `proto_min_major`.
+    /// `max_streams`, `max_frame`, `max_hello`, `blob_chunk`, `idempotency_window`.
     #[serde(flatten)]
     pub transport: eva_rpc::Config,
     /// Ключ — id клиента; токен конфига сильнее выданного (`module_tokens`).

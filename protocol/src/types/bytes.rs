@@ -8,7 +8,7 @@ use eva::{
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, SeqAccess, Visitor},
+    de::{self, Visitor},
 };
 
 /// В msgpack — `bin` (не массив чисел), в JSON — base64-строка: так же её
@@ -126,7 +126,7 @@ impl<'de> Visitor<'de> for BytesVisitor {
     type Value = Bytes;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("bytes, a base64 string or an array of bytes")
+        f.write_str("bytes or a base64 string")
     }
 
     fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Bytes, E> {
@@ -141,14 +141,6 @@ impl<'de> Visitor<'de> for BytesVisitor {
         decode_base64(v)
             .map(Bytes)
             .ok_or_else(|| E::invalid_value(de::Unexpected::Str(v), &"base64"))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Bytes, A::Error> {
-        let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
-        while let Some(byte) = seq.next_element::<u8>()? {
-            out.push(byte);
-        }
-        Ok(Bytes(out))
     }
 }
 

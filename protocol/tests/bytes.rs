@@ -66,12 +66,8 @@ fn json_forms() {
     let json = serde_json::to_value(&item).unwrap();
     assert_eq!(json["thinking_block"]["signature"], json!("Zm9vYmFy"));
     assert_eq!(serde_json::from_value::<GenItem>(json).unwrap(), item);
-
-    // Массив чисел от старого JSON-пира тоже принимается.
-    let lenient: Bytes = serde_json::from_value(json!([1, 2, 255])).unwrap();
-    assert_eq!(lenient.as_slice(), [1, 2, 255]);
     assert!(serde_json::from_value::<Bytes>(json!("not base64!")).is_err());
-    assert!(serde_json::from_value::<Bytes>(json!([256])).is_err());
+    assert!(serde_json::from_value::<Bytes>(json!([1, 2, 255])).is_err());
 }
 
 #[test]

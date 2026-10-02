@@ -53,7 +53,7 @@ module:
 | `token` | секрет | — (обязателен) | `{plaintext: "…"}` или `{file: "/path"}`; читается один раз, хвостовой перевод строки отбрасывается |
 | `connect_wait` | длительность | `3m` | сколько ждать ядро при первом подключении |
 | `tls.extra_ca` | путь | нет | PEM CA ядра с самоподписанным сертификатом: задан — доверие только ему, иначе публичные корни webpki |
-| `handshake_timeout`, `ping_interval`, `ping_timeout`, `request_timeout`, `stream_idle_timeout`, `stream_buffer`, `max_inflight`, `max_streams`, `max_frame`, `max_hello`, `blob_chunk`, `idempotency_window`, `proto_min_major` | | как у ядра | транспорт — те же ключи и умолчания, что в секции `modules` ядра ([Конфигурация](config.md#транспорт)), плоско в секции `module` |
+| `handshake_timeout`, `ping_interval`, `ping_timeout`, `request_timeout`, `stream_idle_timeout`, `stream_buffer`, `max_inflight`, `max_streams`, `max_frame`, `max_hello`, `blob_chunk`, `idempotency_window` | | как у ядра | транспорт — те же ключи и умолчания, что в секции `modules` ядра ([Конфигурация](config.md#транспорт)), плоско в секции `module` |
 
 ```yaml
 module:

@@ -8,7 +8,7 @@ use eva::{
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, SeqAccess, Visitor},
+    de::{self, Visitor},
 };
 
 use crate::{
@@ -103,14 +103,6 @@ impl<'de> Visitor<'de> for CellVisitor {
 
     fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> Result<Cell, E> {
         Ok(Cell::Blob(Bytes(v)))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Cell, A::Error> {
-        let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
-        while let Some(byte) = seq.next_element::<u8>()? {
-            out.push(byte);
-        }
-        Ok(Cell::Blob(Bytes(out)))
     }
 }
 

@@ -1,53 +1,45 @@
 # Changelog
 
-## Флейк фреймворка и одна миграция — не датировано
-
-Флейк ядра — `eva.lib.mkServiceFlake` фреймворка, как у остальных сервисов Евы; схема базы — один файл.
-
-### Сборка и NixOS
-
-- `flake.nix` — вызов `eva.lib.mkServiceFlake`: `packages.eva-kernel`/`default`, `devShells.default`, `nixosModules.default`. Секреты — `secretFields` фреймворка (`llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`): `services.eva-kernel.secrets."<ключ>" = <файл>` → `LoadCredential` и `{file = "/run/credentials/eva-kernel.service/<ключ>";}` в `settings`; assertions фреймворка — `plaintext` в `settings` и ключ `secrets` мимо полей. Собственных assertions, опции `secrets`, `checks.nixos-secrets`, `packages.docs`, socket-юнита клиентов, `users.groups.eva` и входа `flake-utils` у флейка нет.
-- Сервис: `RuntimeDirectory = eva-kernel`, слушатель по умолчанию `/run/eva-kernel/modules.sock` ядро связывает само (при `UMask = 0077` — только своему пользователю; сокет для группы — socket-юнит хоста с тем же путём, ядро берёт его по адресу); `SupplementaryGroups = [ "eva" ]`, группу объявляет хост.
-- Книга — `mdbook build docs` из devShell (`docs/book` в `.gitignore`).
-- Фреймворк `eva` c58e04c: `eva::schemars` (форк), `hashbrown` 0.17, nixpkgs `nixos-26.05`; записи `for_each_op!` несут `docs: [...]`.
-
-### База и конфиг
-
-- Одна миграция `0001_init` со всей схемой: `module_services`, `module_kv_usage` с триггерами, `module_tokens` без колонки `kind`. Раннер миграций и его проверки (префикс, blake3, чужая база) — без изменений.
-- `modules.tokens.<id>`: только `{token}`; прочие ключи игнорируются, как везде в конфиге.
-- `Items` и `ByteStream` — только `eva_protocol::requests`; в `eva_core` реэкспорта нет.
-
 ## Ядро звонит сервисам — не датировано
 
-Сервисный модуль (мост, MCP, удалённый провайдер) адреса ядра больше не знает: он слушает, а ядро набирает его по реестру. Клиенты хозяина (телефон, TUI) по-прежнему звонят ядру сами, с токеном.
+Сервисный модуль (мост, MCP, удалённый провайдер) адреса ядра не знает: он слушает, а ядро набирает его по реестру. Клиенты хозяина (телефон, TUI) звонят ядру сами, с токеном. Флейк ядра — `eva.lib.mkServiceFlake` фреймворка, как у остальных сервисов Евы; схема базы — один файл.
 
 ### Провод и конфиг
 
 - Реестр сервисов: `modules.services.<id> = {address, key}` в конфиге ядра; `address` — `uds:///<абсолютный путь>` или `tcp://<host>:<port>`, `key` — `SecretString`. Оба транспорта под Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = HKDF-SHA256(key, `eva-module psk v1`); кадры `u32 BE + msgpack` — внутри зашифрованного потока.
 - Токены только у клиентов: `modules.tokens.<id> = {token}`. Один id в `services` и `tokens`, зарезервированный id, пустой ключ, кривой `address` — ошибка старта; ключ короче 32 символов — предупреждение. Строка базы под id из конфига игнорируется с предупреждением.
 - `hello.token` необязателен: набранный ядром сервис его не шлёт (с токеном — `invalid_params`); клиенту без токена — `unauthorized`. `welcome.kind` — вид соединения. `max_hello`, лимит handshake'ей на сеть и пауза отказа — только у слушателя клиентов; `modules.listen` принимает только клиентов.
+- `hello.proto_version`: ядро принимает только свой MAJOR, иначе `proto_version` и close.
+- `Bytes` в JSON — только base64-строка, в msgpack — `bin`.
 - Петля дозвона на запись: сразу при старте и на `modules.add`, повтор с паузой в `[d/2, d]`, `d` от 1 s до 60 s; `d` провалов сбрасывает `welcome`, `d` коротких сессий — сессия дольше `ping_timeout`, простой модуля до первого соединения не удлиняет паузу после его сессии; не сдаётся. Петля запущена с номером отзыва имени: после `modules.remove` ни одна её попытка сессией не становится. Один `address` у двух записей — ошибка старта, у `modules.add` — `conflict`. Новый счётчик `modules.dial_failed{module}`.
-- Права файлов ядро и SDK не ставят: у `{uds}` слушателей нет ключей `mode`/`group`, права задаёт окружение — umask процесса или socket-юнит.
+- Права файлов ядро и SDK не ставят: их задаёт окружение — umask процесса или socket-юнит.
 - Socket activation у ядра и SDK: унаследованные сокеты (`LISTEN_PID`/`LISTEN_FDS`) сопоставляются слушателям по адресу (uds — путь, tcp/ws/wss — `ip:port`) и берутся вместо bind; сокет без слушателя или не слушающий (`Accept=yes`) — ошибка старта; `LISTEN_*` не снимаются.
-- NixOS: `modules.services.*.key` — секрет (`secrets."modules.services.<id>.key"`); `StateDirectoryMode = 0700` и `UMask = 0077` — база (хранит ключи сервисов как есть), blob'ы и песочницы только пользователю ядра; сервис машины слушает `/run/eva-<id>/module.sock`, права — его юнит или socket-юнит.
 
 ### Библиотечное API
 
 - `modules.add {module, address, key?}` → `{key?}` (без `key` ядро генерирует его и возвращает один раз; ключ хранится в базе как есть) и `modules.remove {module}` → `{}`: только клиенту хозяина. Ошибки `Taken` (`conflict`) и `ServiceNotFound` (`not_found`); запись конфига `remove` не снимает (`conflict`).
-- `modules.token_issue {module, issued_by?}` — без `kind`, только токены клиентов; id сервиса (конфиг или `modules.add`) — `conflict`.
-- `Module.kind: Option<ModuleKind>` (`service` — запись реестра, `client` — живой токен), новое поле `Module.dial {address, config, error}`; запись реестра без строки `modules` показывается `offline`. То же поле у `ModuleGauge`.
-- `TokenKind` → `ModuleKind`, `Caller::from_token`/`token_kind` → `from_kind`/`kind`.
+- `modules.token_issue {module, issued_by?}` — только токены клиентов; id сервиса (конфиг или `modules.add`) — `conflict`.
+- `Module.kind: Option<ModuleKind>` (`service` — запись реестра, `client` — живой токен), поле `Module.dial {address, config, error}`; запись реестра без строки `modules` показывается `offline`. То же поле у `ModuleGauge`.
+- `Caller::from_kind`/`Caller::kind` — вид модуля `ModuleKind`.
 
 ### База
 
-- Таблица `module_services (module, address, key, added_via, added_at)`; у `module_tokens` нет колонки `kind`.
+- Одна миграция `0001_init` со всей схемой: `module_services (module, address, key, added_via, added_at)`, `module_tokens`, `module_kv_usage` с триггерами.
 
 ### SDK
 
 - Сервис слушает: `Module::listen(&ServiceConfig{listen, key, kernel_wait})` → `Listening` (uds/tcp под Noise, socket activation по адресу); новое соединение ядра вытесняет прежнее `superseded`, `kernel().await` ждёт первого до `kernel_wait`, `run` переживает потерю ядра.
 - Слушатель сервиса: Noise, `hello` и `welcome` — за один `handshake_timeout` от accept; до конца Noise — не больше 64 соединений и 8 из одной сети, сверх новичок вытесняет старейшее недоказанное (`eva_rpc::gate::Gate`, общий со слушателем клиентов ядра); провал до Noise — `debug` в логе.
-- `ModuleConfig` → `ClientConfig` (клиенты хозяина: токен, реконнект — как было).
+- `ClientConfig` — клиенты хозяина: токен, реконнект.
 - `hello.token` у сервиса не шлётся, `max_hello` сервис не проверяет.
+
+### Сборка и NixOS
+
+- `flake.nix` — вызов `eva.lib.mkServiceFlake`: `packages.eva-kernel`/`default`, `devShells.default`, `nixosModules.default`. Секреты — `secretFields` фреймворка (`llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`): `services.eva-kernel.secrets."<ключ>" = <файл>` → `LoadCredential` и `{file = "/run/credentials/eva-kernel.service/<ключ>";}` в `settings`; assertions фреймворка — `plaintext` в `settings` и ключ `secrets` мимо полей.
+- Сервис: `RuntimeDirectory = eva-kernel`, слушатель по умолчанию `/run/eva-kernel/modules.sock` ядро связывает само (при `UMask = 0077` — только своему пользователю; сокет для группы — socket-юнит хоста с тем же путём, ядро берёт его по адресу); `SupplementaryGroups = [ "eva" ]`, группу объявляет хост.
+- `StateDirectoryMode = 0700` и `UMask = 0077` — база (хранит ключи сервисов как есть), blob'ы и песочницы только пользователю ядра; сервис машины слушает `/run/eva-<id>/module.sock`, права — его юнит или socket-юнит.
+- Книга — `mdbook build docs` из devShell (`docs/book` в `.gitignore`).
+- Фреймворк `eva` c58e04c: `eva::schemars` (форк), `hashbrown` 0.17, nixpkgs `nixos-26.05`; записи `for_each_op!` несут `docs: [...]`.
 
 ### Тесты
 
@@ -57,28 +49,28 @@
 
 ## API на eva-api-builder — 2026-09-27
 
-Один список операций вместо нескольких сверяемых копий.
+Единственный список операций — `endpoints!` в `macros/`.
 
 ### Библиотечное API
 
 - Новый крейт `eva-kernel-macros` (`macros/`): `endpoints!` на `eva-api-builder` фреймворка — единственный список операций с флагами `mutating`, `stream`, `upload`. Из него трейты неймспейсов и X-макро `eva_core::for_each_op!`.
-- `CallStep` — `eva::handling::CallStep` (реэкспорт `eva_core::CallStep`). `StreamStep` и `UploadStep` удалены: поток и загрузка зовутся `.call(args)`.
-- Поток (`turns.attach`, `blobs.get`): `.open(args)` → `.call(args)`, `Ok = Items<Item, Err>`.
-- Загрузка (`blobs.put`): `.call(args, body)` → `.call(put::Args { meta, body })`; прежние поля `put::Args` теперь `put::Meta`, она и идёт в `params`.
+- `CallStep` — `eva::handling::CallStep` (реэкспорт `eva_core::CallStep`): один шаг для вызова, потока и загрузки — `.call(args)`.
+- Поток (`turns.attach`, `blobs.get`): `.call(args)`, `Ok = Items<Item, Err>`.
+- Загрузка (`blobs.put`): `.call(put::Args { meta, body })`; в `params` идёт `put::Meta`.
 - `Items` и `ByteStream` — типы `eva_protocol::requests`.
 
 ### Внутри
 
-- `eva-rpc`: таблица диспетчера и `RpcSession` — колбэки над `for_each_op!`; `ops.rs` удалён.
+- `eva-rpc`: таблица диспетчера и `RpcSession` — колбэки над `for_each_op!`.
 - `eva-sdk`: `LiveSession` собрана по тому же списку.
 - `eva-kernel`: `impls/` — строка `project!` на операцию над `CallStep` фреймворка.
-- Сигналы ловит `Supervisor` фреймворка: первый SIGINT/SIGTERM сворачивает компоненты штатно (модули, затем сброс WAL), второй обрывает компоненты. Код выхода в обоих случаях 0 (второй сигнал раньше выходил сразу с 1); процесс ждёт уже начатые блокирующие операции.
+- Сигналы ловит `Supervisor` фреймворка: первый SIGINT/SIGTERM сворачивает компоненты штатно (модули, затем сброс WAL), второй обрывает компоненты. Код выхода в обоих случаях 0; процесс ждёт уже начатые блокирующие операции.
 - Фреймворк `eva` 5e911fc, toolchain rust 1.95.
 
 ### Тесты
 
-- Удалены сверки копий списка: сверщик меток SDK и таблица «операция → вид» в `core/tests/namespaces.rs` (она повторяла список). Вид операции теперь задаёт только флаг в `macros/src/lib.rs`, тестом он не сверяется. Совпадение таблицы диспетчера с `NAMESPACES` по-прежнему проверяет `rpc/tests/it/methods.rs`.
-- `eva-protocol`: `params` `blobs.put` — голая `Meta`, без обёртки `meta`.
+- Вид операции задаёт только флаг в `macros/src/lib.rs`, тестом он не сверяется; совпадение таблицы диспетчера с `NAMESPACES` проверяет `rpc/tests/it/methods.rs`.
+- `eva-protocol`: `params` `blobs.put` — поля `Meta` верхним уровнем.
 
 ## M1 — 2026-09-26
 

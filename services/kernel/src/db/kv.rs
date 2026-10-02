@@ -8,7 +8,7 @@ use eva_protocol::types::ModuleId;
 use crate::db::{DbResult, sql::Ts};
 
 /// Цена строки сверх байтов ключа и значения: заголовок записи и индекс.
-/// Та же константа — в триггерах `module_kv_usage` (миграция `0002`).
+/// Та же константа — в триггерах `module_kv_usage` (`0001_init`).
 pub const ROW_OVERHEAD: u64 = 64;
 
 /// Сколько строка весит в квоте `modules.kv_quota`.

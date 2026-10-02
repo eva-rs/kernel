@@ -421,7 +421,7 @@ async fn config_token_wins_over_an_issued_one() {
             .db()
             .write(move |tx| tx.modules().insert_token(&row))
             .await
-            .expect("legacy token");
+            .expect("db token");
         let res = connect_with(&url, hello(&issued, Capabilities::default()), NoHandler).await;
         assert_eq!(rejected(res), ErrorCode::Unauthorized, "{module}");
     }

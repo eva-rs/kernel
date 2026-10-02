@@ -378,7 +378,7 @@ async fn concurrent_sets_cannot_overshoot() {
 }
 
 mod usage {
-    //! Счётчик `module_kv_usage` (миграция `0002`): квота `kv.set` читает
+    //! Счётчик `module_kv_usage` (`0001_init`): квота `kv.set` читает
     //! его точечно, триггеры держат его равным обходу ключей модуля.
 
     use std::{num::NonZeroU64, path::Path, time::Duration};
