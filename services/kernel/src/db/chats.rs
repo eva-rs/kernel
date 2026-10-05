@@ -308,6 +308,28 @@ impl Chats<'_> {
         Ok(())
     }
 
+    /// Строки `title` всех чатов приводятся к `COALESCE(external_title, title)`:
+    /// индексатор зовёт это каждой пачкой, хуков в rename не нужно. Сколько
+    /// строк создано, заменено или снято.
+    pub fn sync_titles(&self) -> DbResult<usize> {
+        let removed = self.0.execute(
+            "DELETE FROM chat_speech WHERE kind = 'title' AND chat_id IN
+               (SELECT id FROM chats WHERE COALESCE(external_title, title) IS NULL)",
+            [],
+        )?;
+        let upserted = self.0.execute(
+            "INSERT INTO chat_speech (chat_id, seq, chunk_no, kind, text)
+             SELECT c.id, NULL, 0, 'title', COALESCE(c.external_title, c.title) FROM chats c
+              WHERE COALESCE(c.external_title, c.title) IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM chat_speech s
+                                 WHERE s.chat_id = c.id AND s.kind = 'title'
+                                   AND s.text = COALESCE(c.external_title, c.title))
+             ON CONFLICT (chat_id) WHERE kind = 'title' DO UPDATE SET text = excluded.text",
+            [],
+        )?;
+        Ok(removed + upserted)
+    }
+
     pub fn move_to(&self, chat: ChatId, folder: FolderId) -> DbResult<()> {
         self.0.execute(
             "UPDATE chats SET folder_id = ?2 WHERE id = ?1",
@@ -415,6 +437,359 @@ impl Chats<'_> {
             .query_map((chat.0, from, count), message_from_row)?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    pub fn messages_before(
+        &self,
+        chat: ChatId,
+        before: u64,
+        count: u16,
+    ) -> DbResult<Vec<MessageRow>> {
+        let mut stmt = self.0.prepare(
+            "SELECT m.event_id, m.seq, m.role, m.sender_person_id, m.external_id,
+                    m.reply_to_external_id, m.turn_id, e.payload, e.created_at
+               FROM messages m JOIN events e ON e.id = m.event_id
+              WHERE m.chat_id = ?1 AND m.seq < ?2 ORDER BY m.seq DESC LIMIT ?3",
+        )?;
+        let before = i64::try_from(before).unwrap_or(i64::MAX);
+        Ok(stmt
+            .query_map((chat.0, before, count), message_from_row)?
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn set_external_title(&self, chat: ChatId, title: Option<&str>) -> DbResult<()> {
+        self.0.execute(
+            "UPDATE chats SET external_title = ?2 WHERE id = ?1",
+            (chat.0, title),
+        )?;
+        Ok(())
+    }
+
+    /// Название запускает только первая человеческая реплика обычного чата.
+    pub fn needs_title(&self, chat: ChatId, first: EventId) -> DbResult<bool> {
+        Ok(self.0.query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM chats c JOIN folders f ON f.id = c.folder_id
+                WHERE c.id = ?1 AND c.title IS NULL AND c.external_title IS NULL
+                  AND c.deleted_at IS NULL
+                  AND NOT (f.builtin = 1 AND (f.name = 'agents'
+                       OR (f.surface_id = 'system' AND f.name IN ('cron', 'sleep', 'notify'))))
+                  AND ?2 = (SELECT MIN(m.event_id) FROM messages m
+                             WHERE m.chat_id = c.id AND m.role = 'user'
+                               AND COALESCE(m.sender_person_id, '') <> 'p0'))",
+            (chat.0, first.0),
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Поздний результат генерации не перезаписывает ручное название.
+    pub fn set_generated_title(&self, chat: ChatId, title: &str) -> DbResult<bool> {
+        Ok(self.0.execute(
+            "UPDATE chats SET title = ?2 WHERE id = ?1 AND title IS NULL AND deleted_at IS NULL",
+            (chat.0, title),
+        )? > 0)
+    }
+
+    pub fn promote(&self, chat: ChatId) -> DbResult<()> {
+        self.0.execute(
+            "UPDATE chats SET kind = 'persistent' WHERE id = ?1 AND kind = 'ephemeral'",
+            [chat.0],
+        )?;
+        Ok(())
+    }
+
+    /// Реплики, ждущие индексации поиска (`05 §7.1`), по возрастанию `event_id`.
+    pub fn unindexed(&self, limit: u32) -> DbResult<Vec<Unindexed>> {
+        let mut stmt = self.0.prepare(
+            "SELECT m.chat_id, m.seq, m.role, e.payload, COALESCE(c.trusted, f.trusted, s.trusted, 0) AS trusted_chat
+               FROM messages m JOIN events e ON e.id = m.event_id
+               JOIN chats c ON c.id = m.chat_id JOIN folders f ON f.id = c.folder_id JOIN surfaces s ON s.id = f.surface_id
+              WHERE m.indexed_at IS NULL ORDER BY m.event_id LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([limit], |row| {
+                let payload: Vec<u8> = row.get("payload")?;
+                let payload: SpeechPayload = rmp_serde::from_slice(&payload).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Blob,
+                        Box::new(e),
+                    )
+                })?;
+                let role = row.get::<_, Text<Role>>("role")?.0;
+                Ok(Unindexed {
+                    chat: ChatId(row.get("chat_id")?),
+                    seq: row.get("seq")?,
+                    role,
+                    trusted_chat: row.get("trusted_chat")?,
+                    // Ввод без спикера — текст ядра (`01 §1.2`); у assistant спикера нет всегда.
+                    machine: role == Role::User && payload.speaker.is_none(),
+                    blocks: payload.blocks,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Чанки реплики заново: повторная индексация не плодит дубли.
+    pub fn clear_speech(&self, chat: ChatId, seq: i64) -> DbResult<()> {
+        self.0.execute(
+            "DELETE FROM chat_speech WHERE chat_id = ?1 AND seq = ?2",
+            (chat.0, seq),
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_speech(
+        &self,
+        chat: ChatId,
+        seq: i64,
+        chunk_no: u32,
+        text: &str,
+    ) -> DbResult<i64> {
+        Ok(self.0.query_row(
+            "INSERT INTO chat_speech (chat_id, seq, chunk_no, kind, text) VALUES (?1, ?2, ?3, 'speech', ?4) RETURNING id",
+            (chat.0, seq, chunk_no, text),
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn mark_indexed(&self, chat: ChatId, seq: i64, now: Timestamp) -> DbResult<()> {
+        self.0.execute(
+            "UPDATE messages SET indexed_at = ?3 WHERE chat_id = ?1 AND seq = ?2",
+            (chat.0, seq, Ts(now)),
+        )?;
+        Ok(())
+    }
+
+    /// Чанки без вектора активной модели; речь trusted-чатов — только локальному эмбеддеру.
+    pub fn speech_embed_queue(
+        &self,
+        model: &ModelId,
+        include_trusted: bool,
+        limit: u32,
+    ) -> DbResult<Vec<(i64, String)>> {
+        let mut stmt = self.0.prepare(
+            "SELECT s.id, s.text FROM chat_speech s
+               JOIN chats c ON c.id = s.chat_id JOIN folders f ON f.id = c.folder_id JOIN surfaces sf ON sf.id = f.surface_id
+               LEFT JOIN chat_speech_vec v ON v.chunk_id = s.id
+              WHERE (v.chunk_id IS NULL OR v.embed_model <> :model)
+                AND (:trusted OR COALESCE(c.trusted, f.trusted, sf.trusted, 0) = 0)
+              ORDER BY s.id LIMIT :limit",
+        )?;
+        let rows = stmt
+            .query_map(
+                named_params! { ":model": model.as_str(), ":trusted": include_trusted, ":limit": limit },
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn set_speech_vector(&self, chunk: i64, model: &ModelId, vector: &[f32]) -> DbResult<()> {
+        self.0.execute(
+            "INSERT OR REPLACE INTO chat_speech_vec (chunk_id, embedding, embed_model) VALUES (?1, ?2, ?3)",
+            (chunk, super::memory::encode(vector), model.as_str()),
+        )?;
+        Ok(())
+    }
+
+    /// Лексические кандидаты поиска: `(chunk_id, bm25)` по возрастанию.
+    pub fn speech_fts(
+        &self,
+        query: &str,
+        scope: &SearchScope,
+        limit: u32,
+    ) -> DbResult<Vec<(i64, f64)>> {
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT s.id, bm25(chat_speech_fts) AS rank FROM chat_speech_fts
+               JOIN chat_speech s ON s.id = chat_speech_fts.rowid {}
+              WHERE chat_speech_fts MATCH :query AND {}
+              ORDER BY rank, s.id LIMIT :limit",
+            SearchScope::JOINS,
+            SearchScope::WHERE
+        );
+        let mut stmt = self.0.prepare(&sql)?;
+        let params = scope.params();
+        let mut params: Vec<(&str, &dyn rusqlite::ToSql)> = params
+            .iter()
+            .map(|(k, v)| (*k, v as &dyn rusqlite::ToSql))
+            .collect();
+        params.push((":query", &query));
+        params.push((":limit", &limit));
+        let rows = stmt
+            .query_map(params.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Векторы чанков в scope под активной моделью: cos считает вызывающий.
+    pub fn speech_vectors(
+        &self,
+        scope: &SearchScope,
+        model: &ModelId,
+    ) -> DbResult<Vec<(i64, Vec<f32>)>> {
+        let sql = format!(
+            "SELECT s.id, v.embedding FROM chat_speech s
+               JOIN chat_speech_vec v ON v.chunk_id = s.id {}
+              WHERE v.embed_model = :model AND {}",
+            SearchScope::JOINS,
+            SearchScope::WHERE
+        );
+        let mut stmt = self.0.prepare(&sql)?;
+        let params = scope.params();
+        let mut params: Vec<(&str, &dyn rusqlite::ToSql)> = params
+            .iter()
+            .map(|(k, v)| (*k, v as &dyn rusqlite::ToSql))
+            .collect();
+        let model = model.as_str();
+        params.push((":model", &model));
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                let blob: Vec<u8> = row.get(1)?;
+                Ok((row.get(0)?, super::memory::decode(&blob)))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Хиты по id чанков, в порядке id.
+    pub fn speech_hits(&self, chunks: &[i64]) -> DbResult<Vec<SpeechHit>> {
+        let mut stmt = self.0.prepare(
+            "SELECT s.id, s.chat_id, COALESCE(c.external_title, c.title) AS title, s.seq, s.text,
+                    m.role, m.sender_person_id, COALESCE(e.created_at, c.last_activity_at) AS at
+               FROM chat_speech s JOIN chats c ON c.id = s.chat_id
+               LEFT JOIN messages m ON m.chat_id = s.chat_id AND m.seq = s.seq
+               LEFT JOIN events e ON e.id = m.event_id
+              WHERE s.id = ?1",
+        )?;
+        let mut hits = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            let hit = stmt
+                .query_row([chunk], |row| {
+                    let seq: Option<i64> = row.get("seq")?;
+                    Ok(SpeechHit {
+                        chunk: row.get("id")?,
+                        chat: ChatId(row.get("chat_id")?),
+                        title: row.get("title")?,
+                        seq: seq.and_then(|s| u64::try_from(s).ok()),
+                        role: row.get::<_, Option<Text<Role>>>("role")?.map(|r| r.0),
+                        sender: row
+                            .get::<_, Option<String>>("sender_person_id")?
+                            .map(PersonId),
+                        text: row.get("text")?,
+                        at: row.get::<_, Ts>("at")?.0,
+                    })
+                })
+                .optional()?;
+            hits.extend(hit);
+        }
+        Ok(hits)
+    }
+
+    /// Последние `n` чанков речи чата, старые первыми: запрос темы hot-блока (`03 §5`).
+    pub fn last_speech(&self, chat: ChatId, n: u32) -> DbResult<Vec<String>> {
+        let mut stmt = self.0.prepare(
+            "SELECT text FROM chat_speech WHERE chat_id = ?1 AND kind = 'speech'
+              ORDER BY seq DESC, chunk_no DESC LIMIT ?2",
+        )?;
+        let mut rows: Vec<String> = stmt
+            .query_map((chat.0, n), |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+}
+
+/// Реплика без строк индекса: блоки и trust её чата.
+#[data]
+pub struct Unindexed {
+    pub chat: ChatId,
+    pub seq: i64,
+    pub role: Role,
+    pub trusted_chat: bool,
+    /// `speaker = None` у `user` — текст ядра, не речь (`01 §1.2`).
+    pub machine: bool,
+    pub blocks: Vec<Block>,
+}
+
+/// Часть payload `message`, нужная индексатору: блоки и был ли спикер.
+#[data]
+struct SpeechPayload {
+    blocks: Vec<Block>,
+    #[serde(default)]
+    speaker: Option<serde_json::Value>,
+}
+
+/// Строка индекса для хита поиска; `seq = None` — название чата.
+#[data]
+pub struct SpeechHit {
+    pub chunk: i64,
+    pub chat: ChatId,
+    pub title: Option<String>,
+    pub seq: Option<u64>,
+    pub role: Option<Role>,
+    pub sender: Option<PersonId>,
+    pub text: String,
+    pub at: Timestamp,
+}
+
+/// Scope поиска (`05 §7.3`): фильтр в `WHERE`, не пост-фильтр.
+#[data]
+#[derive(Default)]
+pub struct SearchScope {
+    /// Тур вне `master ∧ trusted`: его чат плюс неудалённые untrusted; `None` — всё.
+    pub narrow_to: Option<ChatId>,
+    pub surface: Option<SurfaceId>,
+    pub folder: Option<FolderId>,
+    pub include_deleted: bool,
+    pub since: Option<Timestamp>,
+}
+
+impl SearchScope {
+    const JOINS: &'static str = "JOIN chats c ON c.id = s.chat_id
+               JOIN folders f ON f.id = c.folder_id JOIN surfaces sf ON sf.id = f.surface_id
+               LEFT JOIN messages m ON m.chat_id = s.chat_id AND m.seq = s.seq
+               LEFT JOIN events e ON e.id = m.event_id";
+
+    const WHERE: &'static str = "(:narrow IS NULL OR s.chat_id = :narrow
+                    OR (COALESCE(c.trusted, f.trusted, sf.trusted, 0) = 0 AND c.deleted_at IS NULL))
+                AND (:deleted OR c.deleted_at IS NULL OR s.chat_id = :narrow)
+                AND (:surface IS NULL OR f.surface_id = :surface)
+                AND (:folder IS NULL OR c.folder_id = :folder)
+                AND (:since IS NULL OR COALESCE(e.created_at, c.last_activity_at) >= :since)";
+
+    fn params(&self) -> [(&'static str, rusqlite::types::Value); 5] {
+        use rusqlite::types::Value;
+        [
+            (
+                ":narrow",
+                self.narrow_to.map_or(Value::Null, |c| Value::Integer(c.0)),
+            ),
+            (
+                ":deleted",
+                Value::Integer(i64::from(self.include_deleted && self.narrow_to.is_none())),
+            ),
+            (
+                ":surface",
+                self.surface
+                    .as_ref()
+                    .map_or(Value::Null, |s| Value::Text(s.0.clone())),
+            ),
+            (
+                ":folder",
+                self.folder.map_or(Value::Null, |f| Value::Integer(f.0)),
+            ),
+            (
+                ":since",
+                self.since
+                    .and_then(|t| Ts(t).nanos().ok())
+                    .map_or(Value::Null, Value::Integer),
+            ),
+        ]
     }
 }
 

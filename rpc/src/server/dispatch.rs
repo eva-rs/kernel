@@ -18,6 +18,7 @@ use crate::{
     codec,
     peer::{Call, Kind, Outgoing, Service},
     server::window::{self, Begin, Lease},
+    transport::http,
 };
 
 type Unary<S> = fn(Session<S>, Payload) -> BoxFuture<'static, Result<Payload, RpcError>>;
@@ -34,6 +35,8 @@ enum Run<S> {
 struct Route<S> {
     kind: OpKind,
     run: Run<S>,
+    /// Тот же шаг под конвертом HTTP-моста; `None` — поток или загрузка.
+    http: Option<http::Handler<S>>,
 }
 
 /// Маршруты всех операций; строится один раз на сервер.
@@ -57,6 +60,17 @@ impl<S: IsSession + 'static> Table<S> {
 impl<S> Table<S> {
     fn get(&self, method: &str) -> Option<&Route<S>> {
         self.index.get(method).map(|&i| &self.routes[i].1)
+    }
+
+    /// Маршрут HTTP-моста: потоки и загрузки — только по ws.
+    pub(crate) fn http(&self, method: &str) -> Result<http::Handler<S>, RpcError> {
+        match self.get(method) {
+            Some(Route {
+                http: Some(run), ..
+            }) => Ok(*run),
+            Some(_) => Err(RpcError::new(ErrorCode::UnknownMethod, "use ws")),
+            None => Err(RpcError::unknown_method(method)),
+        }
     }
 
     fn methods(&self) -> Vec<(String, OpKind)> {
@@ -86,6 +100,12 @@ macro_rules! route {
                     result
                 })
             }),
+            http: Some(|mut session, call| {
+                Box::pin(async move {
+                    let reply = http::unary(session.$accessor().$method(), call).await;
+                    reply
+                })
+            }),
         }
     };
     ([stream] $accessor:ident $method:ident $Args:ty) => {
@@ -97,6 +117,7 @@ macro_rules! route {
                     result
                 })
             }),
+            http: None,
         }
     };
     ([upload] $accessor:ident $method:ident $Args:ty) => {
@@ -111,6 +132,7 @@ macro_rules! route {
                     result
                 })
             }),
+            http: None,
         }
     };
 }
@@ -241,26 +263,31 @@ where
         run(self.session().await?, params).await
     }
 
-    /// Корень трассы запроса: задачи соединения не наследуют спан
-    /// компонента, а `#[fastrace::trace]` хендлеров без родителя молчит.
     fn span(&self, method: &str) -> Span {
-        let caller = self.caller.label().to_owned();
-        Span::root(method.to_owned(), SpanContext::random()).with_property(|| ("caller", caller))
+        root_span(method, &self.caller)
     }
 
-    /// Край логирует ошибку один раз: хендлер операции её не логирует.
     fn logged<T>(&self, method: &str, result: Result<T, RpcError>) -> Result<T, RpcError> {
         if let Err(e) = &result {
-            let caller = self.caller.label();
-            match e.code {
-                ErrorCode::Forbidden => {
-                    log::debug!(method, caller, error:% = e; "operation forbidden")
-                }
-                ErrorCode::Internal => log::error!(method, caller, error:% = e; "operation failed"),
-                _ => {}
-            }
+            log_failure(method, self.caller.label(), e.code, e);
         }
         result
+    }
+}
+
+/// Корень трассы запроса: задачи соединения не наследуют спан компонента, а
+/// `#[fastrace::trace]` хендлеров без родителя молчит.
+pub(crate) fn root_span(method: &str, caller: &Caller) -> Span {
+    let caller = caller.label().to_owned();
+    Span::root(method.to_owned(), SpanContext::random()).with_property(|| ("caller", caller))
+}
+
+/// Край логирует ошибку один раз: хендлер операции её не логирует.
+pub(crate) fn log_failure(method: &str, caller: &str, code: ErrorCode, error: &dyn fmt::Display) {
+    match code {
+        ErrorCode::Forbidden => log::debug!(method, caller, error:% = error; "operation forbidden"),
+        ErrorCode::Internal => log::error!(method, caller, error:% = error; "operation failed"),
+        _ => {}
     }
 }
 
@@ -292,6 +319,7 @@ where
         let Some(&Route {
             kind,
             run: Run::Unary(run),
+            ..
         }) = self.table.get(&method)
         else {
             return Err(unknown(&method));

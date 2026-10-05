@@ -19,6 +19,10 @@ pub struct State<C: Components> {
     pub world: WorldOf<C>,
     pub caller: Caller,
     pub db_conn: DbConn,
+    /// Удаление чата из его тула не может ждать закрытия того же тура.
+    pub(crate) tool_chat: Option<eva_protocol::types::ChatId>,
+    /// Происхождение blob'ов инструмента задаётся внутри общего API.
+    pub(crate) tool_upload: bool,
 }
 
 impl<C: Components> State<C> {
@@ -28,6 +32,8 @@ impl<C: Components> State<C> {
             world,
             caller,
             db_conn: DbConn::default(),
+            tool_chat: None,
+            tool_upload: false,
         }
     }
 }

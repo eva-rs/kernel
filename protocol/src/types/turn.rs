@@ -121,7 +121,7 @@ pub struct TurnItem {
     /// Порядок внутри события у items без своего события (`Plan`, `ClientOp`).
     #[serde(default)]
     pub sub: u32,
-    /// Из буфера или истории, не живое.
+    /// Из истории или текущего состояния, не живое.
     #[serde(default)]
     pub replayed: bool,
     pub event: FeedEvent,
@@ -138,23 +138,22 @@ pub enum FeedEvent {
         id: String,
         delta: ItemDelta,
     },
-    /// Авторитетен: результат или ошибка.
+    /// Авторитетен: результат или ошибка; `replaces` — живой id, который
+    /// этот исторический заменяет на месте.
     ItemCompleted {
         item: Item,
+        replaces: Option<String>,
     },
     RequestResolved {
         pending: PendingId,
         outcome: PendingOutcome,
     },
     Usage(StepUsage),
-    /// `message_ids` заменяют live-id на исторические.
+    /// После `turn_ended`; `error` — текст исхода `failed`.
     TurnDone {
         turn: TurnId,
-        message_ids: Vec<EventId>,
-    },
-    TurnError {
-        turn: TurnId,
-        message: String,
+        outcome: TurnOutcome,
+        error: Option<String>,
     },
     /// Событие новее этого пира.
     #[serde(other)]
@@ -162,6 +161,23 @@ pub enum FeedEvent {
 }
 
 tolerant!(FeedEvent);
+
+/// Исход тура — `turn_ended.outcome` лога.
+#[data(copy, ord, display(name))]
+#[serde(remote = "TurnOutcome")]
+pub enum TurnOutcome {
+    Completed,
+    Cancelled,
+    Failed,
+    Interrupted,
+    /// `before_turn` отклонил тур (`06 §7`).
+    Blocked,
+    /// Исход новее этого пира.
+    #[serde(other)]
+    Unknown,
+}
+
+tolerant!(TurnOutcome);
 
 #[data]
 pub struct StepUsage {
@@ -177,7 +193,9 @@ pub struct StepUsage {
 
 #[data]
 pub struct Item {
-    /// Из истории `<message_id>:<n>`, живое `<turn_id>:<n>`, у `ToolCall` — `call_id`.
+    /// Из лога `<event_id>:<n>`; живой `AgentMessage`/`Thinking` до записи —
+    /// `<turn_id>:<step>:a` / `:t`; `ToolCall` — `call_id`; `ClientOp` — id
+    /// pending; `Plan` — `plan:<chat_id>`.
     pub id: String,
     pub turn: Option<TurnId>,
     pub seq: EventId,
@@ -206,6 +224,8 @@ pub enum ItemBody {
         text: String,
         sender: Option<PersonId>,
         master: bool,
+        /// Что прислала поверхность: клиент гасит им оптимистичный пузырь.
+        external_id: Option<String>,
     },
     AgentMessage {
         text: String,
@@ -239,6 +259,12 @@ pub enum ItemBody {
     },
     Compaction {
         summary_ref: SegmentId,
+    },
+    File {
+        blob: BlobId,
+        url: String,
+        name: String,
+        media_type: String,
     },
     Reminder {
         text: String,
@@ -314,6 +340,10 @@ tolerant!(Decision);
 pub enum PendingOutcome {
     Answered,
     TextInstead,
+    /// `ask`, отвеченный после `ask_ttl`: ответ уходит в чат user-сообщением `[ask] late answer …`.
+    LateAnswer,
+    /// Просроченный `ask` закрыт следующей человеческой репликой.
+    Superseded,
     Allowed,
     Denied,
     Expired,

@@ -13,13 +13,11 @@ use std::{
 
 use futures::{Stream, StreamExt as _};
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
 use tokio::sync::mpsc;
 
 use eva_core::{GenSink, Provider};
 use eva_protocol::{
     types::{
-        content::Block,
         generate::{
             EmbedRequest, EmbedResponse, GenItem, GenerateRequest, ProviderError, ProviderErrorKind,
         },
@@ -30,7 +28,7 @@ use eva_protocol::{
         capabilities::ProviderCap,
         events::Publish,
         frame::Payload,
-        hooks::{AfterTool, BeforeSend, BeforeTool, BeforeTurn, Decision, Hook, HookPoint},
+        hooks::{AfterTool, BeforeTool, BeforeTurn, Decision, Hook, HookPoint, NoPatch},
         method,
         provider::TokenCount,
         tools::{ToolCall, ToolItem, ToolResult},
@@ -260,7 +258,7 @@ pub trait ModuleHandler: Send + Sync + 'static {
     fn before_turn(
         &self,
         input: BeforeTurn,
-    ) -> impl Future<Output = Result<Decision<Vec<Block>>, RpcError>> + Send {
+    ) -> impl Future<Output = Result<Decision<NoPatch>, RpcError>> + Send {
         drop(input);
         async { Err(RpcError::unknown_method(HookPoint::BeforeTurn.method())) }
     }
@@ -268,7 +266,7 @@ pub trait ModuleHandler: Send + Sync + 'static {
     fn before_tool(
         &self,
         input: BeforeTool,
-    ) -> impl Future<Output = Result<Decision<Value>, RpcError>> + Send {
+    ) -> impl Future<Output = Result<Decision<NoPatch>, RpcError>> + Send {
         drop(input);
         async { Err(RpcError::unknown_method(HookPoint::BeforeTool.method())) }
     }
@@ -279,14 +277,6 @@ pub trait ModuleHandler: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Decision<ToolResult>, RpcError>> + Send {
         drop(input);
         async { Err(RpcError::unknown_method(HookPoint::AfterTool.method())) }
-    }
-
-    fn before_send(
-        &self,
-        input: BeforeSend,
-    ) -> impl Future<Output = Result<Decision<String>, RpcError>> + Send {
-        drop(input);
-        async { Err(RpcError::unknown_method(HookPoint::BeforeSend.method())) }
     }
 
     /// `events.publish`: по одному, в порядке публикации.
@@ -352,15 +342,10 @@ impl<H> ModuleService<H> {
     }
 }
 
-const HOOKS: [HookPoint; 4] = [
-    HookPoint::BeforeTurn,
-    HookPoint::BeforeTool,
-    HookPoint::AfterTool,
-    HookPoint::BeforeSend,
-];
-
 fn hook_point(method: &str) -> Option<HookPoint> {
-    HOOKS.into_iter().find(|point| point.method() == method)
+    HookPoint::ALL
+        .into_iter()
+        .find(|point| point.method() == method)
 }
 
 fn encode_item<T: Serialize>(item: &T) -> Result<Payload, RpcError> {
@@ -408,7 +393,6 @@ impl<H: ModuleHandler> Service for ModuleService<H> {
                 Some(HookPoint::BeforeTurn) => hook(&params, |i| handler.before_turn(i)).await,
                 Some(HookPoint::BeforeTool) => hook(&params, |i| handler.before_tool(i)).await,
                 Some(HookPoint::AfterTool) => hook(&params, |i| handler.after_tool(i)).await,
-                Some(HookPoint::BeforeSend) => hook(&params, |i| handler.before_send(i)).await,
                 Some(HookPoint::Unknown) | None => Err(RpcError::unknown_method(other)),
             },
         }

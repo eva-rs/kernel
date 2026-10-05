@@ -19,8 +19,6 @@ pub enum HookPoint {
     BeforeTool,
     /// До скраба секретов, усечения и записи в лог.
     AfterTool,
-    /// Перед выдачей поверхности.
-    BeforeSend,
     /// Точка новее этого пира: ядро её не зовёт.
     #[serde(other)]
     Unknown,
@@ -29,13 +27,14 @@ pub enum HookPoint {
 tolerant!(HookPoint);
 
 impl HookPoint {
+    pub const ALL: [Self; 3] = [Self::BeforeTurn, Self::BeforeTool, Self::AfterTool];
+
     /// RPC-метод точки.
     pub const fn method(self) -> &'static str {
         match self {
             Self::BeforeTurn => "hooks.before_turn",
             Self::BeforeTool => "hooks.before_tool",
             Self::AfterTool => "hooks.after_tool",
-            Self::BeforeSend => "hooks.before_send",
             Self::Unknown => "hooks.unknown",
         }
     }
@@ -47,6 +46,11 @@ pub trait Hook {
     type Patch;
 }
 
+/// Патч точки, где патчить нечего: `Decision::Patch` с ним не читается, и
+/// ядро считает такой ответ отказом хука по `fail_mode`.
+#[data]
+pub enum NoPatch {}
+
 #[data]
 pub struct BeforeTurn {
     pub ctx: TurnCtx,
@@ -55,8 +59,8 @@ pub struct BeforeTurn {
 
 impl Hook for BeforeTurn {
     const POINT: HookPoint = HookPoint::BeforeTurn;
-    /// `content`.
-    type Patch = Vec<Block>;
+    /// Реплика уже в логе (I1).
+    type Patch = NoPatch;
 }
 
 #[data]
@@ -70,8 +74,8 @@ pub struct BeforeTool {
 
 impl Hook for BeforeTool {
     const POINT: HookPoint = HookPoint::BeforeTool;
-    /// `input`.
-    type Patch = Value;
+    /// `tool_use` уже в логе и в ленте (I1).
+    type Patch = NoPatch;
 }
 
 #[data]
@@ -87,21 +91,6 @@ impl Hook for AfterTool {
     const POINT: HookPoint = HookPoint::AfterTool;
     /// `result`.
     type Patch = ToolResult;
-}
-
-#[data]
-pub struct BeforeSend {
-    pub ctx: TurnCtx,
-    pub text: String,
-    /// Вложения ответа: блоки `image`/`file`.
-    #[serde(default)]
-    pub attachments: Vec<Block>,
-}
-
-impl Hook for BeforeSend {
-    const POINT: HookPoint = HookPoint::BeforeSend;
-    /// `text`.
-    type Patch = String;
 }
 
 /// Ответ хука; патч передаётся следующему хуку цепочки.

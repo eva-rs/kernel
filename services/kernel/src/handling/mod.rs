@@ -1,8 +1,5 @@
 //! Хендлеры: по `#[eva::endpoint]` на операцию, файл на домен (`11 §5`).
 //! `ProvideState` ниже превращает хендлер над `&mut State<C>` в шаг сессии.
-//!
-//! Операции поздних этапов отвечают `Aux::Unavailable` с `M2_PENDING`/
-//! `M3_PENDING`/`M4_PENDING`.
 
 use eva::trait_set;
 use eva_core::{CallStep, service};

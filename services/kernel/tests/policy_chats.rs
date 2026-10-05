@@ -57,9 +57,9 @@ const MATRIX: &[(Case, [Outcome; 4])] = &[
     (Case::RestoreA, [K, K, F, F]),
     (Case::HistoryA, [K, K, K, F]),
     (Case::HistorySystem, [K, K, F, F]),
-    (Case::Search, [U, U, F, F]),
+    (Case::Search, [K, K, F, F]),
     (Case::Compact, [U, U, F, F]),
-    (Case::Notify, [U, F, F, F]),
+    (Case::Notify, [K, F, F, F]),
 ];
 
 fn create_args(surface: &str) -> create::Args {
@@ -130,6 +130,7 @@ fn title(chat: ChatId) -> update::Args {
 
 fn history(chat: ChatId) -> history_read::Args {
     history_read::Args {
+        before: None,
         chat,
         from_seq: 0,
         count: Default::default(),

@@ -332,6 +332,8 @@ pub mod history_read {
         pub chat: ChatId,
         #[serde(default)]
         pub from_seq: u64,
+        /// Последние `count` реплик с seq меньше границы; без неё — вперёд от `from_seq`.
+        pub before: Option<u64>,
         #[serde(default)]
         pub count: HistoryCount,
         pub view: Option<TurnView>,

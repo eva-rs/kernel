@@ -8,6 +8,8 @@ CREATE TABLE segments (
   seq INTEGER NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
   reason TEXT NOT NULL CHECK (reason IN ('initial','compact','downshift','overflow','manual','reset')),
   summary TEXT, verbatim_tail TEXT,   -- источник первого user-сообщения сегмента (01 §6.2), не system; NULL при 'initial' и голом 'reset' чата на surface system (08 §2.2)
+  summary_model TEXT, summary_path TEXT CHECK (summary_path IN ('warm','cold','bisect','fallback')), summary_attempts INTEGER NOT NULL DEFAULT 0,   -- провенанс компакции (01 §6.2 п.6)
+  failed_compactions INTEGER NOT NULL DEFAULT 0,   -- CompactionFailed подряд; второй даёт аварийный summary (01 §6.2 п.4)
   system_snapshot BLOB NOT NULL, tools_snapshot BLOB NOT NULL, hot_memory_ids BLOB NOT NULL, UNIQUE (chat_id, seq)) STRICT;
 CREATE UNIQUE INDEX segments_open ON segments(chat_id) WHERE ended_at IS NULL;      -- текущий сегмент чата
 
@@ -15,7 +17,7 @@ CREATE TABLE events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
   segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('message','thinking','tool_use','tool_result','system_text','note_updated',
-    'memory_updated','tools_added','tools_removed','reminder','effort_changed','segment_reset','turn_ended')),
+    'memory_updated','tools_added','tools_removed','reminder','params_changed','segment_reset','turn_ended')),
   payload BLOB NOT NULL, turn_id TEXT, step INTEGER, created_at INTEGER NOT NULL, UNIQUE (segment_id, seq)) STRICT;
 CREATE INDEX events_turn ON events(turn_id) WHERE turn_id IS NOT NULL;
 CREATE TRIGGER events_append_only BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'events are append-only'); END;
@@ -34,9 +36,9 @@ CREATE TABLE tool_results (
   chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, tseq INTEGER NOT NULL,
   event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
   segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
-  tool_id INTEGER REFERENCES tools(tool_id),                                          -- NULL = extra_tools тура (02 §4.4, 06 §5): closed_by = canonical, строки tool_stats нет
-  dedup_key BLOB NOT NULL, dedup_of INTEGER, content BLOB, created_at INTEGER NOT NULL,
-  synthetic TEXT CHECK (synthetic IN ('interrupted','cancelled','tool_unavailable')),   -- закрытие висячего tool_use ядром (01 §1.2): is_error, вне дедупа
+  tool_id INTEGER REFERENCES tools(tool_id),                                          -- NULL = extra_tools тура (02 §4.4, 06 §5): turn_ended.by = tool{None, canonical}, строки tool_stats нет
+  dedup_key BLOB NOT NULL, dedup_of INTEGER, content BLOB, created_at INTEGER NOT NULL,   -- content: полные байты; окно для модели — в events.payload (02 §1.1)
+  synthetic TEXT CHECK (synthetic IN ('not_started','interrupted','cancelled','tool_unavailable')),   -- закрытие висячего tool_use ядром (01 §1.2): is_error, вне дедупа
   PRIMARY KEY (chat_id, tseq), CHECK ((dedup_of IS NULL) = (content IS NOT NULL)), CHECK (synthetic IS NULL OR dedup_of IS NULL)) STRICT;
 CREATE INDEX tool_results_dedup ON tool_results(chat_id, segment_id, dedup_key) WHERE dedup_of IS NULL AND synthetic IS NULL;
 
@@ -212,7 +214,7 @@ CREATE INDEX agent_messages_unread ON agent_messages(agent_id, direction) WHERE 
 CREATE TABLE pending (id TEXT PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
   turn_id TEXT NOT NULL, call_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('ask','permission')), payload TEXT NOT NULL,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, resolved_at INTEGER,
-  outcome TEXT CHECK (outcome IN ('answered','text_instead','allowed','denied','expired','cancelled')),
+  outcome TEXT CHECK (outcome IN ('answered','text_instead','late_answer','superseded','allowed','denied','expired','cancelled')),   -- late_answer/superseded: ask, переживший ask_ttl (07 §4.1)
   CHECK ((resolved_at IS NULL) = (outcome IS NULL))) STRICT;
 CREATE INDEX pending_open ON pending(chat_id, expires_at) WHERE resolved_at IS NULL;
 CREATE TABLE hands_grants (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -226,7 +228,7 @@ CREATE TABLE chat_plan (chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE 
   position INTEGER NOT NULL, phase TEXT, title TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','in_progress','completed','abandoned')), outcome TEXT, updated_at INTEGER NOT NULL,
   PRIMARY KEY (chat_id, task_id)) STRICT;
-CREATE UNIQUE INDEX chat_plan_active ON chat_plan(chat_id) WHERE status = 'in_progress';   -- «одна in_progress» в схеме
+CREATE INDEX chat_plan_active ON chat_plan(chat_id) WHERE status = 'in_progress';   -- активных ≤ 1 + живых подагентов (07 §5): держит normalize, не схема
 CREATE TABLE blobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('file','image')),
   chat_id INTEGER REFERENCES chats(id) ON DELETE SET NULL,                            -- blob живёт до expires_at
   name TEXT NOT NULL CHECK (name NOT GLOB '*[/\]*' AND name NOT IN ('.','..')), media_type TEXT NOT NULL, size INTEGER NOT NULL, hash BLOB NOT NULL,
@@ -242,7 +244,8 @@ CREATE TABLE cron_jobs (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, task TEX
   chat_id INTEGER NOT NULL UNIQUE REFERENCES chats(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL, runs_total INTEGER NOT NULL DEFAULT 0, spent_total REAL NOT NULL DEFAULT 0) STRICT;
 CREATE INDEX cron_jobs_due ON cron_jobs(next_fire_at) WHERE next_fire_at IS NOT NULL OR fire_pending IS NOT NULL;
-CREATE TABLE cron_runs (run_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), output TEXT, cost REAL) STRICT;
+CREATE TABLE cron_runs (run_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), output TEXT, cost REAL,
+  due INTEGER) STRICT;   -- due: плановый слот (next_fire_at до сдвига), NULL у запуска по cron_fire; started - due = cron_fire_lag_last (08 §4)
 CREATE INDEX cron_runs_job ON cron_runs(job_id, started DESC);   -- job_id без FK: переживает удаление one-shot
 CREATE TABLE sleep_runs (run_id TEXT PRIMARY KEY, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)),
   dry_run INTEGER NOT NULL CHECK (dry_run IN (0,1)), interrupted INTEGER NOT NULL DEFAULT 0 CHECK (interrupted IN (0,1)), report TEXT) STRICT;

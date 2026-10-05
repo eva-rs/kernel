@@ -20,7 +20,7 @@ use eva_protocol::{
     wire::{
         ErrorCode, RpcError,
         events::{ChatEvent, Event, ModuleEvent, Publish, Topic},
-        hooks::{BeforeSend, BeforeTurn, Decision, HookPoint},
+        hooks::{AfterTool, BeforeTurn, Decision, HookPoint},
         tools::{ToolCall, ToolItem, ToolResult},
     },
 };
@@ -294,9 +294,9 @@ async fn events_reach_handlers_of_their_topic() {
 
 #[tokio::test]
 async fn hooks_answer_only_declared_points() {
-    let module = Module::new().hook(HookPoint::BeforeSend, |_, input: BeforeSend| async move {
+    let module = Module::new().hook(HookPoint::AfterTool, |_, input: AfterTool| async move {
         Decision::Patch {
-            payload: input.text.to_uppercase(),
+            payload: ToolResult::ok(vec![ToolContent::text(input.canonical.to_uppercase())]),
         }
     });
     let (_connected, session, _) = connect(module, fake::welcome("s1", &[])).await;
@@ -304,10 +304,12 @@ async fn hooks_answer_only_declared_points() {
     let decision = session
         .module()
         .hook(
-            &BeforeSend {
+            &AfterTool {
                 ctx: fake::turn(),
-                text: "hi".to_owned(),
-                attachments: Vec::new(),
+                tool_id: None,
+                canonical: "x_send".to_owned(),
+                input: serde_json::json!({}),
+                result: ToolResult::ok(Vec::new()),
             },
             Duration::from_secs(5),
         )
@@ -316,7 +318,7 @@ async fn hooks_answer_only_declared_points() {
     assert_eq!(
         decision,
         Decision::Patch {
-            payload: "HI".to_owned()
+            payload: ToolResult::ok(vec![ToolContent::text("X_SEND")])
         }
     );
 

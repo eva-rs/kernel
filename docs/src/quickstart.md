@@ -34,6 +34,9 @@ eva-kernel --config eva.yaml [--config secrets.yaml …]
 mkdir -p /tmp/eva-dev
 openssl rand -hex 32 > /tmp/eva-dev/phone.token
 chmod 600 /tmp/eva-dev/phone.token
+cat > /tmp/eva-dev/persona.md <<'EOF'
+Ты — Ева, персональный помощник. Отвечай по существу и проверяй результат работы.
+EOF
 ```
 
 ```yaml
@@ -55,6 +58,10 @@ llm:
 ```sh
 ./result/bin/eva-kernel --config eva.yaml
 ```
+
+Файл персоны обязателен. По умолчанию ядро читает `persona.md` внутри
+`system.state_dir`; другой путь задаётся `context.persona_file`. Если файл
+отсутствует или недоступен, запуск завершается ошибкой.
 
 Слушатель по умолчанию — `modules.sock` в `state_dir`, как и в примере. Права файла сокета ядро не ставит: их задают umask процесса или менеджер служб, чей сокет с этим путём ядро берёт готовым ([NixOS](#nixos)).
 
@@ -198,7 +205,7 @@ use eva_sdk::prelude::*;
 use eva_sdk::{ClientConfig, protocol::requests::surfaces};
 
 let connected = Module::new()
-    .ask(true)                     // рисует кнопки pending-запросов (с M5)
+    .ask(true)                     // рисует кнопки вопросов и разрешений
     .connect_config(&cfg)          // cfg: ClientConfig из секции `module`
     .await?;
 log::info!(module:% = connected.module(); "connected");   // "phone" — ключ записи токена

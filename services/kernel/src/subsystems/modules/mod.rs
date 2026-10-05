@@ -3,9 +3,8 @@
 //! сессии и их состояние — строка `modules`, провайдер запасной двери,
 //! рассылка событий.
 //!
-//! Capability `tools` и `hooks` в M1 только проверяются и хранятся (строка
-//! `modules`, `Entry::capabilities`): вызовы `tools.call` приходят с реестром
-//! тулов (M4), `hooks.<point>` — с движком туров (M2).
+//! Capability `tools` связывает сессию с реестром инструментов, а `hooks` —
+//! с точками расширения движка туров.
 
 use std::{path::Path, pin::pin, time::Duration};
 
@@ -50,6 +49,7 @@ mod events;
 pub mod live;
 pub mod services;
 pub mod tokens;
+pub mod tools;
 
 /// Сколько остановка ждёт, пока сессии приберут за собой.
 const DRAIN: Duration = Duration::from_secs(5);
@@ -296,6 +296,8 @@ fn describe(listen: &Listen) -> String {
         Listen::Uds(uds) => format!("uds://{}", uds.path.display()),
         Listen::Ws(ws) => format!("ws://{}", ws.addr),
         Listen::Wss(wss) => format!("wss://{}", wss.addr),
+        Listen::Http(http) => format!("http://{}", http.addr),
+        Listen::Https(https) => format!("https://{}", https.addr),
     }
 }
 
@@ -388,6 +390,9 @@ pub(crate) fn cleanup_superseded<C: Components>(
 
 /// Текущая сессия модуля закрылась: модуль offline (`06 §8`).
 async fn cleanup<C: Components>(shared: &Shared<C>, module: &ModuleId, entry: &Entry) {
+    if let Err(error) = crate::subsystems::tools::registry::offline(shared, module).await {
+        log::error!(module:% = module, error:% = error; "failed to mark module tools offline");
+    }
     if entry.capabilities.provider.is_some() {
         shared.set_module_provider(module, None);
     }

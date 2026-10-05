@@ -1,0 +1,21 @@
+[package]
+name = "eva-provider-embed-local"
+version.workspace = true
+edition.workspace = true
+description = "Embeddings from a local OpenAI-compatible /v1/embeddings server behind the Provider trait; no model weights bundled."
+
+[dependencies]
+eva-protocol.workspace = true
+eva-core.workspace = true
+eva.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+rustls.workspace = true
+
+[lints]
+workspace = true

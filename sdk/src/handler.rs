@@ -29,7 +29,7 @@ use eva_protocol::{
     wire::{
         ErrorCode, RpcError, Welcome,
         events::{Event, Publish, Topic},
-        hooks::{AfterTool, BeforeSend, BeforeTool, BeforeTurn, Decision, Hook},
+        hooks::{AfterTool, BeforeTool, BeforeTurn, Decision, Hook, NoPatch},
         tools::{ToolCall, ToolResult},
     },
 };
@@ -58,10 +58,9 @@ pub struct HookSlots {
     before_turn: Option<HookFn<BeforeTurn>>,
     before_tool: Option<HookFn<BeforeTool>>,
     after_tool: Option<HookFn<AfterTool>>,
-    before_send: Option<HookFn<BeforeSend>>,
 }
 
-/// Вход точки хука, для которой у SDK есть слот; реализован для четырёх точек `06 §7`.
+/// Вход точки хука, для которой у SDK есть слот; реализован для трёх точек `06 §7`.
 pub trait HookInput: Hook + DeserializeOwned + Serialize + Send + Sized + 'static
 where
     Self::Patch: Serialize + DeserializeOwned + Send + 'static,
@@ -91,7 +90,6 @@ hook_input! {
     BeforeTurn => before_turn,
     BeforeTool => before_tool,
     AfterTool => after_tool,
-    BeforeSend => before_send,
 }
 
 type LocalFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -453,8 +451,7 @@ impl ModuleHandler for SdkHandler {
     fn before_turn(
         &self,
         input: BeforeTurn,
-    ) -> impl Future<Output = Result<Decision<Vec<eva_protocol::types::content::Block>>, RpcError>> + Send
-    {
+    ) -> impl Future<Output = Result<Decision<NoPatch>, RpcError>> + Send {
         let this = self.clone();
         async move { this.hook(input).await }
     }
@@ -462,7 +459,7 @@ impl ModuleHandler for SdkHandler {
     fn before_tool(
         &self,
         input: BeforeTool,
-    ) -> impl Future<Output = Result<Decision<serde_json::Value>, RpcError>> + Send {
+    ) -> impl Future<Output = Result<Decision<NoPatch>, RpcError>> + Send {
         let this = self.clone();
         async move { this.hook(input).await }
     }
@@ -471,14 +468,6 @@ impl ModuleHandler for SdkHandler {
         &self,
         input: AfterTool,
     ) -> impl Future<Output = Result<Decision<ToolResult>, RpcError>> + Send {
-        let this = self.clone();
-        async move { this.hook(input).await }
-    }
-
-    fn before_send(
-        &self,
-        input: BeforeSend,
-    ) -> impl Future<Output = Result<Decision<String>, RpcError>> + Send {
         let this = self.clone();
         async move { this.hook(input).await }
     }

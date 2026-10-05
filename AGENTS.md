@@ -30,7 +30,6 @@
 - Одна реализация операции: RPC-метод и тул — обёртки. Список операций — только `macros/src/lib.rs`; остальные берут `eva_core::for_each_op!`.
 - Новая операция: модуль в `protocol/src/requests/<ns>.rs` → строка в `macros/src/lib.rs` (мутация — флаг `mutating`, тесты его не ловят) → хендлер в `handling/`, правило в `state/policy/`, строка `project!` в `impls/` → строки в `tests/k3_policy_all.rs`, `tests/contract.rs`, `rpc/tests/it/errors.rs`.
 - Vendor- и surface-строки только в `providers/*` (`tests/vendor_lint.rs`).
-- Операции поздних этапов отвечают `Aux::Unavailable` с `M2_PENDING`/`M3_PENDING`/`M4_PENDING`.
 
 ## Код
 

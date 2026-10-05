@@ -897,10 +897,8 @@ async fn tool_declarations_with_markers_are_refused_in_warnings() {
             "svc.split"
         ]
     );
-    assert!(
-        welcome.tool_ids.is_empty(),
-        "tool ids arrive with the tool registry (M4)"
-    );
+    assert_eq!(welcome.tool_ids.len(), 1);
+    assert!(welcome.tool_ids.contains_key("svc.send"));
 
     let listed = h
         .client_session()

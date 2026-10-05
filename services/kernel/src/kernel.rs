@@ -76,6 +76,7 @@ impl<C: Components> Kernel<C> {
         let zone = DayZone::from_tz(cfg.system.tz.as_deref())?;
         let registrations = Registrations::load(&cfg.modules)?;
         check_masters(&cfg)?;
+        cfg.check()?;
         let now = demiurge.now();
 
         let applied = db
@@ -141,8 +142,19 @@ impl<C: Components> Kernel<C> {
             log::warn!(module:% = module; "the config names this module: its database registration is ignored");
         }
 
-        let shared = Shared::new(cfg, zone, db, demiurge, providers, hands, registrations);
+        let shared = Shared::new(cfg, zone, db, demiurge, providers, hands, registrations).await?;
+        crate::subsystems::turns::recovery::recover(&shared).await?;
+        let mut tools = crate::subsystems::turns::kernel_tools::decls(shared.cfg());
+        tools.extend(shared.ports().toolset.decls(shared.cfg()));
+        crate::subsystems::tools::registry::register(
+            &shared,
+            &eva_protocol::types::ModuleId::from("kernel"),
+            &crate::subsystems::turns::kernel_tools::groups(),
+            &tools,
+        )
+        .await?;
         shared.settle_providers();
+        crate::subsystems::work::agents::recover(&shared).await?;
         let default_model = &shared.cfg().llm.default_model;
         if shared.models().get(default_model).is_none() {
             log::warn!(model:% = default_model; "default model is not in the registry yet");

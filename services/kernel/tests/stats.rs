@@ -14,13 +14,18 @@ use eva::{
 use eva_core::{CallStep as _, service::stats::Stats as _};
 use eva_kernel::{
     config::modules::TokenEntry,
-    db::{Db as _, DbResult},
+    db::{
+        Db as _, DbResult,
+        stats::{Metric, Op as StatsOp},
+    },
+    subsystems::stats::{Call, Origin, Recorder},
 };
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::stats::{Top, chat_spend, health, spend, spend_series, tools_usage},
     types::{
-        ChatId, FolderId, ModelId, ModuleId, SurfaceId, ToolId,
+        ChatId, FolderId, ModelId, ModuleId, SurfaceId, ToolId, TurnId,
+        generate::{RateLimits, Usage},
         model::{ModelCaps, ModelDecl, Price},
         module::{Dial, ModuleKind, ServiceAddress, State},
         stats::{BreakReason, GroupBy, Scope, Target},
@@ -68,9 +73,9 @@ struct World {
 
 /// Чаты: 1 — `local/Unsorted`, 2 — `local/agents`, 3 — `svc/Unsorted`; 99 — вычищенный.
 /// Тулы: 1 живой `fs_read`, 2 ретирован, 3 пропал.
-async fn world() -> World {
-    // Мок-модель с кэшем и ценой: холодные старты и экономия считаются по реестру.
-    let mock = eva_providers::mock::Config {
+/// Мок-модель с кэшем и ценой: холодные старты и экономия считаются по реестру.
+fn priced_mock() -> eva_providers::mock::Config {
+    eva_providers::mock::Config {
         models: vec![ModelDecl {
             name: ModelId::from(common::MODEL),
             context_window: 200_000,
@@ -90,8 +95,11 @@ async fn world() -> World {
             embed: None,
         }],
         ..common::mock_config()
-    };
-    let h = common::start_with_mock(|_| {}, mock).await;
+    }
+}
+
+async fn world() -> World {
+    let h = common::start_with_mock(|_| {}, priced_mock()).await;
     h.register_module(common::CLIENT).await;
     h.service_with_surface(SVC).await;
     h.service_with_surface(OTHER).await;
@@ -106,7 +114,7 @@ async fn world() -> World {
     let tool_stats = |day: &str, chat: i64, tool: i64, calls: i64| {
         format!(
             "INSERT INTO tool_stats (day, chat_id, tool_id, calls, turns_with_call, loads, errors, ends_turn, last_at)
-             VALUES ('{day}', {chat}, {tool}, {calls}, 1, {tool}, 1, 0, {t});"
+             VALUES ('{day}', {chat}, {tool_id}, {calls}, 1, {tool}, 1, 0, {t});", tool_id = tool + 10000
         )
     };
     let chat_stats = |day: &str, chat: i64, turns: i64| {
@@ -119,8 +127,8 @@ async fn world() -> World {
         chat(3, SVC, "Unsorted"),
         format!(
             "INSERT INTO tools (tool_id, module, path, canonical, decl, spec_hash, registered_at, last_seen_at, retired_at)
-             VALUES (1, 'kernel', 'fs.read', 'fs_read', '{{}}', x'00', {t}, {t}, NULL),
-                    (2, 'kernel', 'old.tool', 'old_tool', '{{}}', x'01', {t}, {t}, {t});"
+             VALUES (10001, 'kernel', 'fixture.read', 'fixture_read', '{{}}', x'00', {t}, {t}, NULL),
+                    (10002, 'kernel', 'fixture.old', 'fixture_old', '{{}}', x'01', {t}, {t}, {t});"
         ),
         tool_stats(D1, 1, 1, 3),
         tool_stats(D2, 1, 2, 5),
@@ -314,13 +322,13 @@ async fn usage(h: &Harness, args: tools_usage::Args) -> (Vec<(i64, Option<String
         .expect("tools_usage");
     let rows = rows
         .into_iter()
-        .map(|r| (r.tool_id.get(), r.name, r.calls))
+        .map(|r| (r.tool_id.get() - 10000, r.name, r.calls))
         .collect();
     (rows, turns)
 }
 
 fn fs_read() -> Option<String> {
-    Some(String::from("fs_read"))
+    Some(String::from("fixture_read"))
 }
 
 #[tokio::test]
@@ -400,7 +408,7 @@ async fn tools_usage_rows_carry_every_counter() {
         .expect("tools_usage");
     let fs = rows
         .iter()
-        .find(|r| r.tool_id == ToolId(1))
+        .find(|r| r.tool_id == ToolId(10001))
         .expect("fs_read");
     assert_eq!(
         (fs.turns_with_call, fs.loads, fs.errors, fs.ends_turn),
@@ -928,4 +936,363 @@ async fn spend_days_follow_an_iana_zone() {
     .await;
     let keys: Vec<_> = ok.rows.iter().map(|r| r.key.as_str()).collect();
     assert_eq!(keys, ["2026-06-30"]);
+}
+
+// --- запись: `stats::Recorder` (`09 §1.3`, `§2`, `§3`, `§4`) ---
+
+fn call(op: StatsOp, reason: Option<BreakReason>) -> Call {
+    Call {
+        model: ModelId::from(common::MODEL),
+        origin: Origin::Surface,
+        op,
+        chat: Some(ChatId(1)),
+        turn: Some(TurnId::from("turn-1")),
+        run: None,
+        cache_break_reason: reason,
+    }
+}
+
+fn chunk(input: u64, cache_read: u64, output: u64) -> Usage {
+    Usage {
+        input,
+        cache_read,
+        output,
+        ..Usage::default()
+    }
+}
+
+async fn table(h: &Harness, sql: &'static str) -> Vec<String> {
+    h.query(move |c| {
+        let mut stmt = c.prepare(sql)?;
+        let n = stmt.column_count();
+        let rows = stmt
+            .query_map([], |r| {
+                (0..n)
+                    .map(|i| {
+                        r.get::<_, rusqlite::types::Value>(i).map(|v| match v {
+                            rusqlite::types::Value::Null => String::from("-"),
+                            rusqlite::types::Value::Integer(n) => n.to_string(),
+                            rusqlite::types::Value::Real(x) => x.to_string(),
+                            rusqlite::types::Value::Text(s) => s,
+                            rusqlite::types::Value::Blob(b) => format!("{b:?}"),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|cols| cols.join("|"))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    })
+    .await
+}
+
+#[tokio::test]
+async fn spend_writes_a_row_per_chunk_and_the_cache_counters() {
+    let h = common::start_with_mock(
+        |cfg| cfg.system.tz = Some(String::from("UTC")),
+        priced_mock(),
+    )
+    .await;
+    let shared = h.kernel.shared();
+    let rec = Recorder::new(shared);
+    let limits = RateLimits {
+        requests_remaining: Some(7),
+        tokens_remaining: None,
+        reset_at: None,
+    };
+    let cold_tail = Usage {
+        output: 50,
+        rate_limits: Some(limits),
+        ..Usage::default()
+    };
+    rec.spend(
+        call(StatsOp::Step, Some(BreakReason::ToolsChange)),
+        &[chunk(2000, 0, 0), cold_tail],
+    )
+    .await
+    .expect("cold step in two chunks");
+    rec.spend(
+        call(StatsOp::Step, Some(BreakReason::FirstRequest)),
+        &[chunk(10, 5000, 20)],
+    )
+    .await
+    .expect("warm step");
+    let provided = Usage {
+        cost: Some(0.25),
+        ..chunk(1, 0, 0)
+    };
+    rec.spend(call(StatsOp::KeepAlive, None), &[provided])
+        .await
+        .expect("keep-alive");
+    let module = Call {
+        model: ModelId::from("unpriced"),
+        origin: Origin::Module(ModuleId::from(SVC)),
+        op: StatsOp::Other,
+        chat: None,
+        turn: None,
+        run: None,
+        cache_break_reason: None,
+    };
+    rec.spend(module, &[chunk(1, 0, 1)])
+        .await
+        .expect("module call");
+    rec.spend(call(StatsOp::Step, None), &[])
+        .await
+        .expect("no usage");
+
+    assert_eq!(
+        table(&h, "SELECT turn_id, source, op, module, cache_break_reason, cost_source FROM spend ORDER BY id").await,
+        [
+            "turn-1|surface|step|-|tools_change|pricebook",
+            "turn-1|surface|step|-|-|pricebook",
+            "turn-1|surface|step|-|first_request|pricebook",
+            "turn-1|surface|keep_alive|-|-|provider",
+            format!("-|module|other|{SVC}|-|none").as_str(),
+        ],
+        "a row per chunk; the break rides on the first one"
+    );
+    assert_eq!(
+        table(
+            &h,
+            "SELECT metric, key, SUM(count) FROM health_stats GROUP BY 1, 2 ORDER BY 1, 2"
+        )
+        .await,
+        [
+            "cache.break|tools_change|1",
+            "cache.cold_start|mock-model|1",
+            "cache.keep_alive|mock-model|1",
+            "inference.usage_missing|mock-model|1",
+            "spend.unpriced|unpriced|1",
+        ]
+    );
+
+    let today = h.clock.get().date().expect("date");
+    let health::Ok { rate_limits, .. } = h
+        .client_session()
+        .await
+        .stats()
+        .health()
+        .call(health::Args {
+            from: today,
+            to: today,
+        })
+        .await
+        .expect("health");
+    let got: Vec<_> = rate_limits
+        .iter()
+        .map(|r| (r.model.as_str(), r.requests_remaining))
+        .collect();
+    assert_eq!(
+        got,
+        [(common::MODEL, Some(7))],
+        "the last snapshot per model"
+    );
+}
+
+#[tokio::test]
+async fn a_turn_tally_flushes_one_bucket_per_tool() {
+    let h = common::start_with(|cfg| cfg.system.tz = Some(String::from("UTC"))).await;
+    let shared = h.kernel.shared();
+    let mut tally = Recorder::new(shared).tally(ChatId(1), shared.now());
+    tally.note_step();
+    tally.note_step();
+    tally.note_user_message();
+    tally.note_assistant_message();
+    tally.note_call(ToolId(1), false, false);
+    tally.note_call(ToolId(1), true, true);
+    tally.note_call(ToolId(2), false, true);
+    tally.note_load(ToolId(3));
+    tally.finish(false).await.expect("flush");
+
+    assert_eq!(
+        table(&h, "SELECT tool_id, calls, turns_with_call, errors, ends_turn, loads FROM tool_stats ORDER BY tool_id").await,
+        ["1|2|1|1|0|0", "2|1|1|0|1|0", "3|0|0|0|0|1"],
+        "an error never ends the turn; a load alone is not coverage"
+    );
+    assert_eq!(
+        table(
+            &h,
+            "SELECT turns, steps, user_messages, assistant_messages, cancelled FROM chat_stats"
+        )
+        .await,
+        ["1|2|1|1|0"]
+    );
+}
+
+#[tokio::test]
+async fn a_dropped_tally_flushes_as_cancelled() {
+    let h = common::start_with(|cfg| cfg.system.tz = Some(String::from("UTC"))).await;
+    let shared = h.kernel.shared();
+    let mut tally = Recorder::new(shared).tally(ChatId(1), shared.now());
+    tally.note_call(ToolId(1), false, false);
+    drop(tally);
+
+    let mut rows = Vec::new();
+    for _ in 0..100 {
+        rows = table(&h, "SELECT turns, cancelled FROM chat_stats").await;
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        rows,
+        ["1|1"],
+        "cancellation and panics still count the turn"
+    );
+    assert_eq!(table(&h, "SELECT calls FROM tool_stats").await, ["1"]);
+}
+
+fn at(iso: &str) -> eva::time::Timestamp {
+    let ts: jiff::Timestamp = iso.parse().expect("timestamp");
+    let nanos = u64::try_from(ts.as_nanosecond()).expect("after 1970");
+    eva::time::Timestamp::from_nanos(std::num::NonZeroU64::new(nanos).expect("non-zero"))
+}
+
+#[tokio::test]
+async fn a_turn_belongs_to_the_day_it_started_in_system_tz() {
+    let h = common::start_with(|cfg| cfg.system.tz = Some(String::from("America/New_York"))).await;
+    let shared = h.kernel.shared();
+    // 2025-03-09 — переход на летнее время: сутки в 23 часа.
+    for started in [
+        "2025-03-08T23:30:00-05:00",
+        "2025-03-09T00:30:00-05:00",
+        "2025-03-09T23:59:00-04:00",
+    ] {
+        let mut tally = Recorder::new(shared).tally(ChatId(5), at(started));
+        tally.note_step();
+        tally.finish(false).await.expect("flush");
+    }
+    assert_eq!(
+        table(
+            &h,
+            "SELECT day, turns FROM chat_stats WHERE chat_id = 5 ORDER BY day"
+        )
+        .await,
+        ["2025-03-08|1", "2025-03-09|2"],
+        "a turn past midnight stays with its start; the boundary is 00:00 local"
+    );
+}
+
+#[test]
+fn tally_buckets_keep_their_invariants() {
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone)]
+    enum Note {
+        Call { tool: i64, error: bool, ends: bool },
+        Load { tool: i64 },
+    }
+
+    let note = prop_oneof![
+        (1..4i64, any::<bool>(), any::<bool>()).prop_map(|(tool, error, ends)| Note::Call {
+            tool,
+            error,
+            ends
+        }),
+        (1..4i64).prop_map(|tool| Note::Load { tool }),
+    ];
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let h = rt.block_on(common::start_with(|cfg| {
+        cfg.system.tz = Some(String::from("UTC"))
+    }));
+    let chats = std::sync::atomic::AtomicI64::new(0);
+    proptest!(ProptestConfig::with_cases(32), |(notes in prop::collection::vec(note, 0..24))| {
+        let chat_id = ChatId(chats.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1);
+        rt.block_on(async {
+            let shared = h.kernel.shared();
+            let mut tally = Recorder::new(shared).tally(chat_id, shared.now());
+            for n in &notes {
+                match *n {
+                    Note::Call { tool, error, ends } => tally.note_call(ToolId(tool), error, ends),
+                    Note::Load { tool } => tally.note_load(ToolId(tool)),
+                }
+            }
+            tally.finish(false).await.expect("flush");
+        });
+        let rows: Vec<(i64, u32, u32, u32, u32, u32)> = rt.block_on(h.query(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT tool_id, calls, turns_with_call, loads, errors, ends_turn FROM tool_stats WHERE chat_id = ?1",
+            )?;
+            let rows = stmt
+                .query_map([chat_id.get()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+                .collect::<Result<_, _>>()?;
+            Ok(rows)
+        }));
+        let calls = notes.iter().filter(|n| matches!(n, Note::Call { .. })).count();
+        prop_assert_eq!(rows.iter().map(|r| r.1 as usize).sum::<usize>(), calls);
+        for (tool, calls, with_call, loads, errors, ends) in rows {
+            prop_assert_eq!(with_call, u32::from(calls > 0), "coverage is 0/1 per turn");
+            prop_assert!(ends <= calls - errors);
+            let want_loads = notes.iter().filter(|n| matches!(n, Note::Load { tool: t } if *t == tool)).count();
+            prop_assert_eq!(loads as usize, want_loads, "loads do not depend on calls");
+        }
+    });
+}
+
+async fn live_gauges(h: &Harness) -> eva_protocol::types::stats::Gauges {
+    let today = h.clock.get().date().expect("date");
+    let health::Ok { gauges, .. } = h
+        .client_session()
+        .await
+        .stats()
+        .health()
+        .call(health::Args {
+            from: today,
+            to: today,
+        })
+        .await
+        .expect("health");
+    gauges
+}
+
+#[tokio::test]
+async fn live_gauges_reach_health() {
+    let h = common::start().await;
+    let gauges = h.kernel.shared().gauges();
+    let turn = gauges.turn_started();
+    gauges.set_hot_tokens(321);
+    gauges.latency("tools.call", Duration::from_millis(40));
+    let g = live_gauges(&h).await;
+    assert_eq!((g.turns_in_flight, g.memory_hot_tokens), (1, 321));
+    assert_eq!(
+        g.latency
+            .iter()
+            .map(|l| (l.method.as_str(), l.p50.0))
+            .collect::<Vec<_>>(),
+        [("tools.call", Duration::from_millis(40))]
+    );
+    drop(turn);
+    assert_eq!(live_gauges(&h).await.turns_in_flight, 0);
+}
+
+#[test]
+fn metric_registry() {
+    let names: Vec<_> = Metric::ALL.iter().map(|m| m.as_str()).collect();
+    insta::assert_snapshot!(names.join("\n"));
+}
+
+/// `tool_stats` пишет только `db/stats.rs` (`09 §9`).
+#[test]
+fn tool_stats_has_a_single_writer() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && std::fs::read_to_string(&path)
+                    .is_ok_and(|s| s.contains("INSERT INTO tool_stats"))
+            {
+                out.push(path.display().to_string());
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut writers = Vec::new();
+    walk(&src, &mut writers);
+    assert_eq!(writers, [src.join("db/stats.rs").display().to_string()]);
 }

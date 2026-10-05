@@ -414,6 +414,7 @@ async fn chats_part<M: SessionMaker>(
     r.ok("chats.move", res);
 
     let history = |chat| chats::history_read::Args {
+        before: None,
         chat,
         from_seq: 0,
         count: Default::default(),
@@ -450,7 +451,7 @@ async fn chats_part<M: SessionMaker>(
         include_deleted: false,
         view: None,
     }));
-    r.check("chats.search is M3", &res, Outcome::Unavailable);
+    r.ok("chats.search", res);
     let res = call!(r.c.folders.delete(folders::delete::Args { folder: work }));
     r.ok("folders.delete", res);
     (tea, bridge)
@@ -1222,6 +1223,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     .chats()
                     .history_read()
                     .call(chats::history_read::Args {
+                        before: None,
                         chat,
                         from_seq: 0,
                         count: Default::default(),

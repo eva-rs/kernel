@@ -38,4 +38,6 @@ pub struct Run {
     /// Последняя реплика ассистента, обрезанная.
     pub output: Option<String>,
     pub cost: Option<f64>,
+    /// Плановый слот запуска; `None` — запущен `cron_fire`.
+    pub due: Option<Timestamp>,
 }

@@ -30,4 +30,14 @@ impl EventsPolicy<'_> {
             (Caller::Kernel, _) => Err(Aux::forbidden("the kernel has no event subscription")),
         }
     }
+
+    /// Хук тура чата на `surface` (`06 §7`): `service` — только свои surface,
+    /// `client` — любые.
+    pub fn hook(self, surface: &SurfaceRef) -> AuxResult<()> {
+        match self.0.caller() {
+            Caller::Client { .. } => Ok(()),
+            Caller::Service { .. } => self.0.surfaces().own(surface),
+            Caller::Kernel => Err(Aux::forbidden("the kernel hooks nothing")),
+        }
+    }
 }

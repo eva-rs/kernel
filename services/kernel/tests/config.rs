@@ -13,6 +13,18 @@ use eva_protocol::types::{Effort, ModuleId, chat, module::ServiceAddress};
 use eva_providers::{ProviderConfig, mock::Exhausted};
 
 #[test]
+fn history_read_budget_requires_room_for_continuation() {
+    let mut chats = ChatsConfig::default();
+    for tokens in [0, 32, 127] {
+        chats.history.read_tokens = tokens;
+        let error = chats.check().expect_err("too small for a cursor");
+        assert!(error.to_string().contains("chats.history.read_tokens"));
+    }
+    chats.history.read_tokens = 128;
+    chats.check().expect("minimum cursor budget");
+}
+
+#[test]
 fn empty_sections_take_chapter_defaults() {
     let db: DbConfig = serde_json::from_value(json!({})).expect("db");
     assert_eq!(*db.busy_timeout, Duration::from_secs(5));

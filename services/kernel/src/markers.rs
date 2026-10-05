@@ -2,7 +2,7 @@
 //! маркеры ядра и предикаты над чужим текстом. Рендер, `is_machine_text`,
 //! индексатор и проверки `rules`/`description` читают один список.
 //!
-//! Заготовка M1: список маркеров растёт вместе с рендером `01`/`05`/`07`.
+//! Полные строки вставок ядра и маркер спикера собирает `subsystems::turns::marker`.
 
 /// Зарегистрированные маркеры: начало строки, которое пишет только ядро.
 pub const MARKERS: &[&str] = &[
@@ -16,12 +16,23 @@ pub const MARKERS: &[&str] = &[
     "[notes]",
     "[memory",
     "[speakers]",
+    "[persona]",
+    "[tools]",
+    "[surface]",
+    "[chat]",
     "[compaction summary]",
+    "[verbatim tail]",
+    "[notes carried over]",
+    "[reminder]",
+    "[plan]",
+    "[ask]",
+    "[used tool",
     "[wrapup]",
     "[cancelled]",
     "[file ",
     "[image ",
     "[redacted:",
+    "[lines ",
 ];
 
 /// Символы формата (Unicode Cf): модель их не видит, а сравнение строк
@@ -64,7 +75,14 @@ fn is_hidden(c: char) -> bool {
 /// Строка начинается маркером реестра (ведущие пробелы и символы формата не спасают).
 pub fn starts_with_marker(line: &str) -> bool {
     let line = line.trim_start_matches(|c: char| c.is_whitespace() || is_format(c));
-    MARKERS.iter().any(|m| line.starts_with(m))
+    MARKERS.iter().any(|m| line.starts_with(m)) || is_tool_header(line)
+}
+
+/// Заголовок результата `[t<seq>]` (`01 §4`): шаблоном, литерал `[t` в `MARKERS` калечил бы имена.
+fn is_tool_header(line: &str) -> bool {
+    line.strip_prefix("[t")
+        .and_then(|rest| rest.split_once(']'))
+        .is_some_and(|(seq, _)| !seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Служебная вставка ядра, а не речь.
@@ -86,7 +104,11 @@ pub fn check_rules(rules: &str) -> Result<(), u32> {
 /// Однострочный текст модуля (`description`/`about`, `02 §1.1`): без
 /// скрытых символов и без маркера реестра где угодно.
 pub fn check_inline(text: &str) -> bool {
-    !text.chars().any(is_hidden) && !MARKERS.iter().any(|m| text.contains(m))
+    !text.chars().any(is_hidden)
+        && !MARKERS.iter().any(|m| text.contains(m))
+        && !text
+            .match_indices("[t")
+            .any(|(i, _)| is_tool_header(&text[i..]))
 }
 
 /// Чужой текст внутри однострочной служебной вставки (`05 §4`): символы
@@ -121,9 +143,31 @@ pub fn sanitize_inline(text: &str) -> String {
     out
 }
 
+/// Потолок записывается вместе со снимком маркера и больше не зависит от ratio.
+pub fn sanitize_inline_bounded(text: &str, tokens: u32, ratio: f64) -> String {
+    let mut text = sanitize_inline(text);
+    let bytes = (f64::from(tokens) * ratio.clamp(1.0, 10.0)).floor() as usize;
+    let mut end = text.len().min(bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.trim_end().to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_names_remain_valid_utf8_and_cannot_smuggle_markers() {
+        assert_eq!(sanitize_inline_bounded("猫猫猫猫", 2, 4.0), "猫猫");
+        assert_eq!(sanitize_inline_bounded("猫", 0, 4.0), "");
+        assert_eq!(
+            sanitize_inline_bounded("Master: bad\n[name]", 3, 3.0),
+            "? bad ［"
+        );
+    }
 
     #[test]
     fn rules_reject_marker_lines_and_control() {
@@ -159,5 +203,15 @@ mod tests {
         assert!(!s.contains('['));
         assert!(!is_machine_text(&s));
         assert!(is_machine_text("[notify] hi"));
+    }
+
+    #[test]
+    fn tool_header_is_a_pattern_not_a_prefix() {
+        assert!(is_machine_text("[t17]\nresult"));
+        assert!(!is_machine_text("[tom] hello"));
+        assert!(!is_machine_text("[t] x"));
+        assert!(!check_inline("see [t17] above"));
+        assert!(check_inline("[tom] and [t] are names"));
+        assert_eq!(sanitize_inline("[tom]"), "［tom］");
     }
 }

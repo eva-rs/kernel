@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 /// Соединений до доказательства прав на слушателя.
 pub const MAX_PENDING: usize = 64;
@@ -117,8 +117,8 @@ impl Pass {
     }
 
     /// Место отдали новичку: соединение пора бросить.
-    pub async fn evicted(&self) {
-        self.evict.cancelled().await;
+    pub fn evicted(&self) -> WaitForCancellationFutureOwned {
+        self.evict.clone().cancelled_owned()
     }
 
     /// Пир доказал права: дальше его не вытесняют.

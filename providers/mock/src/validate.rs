@@ -8,7 +8,7 @@ use eva_protocol::types::{
     model::ModelDecl,
 };
 
-pub(crate) fn request(req: &GenerateRequest, model: &ModelDecl) -> Result<(), String> {
+pub fn request(req: &GenerateRequest, model: &ModelDecl) -> Result<(), String> {
     if req.system.iter().all(|s| s.text.trim().is_empty()) {
         return Err("request carries an empty system prompt".into());
     }

@@ -52,8 +52,8 @@ use eva_rpc::{
 use eva_kernel::{
     Components, Config, Kernel, Parts, Session,
     config::{
-        ChatsConfig, DbConfig, HandsConfig, LlmConfig, ModulesConfig, NotesConfig, SystemConfig,
-        WorkConfig,
+        ChatsConfig, DbConfig, HandsConfig, LlmConfig, MemoryConfig, ModulesConfig, NotesConfig,
+        SystemConfig, WorkConfig,
         hands::{EndpointConfig, HandsLimits},
         llm::ProviderEntry,
         modules::{ServiceEntry, TokenEntry},
@@ -386,6 +386,11 @@ pub const DIAL_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Конфиг теста: всё в `dir`, один мок-провайдер, руки `local` в `dir/work`,
 /// слушатель UDS `dir/modules.sock` без группы.
 pub fn config(dir: &Path) -> Config {
+    std::fs::write(
+        dir.join("persona.md"),
+        "You are Eva, a helpful personal assistant.",
+    )
+    .expect("test persona");
     let providers = BTreeMap::from([(
         String::from(PROVIDER),
         ProviderEntry::Builtin(ProviderConfig::Mock(mock_config())),
@@ -405,6 +410,7 @@ pub fn config(dir: &Path) -> Config {
             ..DbConfig::default()
         },
         chats: ChatsConfig::default(),
+        context: Default::default(),
         modules: ModulesConfig {
             listen: vec![Listen::Uds(UdsListen {
                 path: PathBuf::from(SOCKET),
@@ -422,8 +428,15 @@ pub fn config(dir: &Path) -> Config {
             )]),
             default_endpoint: Some(String::from(ENDPOINT)),
         },
+        tools: Default::default(),
         work: WorkConfig::default(),
         notes: NotesConfig::default(),
+        secrets: Default::default(),
+        memory: MemoryConfig::default(),
+        cron: Default::default(),
+        sleep: Default::default(),
+        gc: Default::default(),
+        stats: Default::default(),
     }
 }
 
@@ -473,6 +486,26 @@ pub async fn start_in(dir: tempfile::TempDir, cfg: Config) -> Harness {
 }
 
 async fn start_in_with(dir: tempfile::TempDir, cfg: Config, provider: MockProvider) -> Harness {
+    start_in_with_extra(dir, cfg, provider, BTreeMap::new()).await
+}
+
+/// Ядро с провайдерами сверх мока харнесса; их записи в `llm.providers` кладёт `tweak`.
+pub async fn start_with_providers(
+    tweak: impl FnOnce(&mut Config),
+    extra: BTreeMap<String, KernelProvider>,
+) -> Harness {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut cfg = config(dir.path());
+    tweak(&mut cfg);
+    start_in_with_extra(dir, cfg, MockProvider::new(mock_config()), extra).await
+}
+
+async fn start_in_with_extra(
+    dir: tempfile::TempDir,
+    cfg: Config,
+    provider: MockProvider,
+    extra: BTreeMap<String, KernelProvider>,
+) -> Harness {
     std::fs::create_dir_all(dir.path().join("work")).expect("work dir");
 
     let demiurge = testing::Demiurge::new(7);
@@ -494,7 +527,10 @@ async fn start_in_with(dir: tempfile::TempDir, cfg: Config, provider: MockProvid
             providers: BTreeMap::from([(
                 String::from(PROVIDER),
                 KernelProvider::Builtin(AnyProvider::Mock(provider.clone())),
-            )]),
+            )])
+            .into_iter()
+            .chain(extra)
+            .collect(),
             hands: BTreeMap::from([(String::from(ENDPOINT), hands)]),
         },
     )

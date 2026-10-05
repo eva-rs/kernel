@@ -20,3 +20,15 @@ impl StatsPolicy<'_> {
         self.0.owner()
     }
 }
+
+impl Policy<'_> {
+    pub fn stats_tool(view: &eva_protocol::types::turn::TurnView) -> AuxResult<()> {
+        if view.master_turn {
+            Ok(())
+        } else {
+            Err(eva_protocol::errors::Aux::forbidden(
+                "stats tools require a master turn",
+            ))
+        }
+    }
+}

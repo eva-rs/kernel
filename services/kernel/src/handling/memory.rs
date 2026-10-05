@@ -8,10 +8,7 @@ use eva_protocol::{
         Response,
         memory::{get, history, list, restore},
     },
-    types::{
-        memory::{Kind, Visibility},
-        turn::TurnView,
-    },
+    types::memory::Kind,
     wire::events::{Event, MemoryChanged, MemoryOp},
 };
 
@@ -23,16 +20,8 @@ use crate::{
         memory::{ArchiveRow, ListFilter, MemoryRow},
     },
     state::{Policy, State},
+    subsystems::memory::visibility::Gate,
 };
-
-/// `03 §2`: `None` — взгляд хозяина, видно всё.
-fn visible(visibility: Visibility, view: Option<&TurnView>) -> bool {
-    view.is_none_or(|v| match visibility {
-        Visibility::Public => true,
-        Visibility::Trusted => v.trusted_chat,
-        Visibility::Private => v.master_turn && v.trusted_chat,
-    })
-}
 
 #[eva::endpoint]
 #[fastrace::trace]
@@ -87,12 +76,13 @@ pub async fn Get<C: Components>(
     } = state;
     Policy::new(caller).memory().read()?;
     let get::Args { id, view } = args;
+    let gate = Gate::view(view.as_ref());
 
     let db = db_conn.acquire(shared).await?;
     let row = db
         .run(move |c| c.memory().get(id))
         .await?
-        .filter(|row| visible(row.visibility, view.as_ref()))
+        .filter(|row| gate.allows(row.visibility))
         .ok_or_else(|| errors::memory::NotFound { id }.spec())?;
 
     let (record, archive) = convert::memory::record(row);
@@ -113,19 +103,20 @@ pub async fn History<C: Components>(
     } = state;
     Policy::new(caller).memory().read()?;
     let history::Args { id, view } = args;
+    let gate = Gate::view(view.as_ref());
 
     let db = db_conn.acquire(shared).await?;
     let chain = db.run(move |c| c.memory().chain(id)).await?;
     // Запрошенная версия решает, есть ли ответ; соседние версии фильтр лишь прореживает.
     chain
         .iter()
-        .any(|row| row.id == id && visible(row.visibility, view.as_ref()))
+        .any(|row| row.id == id && gate.allows(row.visibility))
         .true_or(errors::memory::NotFound { id }.spec())?;
 
     Ok(history::Ok {
         versions: chain
             .into_iter()
-            .filter(|row| visible(row.visibility, view.as_ref()))
+            .filter(|row| gate.allows(row.visibility))
             .map(convert::memory::version)
             .collect(),
     })
@@ -143,47 +134,56 @@ pub async fn Restore<C: Components>(
         caller,
         ..
     } = state;
-    Policy::new(caller).memory().read()?;
+    Policy::new(caller).memory().restore()?;
     let restore::Args { id } = args;
 
     let now = world.now();
+    let zone = shared.day_zone();
     let row = shared
         .db()
-        .write(move |tx| -> Response<MemoryRow, restore::Err> {
-            let chain = tx.memory().chain(id)?;
-            let row = chain
-                .iter()
-                .find(|row| row.id == id)
-                .cloned()
-                .ok_or_else(|| errors::memory::NotFound { id }.spec())?;
-            let forgotten =
-                row.valid_to.is_some() && row.archive.as_ref().is_some_and(|a| a.is_open());
-            forgotten.true_or(errors::memory::NotArchived { id }.spec())?;
-            if let Some(current) = chain.iter().find(|r| r.id != id && r.valid_to.is_none()) {
-                return Err(errors::memory::Superseded {
-                    id,
-                    current: current.id,
-                }
-                .spec());
-            }
-            if let (Kind::Procedure, Some(name)) = (row.kind, row.name.as_deref())
-                && let Some(holder) = tx.memory().procedure_named(name, id)?
-            {
-                return Err(Aux::Conflict(format!(
+        .write(move |tx| {
+            crate::subsystems::memory::changes::track(
+                tx,
+                now,
+                &zone,
+                |tx| -> Response<MemoryRow, restore::Err> {
+                    let chain = tx.memory().chain(id)?;
+                    let row = chain
+                        .iter()
+                        .find(|row| row.id == id)
+                        .cloned()
+                        .ok_or_else(|| errors::memory::NotFound { id }.spec())?;
+                    let forgotten =
+                        row.valid_to.is_some() && row.archive.as_ref().is_some_and(|a| a.is_open());
+                    forgotten.true_or(errors::memory::NotArchived { id }.spec())?;
+                    if let Some(current) = chain.iter().find(|r| r.id != id && r.valid_to.is_none())
+                    {
+                        return Err(errors::memory::Superseded {
+                            id,
+                            current: current.id,
+                        }
+                        .spec());
+                    }
+                    if let (Kind::Procedure, Some(name)) = (row.kind, row.name.as_deref())
+                        && let Some(holder) = tx.memory().procedure_named(name, Some(id))?
+                    {
+                        return Err(Aux::Conflict(format!(
                     "procedure name {name:?} is taken by {holder}; forget or rename it first"
                 ))
                 .into());
-            }
+                    }
 
-            tx.memory().restore(id, now)?;
-            Ok(MemoryRow {
-                valid_to: None,
-                archive: row.archive.map(|a| ArchiveRow {
-                    restored_at: Some(now),
-                    ..a
-                }),
-                ..row
-            })
+                    tx.memory().restore(id, now)?;
+                    Ok(MemoryRow {
+                        valid_to: None,
+                        archive: row.archive.map(|a| ArchiveRow {
+                            restored_at: Some(now),
+                            ..a
+                        }),
+                        ..row
+                    })
+                },
+            )
         })
         .await?;
 

@@ -22,7 +22,7 @@ use eva_protocol::{
         ErrorCode, RpcError,
         capabilities::ProviderCap,
         events::{Event, ModuleEvent, Publish},
-        hooks::{BeforeSend, BeforeTurn, Decision},
+        hooks::{AfterTool, BeforeTurn, Decision},
         tools::{ToolCall, ToolItem, ToolResult},
     },
 };
@@ -65,9 +65,9 @@ impl ModuleHandler for Module {
         }
     }
 
-    async fn before_send(&self, input: BeforeSend) -> Result<Decision<String>, RpcError> {
+    async fn after_tool(&self, input: AfterTool) -> Result<Decision<ToolResult>, RpcError> {
         Ok(Decision::Patch {
-            payload: input.text.to_uppercase(),
+            payload: ToolResult::ok(vec![ToolContent::text(input.canonical.to_uppercase())]),
         })
     }
 
@@ -285,10 +285,12 @@ async fn hooks() {
 
     let decision = module
         .hook(
-            &BeforeSend {
+            &AfterTool {
                 ctx: ctx(),
-                text: "hello".to_owned(),
-                attachments: Vec::new(),
+                tool_id: None,
+                canonical: "hello".to_owned(),
+                input: serde_json::json!({}),
+                result: ToolResult::ok(Vec::new()),
             },
             Duration::from_secs(2),
         )
@@ -297,7 +299,7 @@ async fn hooks() {
     assert_eq!(
         decision,
         Decision::Patch {
-            payload: "HELLO".to_owned(),
+            payload: ToolResult::ok(vec![ToolContent::text("HELLO")]),
         }
     );
 

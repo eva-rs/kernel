@@ -73,6 +73,13 @@ pub async fn Resolve<C: Components>(
     state: &mut State<C>,
     args: resolve::Args,
 ) -> Response<resolve::Ok, resolve::Err> {
+    resolve_person(state, args).await
+}
+
+pub(crate) async fn resolve_person<C: Components>(
+    state: &mut State<C>,
+    args: resolve::Args,
+) -> Response<resolve::Ok, resolve::Err> {
     let State {
         shared,
         world,

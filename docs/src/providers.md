@@ -6,7 +6,7 @@
 |---|---|---|
 | `eva-provider-openai` | `openai` | OpenAI-совместимый Chat Completions: OpenRouter (диалект `openrouter`), vLLM, llama-server, OpenAI (диалект `plain`) |
 | `eva-provider-mock` | `mock` | сценарный провайдер для тестов и смоука без ключей |
-| `eva-providers` | — | `ProviderConfig` под тегом `kind`, `AnyProvider`, `build` |
+| `eva-providers` | — | `ProviderConfig` под тегом `kind`, `AnyProvider`, `build`, `wire::adapters()` |
 | ядро | `module` | провайдер — подключённый модуль с capability `provider` |
 
 ## Реестр моделей
@@ -19,7 +19,7 @@ flowchart LR
     mod["модуль с capability provider<br/>(kind: module)"] -->|handshake| reg
     P1 --> reg["Models::build<br/>allow-листы, llm.models"]
     P2 --> reg
-    reg --> ops["models.list, inference.complete, туры (M2)"]
+    reg --> ops["models.list, inference.complete, туры"]
 ```
 
 - На старте ядро параллельно собирает все встроенные провайдеры из `llm.providers`; ошибка сборки любого из них валит старт с путём записи (`llm.providers.<name>: <причина>`).
@@ -42,7 +42,9 @@ flowchart LR
 
 `ModelCaps`: `vision`, `image_out`, `thinking`, `effort_levels`, `structured_output`, `system_in_messages`, `tool_changes`, `clear_at`, `effort_in_messages`, `context_editing`, `server_compaction`, `thinking_binding`, `cache_breakpoints` (0 — кэша нет), `cache_keep_alive`, `cache_min_prefix` (0 — неизвестен). Флаг описывает нативную форму; при `false` запасной путь выбирает ядро, не провайдер.
 
-`ProviderDecl`: `local` — инференс на машине ядра; с M3 только такому эмбеддеру ядро будет отдавать приватный текст (в M1 ядро флаг лишь хранит в реестре); `count_tokens` — провайдер умеет точно считать токены, иначе ядро пользуется калиброванной оценкой.
+Каждый адаптер генерации зарегистрирован в `eva_providers::wire::adapters()`: `parts` — vendor-форма запроса по частям в порядке кэша (`tools`, затем `messages`), `caps` гасит флаги, которых синтаксис вендора не выражает. Тест `turns_render` ядра гоняет через каждый адаптер случайные логи сегмента и требует, чтобы запрос был принят, а префикс лога давал префикс частей — новый вендор без записи там этот инвариант не проверяет.
+
+`ProviderDecl`: `local` — инференс на машине ядра; только такому эмбеддеру ядро отдаёт приватные записи памяти и речь доверенных чатов; `count_tokens` — провайдер умеет точно считать токены, иначе ядро пользуется калиброванной оценкой.
 
 ## Провайдер `openai`
 
@@ -205,13 +207,14 @@ llm:
 - `delta.images[].image_url.url` с data URL превращается в `GenItem::Image {media_type, data}`.
 - Картинка не data URL пропускается с предупреждением; текст ответа при этом не теряется.
 
-**Ядро в M1.** Картинки уже работают в `inference.complete`:
+**Ядро.** Картинки работают в `inference.complete` и турах:
 
 - Блок `Image` входа (ссылка на blob из `blobs.put`) уходит байтами, если у модели `vision`; иначе — текстовым маркером `[image <blob>] <name>`.
 - Блок `File` всегда уходит маркером `[file <blob>] <name> (<size> bytes)`.
 - Ответ `inference.complete` — только текст (и JSON по схеме): сгенерированные моделью картинки в нём не возвращаются.
 
-Полноценный диалог с картинками — туры — появится в M2.
+В турах сгенерированные картинки сохраняются через blob API и попадают в ленту
+как `ItemBody::Image`; текстовые вложения представлены `ItemBody::File`.
 
 ### Прочее в запросе
 
@@ -247,7 +250,10 @@ llm:
 
 `retry_after` берётся из заголовка `Retry-After` (только секунды, потолок 1 ч) и сохраняется лишь для `transient` и `quota`. `raw` — тело ответа как есть.
 
-Реакция ядра на вид ошибки — повторы (`llm.retries`, `llm.retry_backoff`), цепочка `llm.fallback`, компакция при `overflow` — часть движка туров (M2). В M1 `inference.complete` возвращает ошибку провайдера модулю как есть и считает её в счётчике здоровья `inference.errors`.
+Движок туров обрабатывает ошибки: выполняет повторы (`llm.retries`,
+`llm.retry_backoff`), использует цепочку `llm.fallback` и запускает компакцию
+при `overflow`. Прямой `inference.complete` возвращает ошибку провайдера модулю
+как есть и учитывает её в счётчике `inference.errors`.
 
 ## Провайдер `mock`
 
@@ -283,6 +289,32 @@ llm:
   - картинка (в том числе в результате тула) у модели без `vision`;
   - breakpoint'ов больше `cache_breakpoints`, повтор, индекс вне диапазона;
   - запрос `keep_alive` у модели без `cache_keep_alive`.
+
+## Провайдер `embed_local`
+
+Эмбеддер на локальном OpenAI-совместимом сервере `POST /v1/embeddings` (llama-server, text-embeddings-inference, vLLM). Весов модели крейт не несёт — их держит сервер; `generate` и `count_tokens` отвечают `invalid`.
+
+```yaml
+llm:
+  providers:
+    embed:
+      kind: embed_local
+      base_url: http://127.0.0.1:8080/v1
+      models:
+        bge-m3: {dims: 1024, max_input_tokens: 8192}
+memory:
+  embedder: embed
+```
+
+| Ключ | Тип | По умолчанию | Смысл |
+|---|---|---|---|
+| `base_url` | URL | `http://127.0.0.1:8080/v1` | корень API без `/embeddings` |
+| `api_key` | секрет \| null | null | `Authorization: Bearer`; локальным серверам обычно не нужен |
+| `timeout` | длительность | `30s` | потолок подключения и ответа одного запроса |
+| `models` | `{id: {dims, max_input_tokens}}` | `{}` | модели сервера: размерности сервер не сообщает, их объявляет конфиг; вектор чужой размерности — ошибка `invalid` |
+| `local` | bool \| null | null — по хосту `base_url` (loopback) | `true` — хозяин ручается, что удалённый хост его |
+
+Порядок векторов берётся из `index` ответа, а не из порядка строк. HTTP 408/429/5xx — `transient`, 401/403 — `auth`, 404 — `not_found`, прочие 4xx — `invalid`.
 
 ## `kind: module`
 

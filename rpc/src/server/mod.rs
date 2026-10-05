@@ -2,7 +2,8 @@
 
 use std::{pin::pin, sync::Arc, time::Duration};
 
-use futures::{SinkExt as _, StreamExt as _};
+use fastrace::future::FutureExt as _;
+use futures::{SinkExt as _, StreamExt as _, future::BoxFuture};
 use tokio::time::Instant;
 
 use eva::data;
@@ -12,7 +13,7 @@ use eva_protocol::{
     wire::{
         Capabilities, ErrorCode, Frame, RpcError,
         frame::{Notify, Request, Response},
-        handshake::{Hello, ProtoVersion, Warning, Welcome},
+        handshake::{Hello, ProtoVersion, Token, Warning, Welcome},
         method,
     },
 };
@@ -23,7 +24,9 @@ use crate::{
     gate::Gate,
     module::ModuleClient,
     peer::{IdSeq, Peer},
-    transport::{Conn, Listener, Outbound, TransportError, noise::Psk, service},
+    transport::{
+        ACCEPT_BACKOFF, Conn, Listener, Outbound, TransportError, http, noise::Psk, service,
+    },
 };
 
 use self::{dispatch::Table, window::Windows};
@@ -32,9 +35,6 @@ pub use self::dispatch::Dispatcher;
 
 mod dispatch;
 mod window;
-
-/// Пауза после отказа `accept`: исчерпанные дескрипторы не крутят цикл вхолостую.
-const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Байт кадрирования сверх `max_hello` до `welcome`: префикс длины uds,
 /// заголовок ws-кадра.
@@ -53,6 +53,11 @@ pub trait Authenticator: Send + Sync + 'static {
         hello: &Hello,
         origin: Origin<'_, Self::Dialed>,
     ) -> impl Future<Output = Result<Welcome, RpcError>> + Send;
+
+    /// Одноразовая сессия HTTP-моста (`06 §1`): токен клиента → caller по тем
+    /// же правилам, что `hello.token`, но без строки `modules` и вытеснения;
+    /// отказ — `unauthorized`.
+    fn identify(&self, token: &Token) -> impl Future<Output = Result<Caller, RpcError>> + Send;
 }
 
 /// Кто открыл соединение (`06 §2`).
@@ -370,6 +375,7 @@ where
     /// Цикл приёма: TLS/Upgrade и handshake — в своей задаче на соединение,
     /// принятые сессии — в `on_session`. TLS, Upgrade и `hello` укладываются
     /// в один `handshake_timeout`; соединения до `hello` держит `Gate`.
+    /// Слушатель HTTP-моста сессий не даёт: его запросы идут в диспетчер напрямую.
     pub async fn serve<F>(
         &self,
         listener: Listener,
@@ -378,6 +384,12 @@ where
     ) where
         F: Fn(Accepted) + Send + Sync + 'static,
     {
+        if let Some(bound) = listener.http() {
+            let exchange: Arc<dyn http::Exchange> = Arc::new(self.clone());
+            let inner = &self.inner;
+            return http::serve(bound, &inner.cfg, &inner.gate, shutdown, exchange).await;
+        }
+
         let on_session = Arc::new(on_session);
         let mut shutdown = pin!(shutdown);
 
@@ -436,6 +448,43 @@ where
                 }
             });
         }
+    }
+}
+
+impl<M, A> http::Exchange for Server<M, A>
+where
+    M: SessionMaker + 'static,
+    M::Session: 'static,
+    A: Authenticator,
+{
+    fn identify<'a>(&'a self, token: &'a Token) -> BoxFuture<'a, Result<Caller, RpcError>> {
+        Box::pin(self.inner.auth.identify(token))
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        caller: Caller,
+        method: &'a str,
+        call: http::Call,
+    ) -> BoxFuture<'a, Vec<u8>> {
+        Box::pin(async move {
+            let run = match self.inner.table.http(method) {
+                Ok(run) => run,
+                Err(error) => return call.failed(&error).body,
+            };
+            let reply = match self.inner.maker.make_session(caller.clone()).await {
+                Ok(session) => {
+                    run(session, call)
+                        .in_span(dispatch::root_span(method, &caller))
+                        .await
+                }
+                Err(aux) => call.typed(&aux),
+            };
+            if let Some((code, error)) = &reply.failure {
+                dispatch::log_failure(method, caller.label(), *code, error);
+            }
+            reply.body
+        })
     }
 }
 

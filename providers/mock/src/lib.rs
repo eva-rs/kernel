@@ -4,7 +4,7 @@
 
 mod echo;
 mod script;
-mod validate;
+pub mod validate;
 
 use std::sync::{
     Arc, Mutex, MutexGuard, PoisonError,

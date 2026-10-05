@@ -5,17 +5,20 @@ edition.workspace = true
 description = "Provider config (tag kind) and AnyProvider dispatch over compiled-in provider crates."
 
 [features]
-default = ["openai", "mock"]
+default = ["openai", "mock", "embed-local"]
 openai = ["dep:eva-provider-openai"]
 mock = ["dep:eva-provider-mock"]
+embed-local = ["dep:eva-provider-embed-local"]
 
 [dependencies]
 eva-protocol.workspace = true
 eva-core.workspace = true
 eva.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 eva-provider-openai = { workspace = true, optional = true }
 eva-provider-mock = { workspace = true, optional = true }
+eva-provider-embed-local = { workspace = true, optional = true }
 
 [lints]
 workspace = true

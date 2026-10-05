@@ -74,7 +74,7 @@ pub use eva_protocol::{
     wire::{
         capabilities::FailMode,
         events::{Event, Publish, Topic},
-        hooks::{AfterTool, BeforeSend, BeforeTool, BeforeTurn, Decision, HookPoint},
+        hooks::{AfterTool, BeforeTool, BeforeTurn, Decision, HookPoint, NoPatch},
         tools::ToolResult,
     },
 };

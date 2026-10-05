@@ -8,15 +8,11 @@ use std::time::Duration;
 
 use eva_core::{Caller, NAMESPACES};
 use eva_protocol::{
-    types::{
-        ModuleId, SessionId,
-        module::ModuleKind,
-        tool::{GroupDecl, ToolDecl},
-    },
+    types::{ModuleId, SessionId, module::ModuleKind},
     wire::{
         Capabilities, ErrorCode, RpcError,
         capabilities::ToolsCap,
-        handshake::{Hello, ProtoVersion, Warning, Welcome},
+        handshake::{Hello, ProtoVersion, Token, Warning, Welcome},
     },
 };
 use eva_rpc::{Authenticator, Origin};
@@ -24,7 +20,7 @@ use eva_rpc::{Authenticator, Origin};
 use crate::{
     components::Components,
     db::{Db as _, DbResult, Queries as _, stats::Metric},
-    markers, registry,
+    registry,
     shared::Shared,
     state::Policy,
     subsystems::modules::{
@@ -34,9 +30,6 @@ use crate::{
     },
     world::{Demiurge as _, God},
 };
-
-/// Предельная длина каноничного имени тула (`02 §1.1`).
-const CANONICAL_MAX: usize = 64;
 
 /// Пауза перед отказом по токену: вместе с лимитом handshake'ей на сеть
 /// она держит перебор слабого токена на десятках попыток в секунду.
@@ -93,8 +86,8 @@ impl<C: Components> KernelAuth<C> {
     }
 
     /// Клиент на слушателе: токен обязателен, UDS от него не освобождает.
-    async fn client(&self, hello: &Hello) -> Result<Identity, RpcError> {
-        let token = match &hello.token {
+    async fn client(&self, token: Option<&Token>) -> Result<Identity, RpcError> {
+        let token = match token {
             Some(token) if !token.expose().is_empty() => token,
             _ => return Err(refused()),
         };
@@ -135,7 +128,7 @@ impl<C: Components> Authenticator for KernelAuth<C> {
         origin: Origin<'_, Attempt>,
     ) -> Result<Welcome, RpcError> {
         let identity = match origin {
-            Origin::Listener => match self.client(hello).await {
+            Origin::Listener => match self.client(hello.token.as_ref()).await {
                 Ok(identity) => identity,
                 Err(e) => {
                     tokio::time::sleep(REFUSED_DELAY).await;
@@ -215,6 +208,30 @@ impl<C: Components> Authenticator for KernelAuth<C> {
             return Err(error);
         }
 
+        let tool_cap = capabilities.tools.clone().unwrap_or_default();
+        let ids = match crate::subsystems::tools::registry::register(
+            &self.shared,
+            &module,
+            &tool_cap.groups,
+            &tool_cap.tools,
+        )
+        .await
+        {
+            Ok(ids) => ids,
+            Err(error) => {
+                let error = internal(error);
+                if let Some(mut entry) = live.release(&module, &session) {
+                    entry.close(error.clone());
+                }
+                return Err(error);
+            }
+        };
+        let tool_ids = tool_cap
+            .tools
+            .iter()
+            .zip(ids)
+            .map(|(decl, id)| (decl.path.clone(), id))
+            .collect();
         let models_accepted = accept_models(&self.shared, &module, &capabilities, &mut warnings);
 
         Ok(Welcome {
@@ -224,12 +241,22 @@ impl<C: Components> Authenticator for KernelAuth<C> {
             proto_version: ProtoVersion::CURRENT,
             kind,
             services: NAMESPACES.iter().map(|(ns, _)| (*ns).to_owned()).collect(),
-            tool_ids: Default::default(),
+            tool_ids,
             models_accepted,
             warnings,
             // Окно идемпотентности держит транспорт, он и ставит флаг.
             resumed: false,
         })
+    }
+
+    async fn identify(&self, token: &Token) -> Result<Caller, RpcError> {
+        match self.client(Some(token)).await {
+            Ok(Identity { module, kind, .. }) => Ok(Caller::from_kind(kind, module)),
+            Err(e) => {
+                tokio::time::sleep(REFUSED_DELAY).await;
+                Err(e)
+            }
+        }
     }
 }
 
@@ -268,12 +295,16 @@ fn vet<C: Components>(
     }
 
     if let Some(tools) = caps.tools.take() {
-        caps.tools = Some(vet_tools(tools, warnings));
+        caps.tools = Some(vet_tools(tools, shared.cfg(), warnings));
     }
     caps
 }
 
-fn vet_tools(tools: ToolsCap, warnings: &mut Vec<Warning>) -> ToolsCap {
+fn vet_tools(
+    tools: ToolsCap,
+    cfg: &crate::config::Config,
+    warnings: &mut Vec<Warning>,
+) -> ToolsCap {
     let ToolsCap { groups, tools } = tools;
     let mut reject = |subject: &str, message: &str| {
         warnings.push(Warning {
@@ -285,45 +316,25 @@ fn vet_tools(tools: ToolsCap, warnings: &mut Vec<Warning>) -> ToolsCap {
 
     let groups = groups
         .into_iter()
-        .filter(|GroupDecl { path, about }| {
-            let problem = if !valid_path(path, 1) {
-                Some("group path must be dot-separated [a-z][a-z0-9_]* segments")
-            } else if !markers::check_inline(about) {
-                Some("about must be one line without kernel markers")
-            } else {
-                None
-            };
-            problem.inspect(|m| reject(path, m)).is_none()
+        .filter(|group| {
+            crate::subsystems::tools::registry::check_group(group, &cfg.tools)
+                .err()
+                .inspect(|m| reject(&group.path, m))
+                .is_none()
         })
         .collect();
 
     let tools = tools
         .into_iter()
-        .filter(|tool: &ToolDecl| {
-            let problem = if !valid_path(&tool.path, 2) {
-                Some("tool path must have at least two dot-separated [a-z][a-z0-9_]* segments")
-            } else if tool.path.len() > CANONICAL_MAX {
-                Some("canonical tool name exceeds 64 characters")
-            } else if !markers::check_inline(&tool.description) {
-                Some("description must be one line without kernel markers")
-            } else {
-                None
-            };
-            problem.inspect(|m| reject(&tool.path, m)).is_none()
+        .filter(|tool| {
+            crate::subsystems::tools::registry::check_tool(tool, cfg)
+                .err()
+                .inspect(|m| reject(&tool.path, m))
+                .is_none()
         })
         .collect();
 
     ToolsCap { groups, tools }
-}
-
-fn valid_path(path: &str, min_segments: usize) -> bool {
-    let segments: Vec<&str> = path.split('.').collect();
-    segments.len() >= min_segments
-        && segments.iter().all(|s| {
-            let mut chars = s.chars();
-            matches!(chars.next(), Some('a'..='z'))
-                && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_'))
-        })
 }
 
 /// Модели провайдера, которые реестр примет, когда сессия встанет

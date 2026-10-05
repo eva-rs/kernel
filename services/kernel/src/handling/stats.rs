@@ -2,8 +2,6 @@
 //! `chat_spend` — по праву чтения чата. `view` публичного тура сжимает
 //! разрез до его чата (`09 §6`).
 
-use std::time::Duration;
-
 use eva::time::{HumanDuration, Timestamp};
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
@@ -12,7 +10,7 @@ use eva_protocol::{
         stats::{chat_spend, health, spend, spend_series, tools_usage},
     },
     types::{
-        stats::{Gauges, Scope, Target},
+        stats::{CronLag, Gauges, Scope, Target},
         turn::TurnView,
     },
 };
@@ -22,10 +20,12 @@ use crate::{
     convert,
     db::{
         DbError, Queries as _,
+        meta::GC_LAST_STARTED,
         stats::{Period, ScopeFilter},
     },
     handling::modules,
     state::{Policy, State},
+    subsystems::gc,
 };
 
 fn period(from: eva::time::Date, to: eva::time::Date) -> AuxResult<Period> {
@@ -38,7 +38,11 @@ fn period(from: eva::time::Date, to: eva::time::Date) -> AuxResult<Period> {
 }
 
 /// `Target` обязан совпадать по виду со `Scope`; опущенный — чат тура из `view`.
-fn scope(scope: Scope, target: Option<Target>, view: Option<&TurnView>) -> AuxResult<ScopeFilter> {
+pub(crate) fn scope(
+    scope: Scope,
+    target: Option<Target>,
+    view: Option<&TurnView>,
+) -> AuxResult<ScopeFilter> {
     if let Some(view) = view
         && view.public()
     {
@@ -226,9 +230,11 @@ pub async fn Health<C: Components>(
                 pending_open: c.agents().pending_open()?,
                 db_bytes: c.stats().db_bytes()?,
                 last_sleep_at: c.sleep().last_started()?,
-                last_gc: c.sleep().last_gc()?.map(|gc| (gc.started, gc.finished)),
+                last_gc: c.gc().last()?.map(|gc| (gc.started, gc.finished)),
+                gc_last_started: c.meta().timestamp(GC_LAST_STARTED)?,
                 index: c.stats().index_backlog()?,
                 embed_pending: c.stats().embed_pending()?,
+                cron_lags: c.stats().cron_lags()?,
             };
             Ok((
                 c.stats().counters(period)?,
@@ -256,32 +262,44 @@ pub async fn Health<C: Components>(
         }),
     );
     modules.sort_by(|a, b| a.module.cmp(&b.module));
+    let live = shared.gauges().live();
 
     let gauges = Gauges {
         modules,
-        // Туры и hot-блок — состояние подсистем в памяти, в БД его нет.
-        turns_in_flight: 0,
+        turns_in_flight: live.turns_in_flight,
         agents_running: snapshot.agents_running,
         pending_open: snapshot.pending_open,
         db_bytes: snapshot.db_bytes,
         uptime: elapsed(shared.started_at(), now),
         last_sleep_at: snapshot.last_sleep_at,
-        next_gc_at: None,
+        next_gc_at: Some(gc::next_at(
+            &shared.cfg().gc,
+            &shared.day_zone(),
+            snapshot.gc_last_started,
+            now,
+        )),
         gc_duration_last: snapshot
             .last_gc
             .map(|(started, finished)| elapsed(started, finished)),
         index_pending: snapshot.index.pending,
         index_lag: snapshot.index.oldest.map(|oldest| elapsed(oldest, now)),
-        memory_hot_tokens: 0,
+        memory_hot_tokens: live.hot_tokens,
         memory_embed_pending: snapshot.embed_pending,
-        cron_fire_lag: Vec::new(),
-        latency: Vec::new(),
+        cron_fire_lag: snapshot
+            .cron_lags
+            .into_iter()
+            .map(|lag| CronLag {
+                job: lag.job,
+                lag: HumanDuration(lag.lag),
+            })
+            .collect(),
+        latency: live.latency,
     };
 
     Ok(health::Ok {
         gauges,
         counters: counters.into_iter().map(convert::stats::counter).collect(),
-        rate_limits: Vec::new(),
+        rate_limits: live.rate_limits,
     })
 }
 
@@ -292,12 +310,12 @@ struct Snapshot {
     db_bytes: u64,
     last_sleep_at: Option<Timestamp>,
     last_gc: Option<(Timestamp, Timestamp)>,
+    gc_last_started: Option<Timestamp>,
     index: crate::db::stats::IndexBacklog,
     embed_pending: u64,
+    cron_lags: Vec<crate::db::stats::CronLag>,
 }
 
-/// Часы мира могут отстать от записанного — тогда ноль, не паника.
 fn elapsed(from: Timestamp, to: Timestamp) -> HumanDuration {
-    let nanos = to.as_nanos().get().saturating_sub(from.as_nanos().get());
-    HumanDuration(Duration::from_nanos(nanos))
+    HumanDuration(crate::db::stats::elapsed(from, to))
 }

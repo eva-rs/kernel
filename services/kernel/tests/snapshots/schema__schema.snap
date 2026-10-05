@@ -13,7 +13,7 @@ index blobs_expiry (blobs)
 index chat_notes_gc (chat_notes)
   CREATE INDEX chat_notes_gc ON chat_notes(deleted_at) WHERE deleted_at IS NOT NULL
 index chat_plan_active (chat_plan)
-  CREATE UNIQUE INDEX chat_plan_active ON chat_plan(chat_id) WHERE status = 'in_progress'
+  CREATE INDEX chat_plan_active ON chat_plan(chat_id) WHERE status = 'in_progress'
 index chat_speech_chunk (chat_speech)
   CREATE UNIQUE INDEX chat_speech_chunk ON chat_speech(chat_id, seq, chunk_no) WHERE kind = 'speech'
 index chat_speech_title (chat_speech)
@@ -187,11 +187,11 @@ table chats (chats)
 table cron_jobs (cron_jobs)
   CREATE TABLE cron_jobs (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, task TEXT NOT NULL, interval INTEGER, next_fire_at INTEGER, expires_at INTEGER, fire_pending TEXT CHECK (fire_pending IN ('keep','shift')), model TEXT, effort INTEGER CHECK (effort BETWEEN 1 AND 4), tools TEXT, chat_id INTEGER NOT NULL UNIQUE REFERENCES chats(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, runs_total INTEGER NOT NULL DEFAULT 0, spent_total REAL NOT NULL DEFAULT 0) STRICT
 table cron_runs (cron_runs)
-  CREATE TABLE cron_runs (run_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), output TEXT, cost REAL) STRICT
+  CREATE TABLE cron_runs (run_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), output TEXT, cost REAL, due INTEGER) STRICT
 table embed_cache (embed_cache)
   CREATE TABLE embed_cache ( text_hash BLOB NOT NULL, embed_model TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (text_hash, embed_model)) STRICT
 table events (events)
-  CREATE TABLE events ( id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE, seq INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('message','thinking','tool_use','tool_result','system_text','note_updated', 'memory_updated','tools_added','tools_removed','reminder','effort_changed','segment_reset','turn_ended')), payload BLOB NOT NULL, turn_id TEXT, step INTEGER, created_at INTEGER NOT NULL, UNIQUE (segment_id, seq)) STRICT
+  CREATE TABLE events ( id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE, seq INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('message','thinking','tool_use','tool_result','system_text','note_updated', 'memory_updated','tools_added','tools_removed','reminder','params_changed','segment_reset','turn_ended')), payload BLOB NOT NULL, turn_id TEXT, step INTEGER, created_at INTEGER NOT NULL, UNIQUE (segment_id, seq)) STRICT
 table folders (folders)
   CREATE TABLE folders ( id INTEGER PRIMARY KEY AUTOINCREMENT, surface_id TEXT NOT NULL REFERENCES surfaces(id) ON DELETE RESTRICT, name TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0 CHECK (builtin IN (0,1)), trusted INTEGER CHECK (trusted IN (0,1)), model TEXT, effort INTEGER CHECK (effort BETWEEN 1 AND 4), thinking TEXT CHECK (thinking IN ('adaptive','off')), compact_at REAL CHECK (compact_at > 0 AND compact_at <= 1), UNIQUE (surface_id, name)) STRICT
 table gc_runs (gc_runs)
@@ -235,13 +235,13 @@ table modules (modules)
 table notes_state (notes_state)
   CREATE TABLE notes_state (chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, mode TEXT NOT NULL CHECK (mode IN ('inline','squeeze','index')), since_at INTEGER NOT NULL, squeeze_turns INTEGER NOT NULL DEFAULT 0, wrap_up_segment INTEGER REFERENCES segments(id) ON DELETE SET NULL, nudge_segment INTEGER REFERENCES segments(id) ON DELETE SET NULL, seen_at INTEGER) STRICT
 table pending (pending)
-  CREATE TABLE pending (id TEXT PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, turn_id TEXT NOT NULL, call_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('ask','permission')), payload TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, resolved_at INTEGER, outcome TEXT CHECK (outcome IN ('answered','text_instead','allowed','denied','expired','cancelled')), CHECK ((resolved_at IS NULL) = (outcome IS NULL))) STRICT
+  CREATE TABLE pending (id TEXT PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, turn_id TEXT NOT NULL, call_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('ask','permission')), payload TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, resolved_at INTEGER, outcome TEXT CHECK (outcome IN ('answered','text_instead','late_answer','superseded','allowed','denied','expired','cancelled')), CHECK ((resolved_at IS NULL) = (outcome IS NULL))) STRICT
 table persons (persons)
   CREATE TABLE persons (id TEXT PRIMARY KEY CHECK (id GLOB 'p[0-9]*'), name TEXT NOT NULL, master INTEGER NOT NULL DEFAULT 0 CHECK (master IN (0,1)), whitelisted INTEGER NOT NULL DEFAULT 0 CHECK (whitelisted IN (0,1)), created_at INTEGER NOT NULL) STRICT
 table schema_migrations (schema_migrations)
   CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum BLOB NOT NULL, applied_at INTEGER NOT NULL) STRICT
 table segments (segments)
-  CREATE TABLE segments ( id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, seq INTEGER NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, reason TEXT NOT NULL CHECK (reason IN ('initial','compact','downshift','overflow','manual','reset')), summary TEXT, verbatim_tail TEXT, system_snapshot BLOB NOT NULL, tools_snapshot BLOB NOT NULL, hot_memory_ids BLOB NOT NULL, UNIQUE (chat_id, seq)) STRICT
+  CREATE TABLE segments ( id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, seq INTEGER NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, reason TEXT NOT NULL CHECK (reason IN ('initial','compact','downshift','overflow','manual','reset')), summary TEXT, verbatim_tail TEXT, summary_model TEXT, summary_path TEXT CHECK (summary_path IN ('warm','cold','bisect','fallback')), summary_attempts INTEGER NOT NULL DEFAULT 0, failed_compactions INTEGER NOT NULL DEFAULT 0, system_snapshot BLOB NOT NULL, tools_snapshot BLOB NOT NULL, hot_memory_ids BLOB NOT NULL, UNIQUE (chat_id, seq)) STRICT
 table sleep_phase_runs (sleep_phase_runs)
   CREATE TABLE sleep_phase_runs (run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE, phase TEXT NOT NULL CHECK (phase IN ('memory','groups','warm')), started INTEGER NOT NULL, finished INTEGER, model TEXT, ops_json TEXT NOT NULL DEFAULT '[]', applied INTEGER NOT NULL DEFAULT 0, discarded INTEGER NOT NULL DEFAULT 0, report TEXT, PRIMARY KEY (run_id, phase)) STRICT
 table sleep_runs (sleep_runs)
@@ -263,7 +263,7 @@ table tool_pins (tool_pins)
 table tool_placements (tool_placements)
   CREATE TABLE tool_placements (tool_id INTEGER PRIMARY KEY REFERENCES tools(tool_id) ON DELETE CASCADE, path TEXT NOT NULL REFERENCES tool_groups(path) ON DELETE RESTRICT, source TEXT NOT NULL CHECK (source IN ('sleep','master')), updated_at INTEGER NOT NULL) STRICT
 table tool_results (tool_results)
-  CREATE TABLE tool_results ( chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, tseq INTEGER NOT NULL, event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE, segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE, tool_id INTEGER REFERENCES tools(tool_id), dedup_key BLOB NOT NULL, dedup_of INTEGER, content BLOB, created_at INTEGER NOT NULL, synthetic TEXT CHECK (synthetic IN ('interrupted','cancelled','tool_unavailable')), PRIMARY KEY (chat_id, tseq), CHECK ((dedup_of IS NULL) = (content IS NOT NULL)), CHECK (synthetic IS NULL OR dedup_of IS NULL)) STRICT
+  CREATE TABLE tool_results ( chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, tseq INTEGER NOT NULL, event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE, segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE, tool_id INTEGER REFERENCES tools(tool_id), dedup_key BLOB NOT NULL, dedup_of INTEGER, content BLOB, created_at INTEGER NOT NULL, synthetic TEXT CHECK (synthetic IN ('not_started','interrupted','cancelled','tool_unavailable')), PRIMARY KEY (chat_id, tseq), CHECK ((dedup_of IS NULL) = (content IS NOT NULL)), CHECK (synthetic IS NULL OR dedup_of IS NULL)) STRICT
 table tool_stats (tool_stats)
   CREATE TABLE tool_stats (day TEXT NOT NULL, chat_id INTEGER NOT NULL, tool_id INTEGER NOT NULL, calls INTEGER NOT NULL DEFAULT 0, turns_with_call INTEGER NOT NULL DEFAULT 0, loads INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0, ends_turn INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL, PRIMARY KEY (day, chat_id, tool_id)) STRICT
 table tools (tools)

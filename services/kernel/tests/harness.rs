@@ -1,4 +1,4 @@
-//! Плюмбинг ядра под харнессом: мир, реестры, руки, операции поздних этапов.
+//! Плюмбинг ядра под харнессом: мир, реестры, руки и диалоговое API.
 
 mod common;
 
@@ -59,7 +59,7 @@ async fn registries_are_built_at_start() {
 }
 
 #[tokio::test]
-async fn later_milestones_answer_unavailable() {
+async fn turn_operations_validate_objects_and_catalog_is_registered() {
     let h = common::start().await;
     let mut client = h.client_session().await;
 
@@ -68,10 +68,7 @@ async fn later_milestones_answer_unavailable() {
         .cancel()
         .call(turns::cancel::Args { chat: ChatId(1) })
         .await;
-    assert!(
-        matches!(&res, Err(Generic::Aux(Aux::Unavailable(m))) if m.contains("M2_PENDING")),
-        "{res:?}"
-    );
+    assert!(matches!(&res, Err(Generic::Spec(_))), "{res:?}");
 
     let res = client
         .turns()
@@ -82,37 +79,17 @@ async fn later_milestones_answer_unavailable() {
         })
         .await;
     assert!(
-        matches!(&res, Err(Generic::Aux(Aux::Unavailable(m))) if m.contains("M2_PENDING")),
-        "stream refuses before the first item"
-    );
-
-    let res = client
-        .chats()
-        .search()
-        .call(chats::search::Args {
-            query: String::from("tea"),
-            limit: Default::default(),
-            since: None,
-            surface: None,
-            folder: None,
-            include_deleted: false,
-            view: None,
-        })
-        .await;
-    assert!(
-        matches!(&res, Err(Generic::Aux(Aux::Unavailable(m))) if m.contains("M3_PENDING")),
-        "{res:?}"
+        matches!(&res, Err(Generic::Spec(_))),
+        "missing chat is rejected before creating a stream"
     );
 
     let res = client
         .tools()
         .catalog()
         .call(tools::catalog::Args::default())
-        .await;
-    assert!(
-        matches!(&res, Err(Generic::Aux(Aux::Unavailable(m))) if m.contains("M4_PENDING")),
-        "{res:?}"
-    );
+        .await
+        .expect("tool catalog is available");
+    assert!(!res.entries.is_empty());
 
     let mut svc = h.session(common::service(common::SVC)).await;
     let res = svc
@@ -126,6 +103,6 @@ async fn later_milestones_answer_unavailable() {
         .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Forbidden(_)))),
-        "notify is kernel-only before it exists: {res:?}"
+        "notify is kernel-only: {res:?}"
     );
 }

@@ -9,9 +9,11 @@ use tokio::sync::watch;
 
 use eva_kernel::{
     Config, Kernel, Real,
-    config::{DbConfig, ModulesConfig},
+    config::{
+        ChatsConfig, CronConfig, DbConfig, GcConfig, MemoryConfig, ModulesConfig, SleepConfig,
+    },
     db::{self, Db as _},
-    subsystems::modules,
+    subsystems::{cron, gc, memory, modules, search, sleep, turns::driver::Driver},
 };
 
 fn main() -> eyre::Result<()> {
@@ -30,8 +32,29 @@ async fn entrypoint(_: NoArgs, cfgs: ComponentConfigs) -> eyre::Result<()> {
     // До компонентов: занятый сокет роняет процесс, а не одну подсистему.
     let listening = Mutex::new(Some((modules::listen(&kernel).await?, modules_alive)));
 
+    let (memory_kernel, search_kernel) = (kernel.clone(), kernel.clone());
+    let (cron_kernel, sleep_kernel, gc_kernel) = (kernel.clone(), kernel.clone(), kernel.clone());
     let supervisor = Supervisor::new(cfgs)
         .add::<DbConfig>(move |_, rx| hold_db(kernel.clone(), rx, modules_gone.clone()))
+        .add::<CronConfig>(move |_, rx| {
+            cron::Cron::new(
+                cron_kernel.clone(),
+                Driver::new(cron_kernel.shared().clone()),
+            )
+            .run(rx)
+        })
+        .add::<SleepConfig>(move |_, rx| {
+            sleep::Sleep::new(
+                sleep_kernel.clone(),
+                Driver::new(sleep_kernel.shared().clone()),
+            )
+            .run(rx)
+        })
+        .add::<GcConfig>(move |_, rx| {
+            gc::Gc::new(gc_kernel.clone(), Driver::new(gc_kernel.shared().clone())).run(rx)
+        })
+        .add::<MemoryConfig>(move |_, rx| memory::run(memory_kernel.shared().clone(), rx))
+        .add::<ChatsConfig>(move |_, rx| search::run(search_kernel.shared().clone(), rx))
         .add::<ModulesConfig>(move |_, rx| {
             let listening = listening.lock().unwrap_or_else(|e| e.into_inner()).take();
             async move {
@@ -62,6 +85,8 @@ async fn hold_db(
         modules,
     )
     .await;
+    kernel.shared().turns().shutdown().await;
+    kernel.shared().titles().shutdown().await;
     kernel
         .shared()
         .db()

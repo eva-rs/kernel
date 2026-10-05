@@ -78,6 +78,28 @@ fn is_comment(line: &str) -> bool {
     line.trim_start().starts_with("//")
 }
 
+fn names_or_inspects_caller(line: &str) -> bool {
+    ["Caller::", ".is_owner()", ".is_kernel()"]
+        .iter()
+        .any(|pattern| line.contains(pattern))
+}
+
+#[test]
+fn caller_lint_catches_construction_and_inspection() {
+    for line in [
+        "let caller = Caller::Kernel;",
+        "if caller == Caller::Kernel { allow() }",
+        "if let Caller::Kernel = caller { allow() }",
+        "matches!(caller, Caller::Kernel)",
+        "Caller::Kernel => allow(),",
+        "let caller = Caller::Kernel; if caller.is_owner() { allow() }",
+        "if caller.is_kernel() { allow() }",
+    ] {
+        assert!(names_or_inspects_caller(line), "{line}");
+    }
+    assert!(!names_or_inspects_caller("entry.is_builtin()"));
+}
+
 #[test]
 fn sql_lives_only_in_db() {
     let src = root().join("services/kernel/src");
@@ -119,9 +141,7 @@ fn only_policy_inspects_the_caller() {
             !file.starts_with("state/policy/")
                 && !CALLER_OUTSIDE_POLICY.contains(&file.as_str())
                 && !is_comment(line)
-                && ["Caller::", ".is_owner()", ".is_kernel()"]
-                    .iter()
-                    .any(|p| line.contains(p))
+                && names_or_inspects_caller(line)
         })
         .map(|(file, n, line)| format!("{file}:{n}: {}", line.trim()))
         .collect();

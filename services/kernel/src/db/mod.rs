@@ -32,6 +32,7 @@ pub mod blobs;
 pub mod chats;
 pub mod cron;
 pub mod folders;
+pub mod gc;
 pub mod hands_grants;
 pub mod kv;
 pub mod memory;
@@ -87,6 +88,7 @@ queries! {
     chats: chats::Chats,
     cron: cron::Cron,
     folders: folders::Folders,
+    gc: gc::Gc,
     hands_grants: hands_grants::HandsGrants,
     kv: kv::Kv,
     memory: memory::Memory,

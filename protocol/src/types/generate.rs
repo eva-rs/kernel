@@ -73,7 +73,8 @@ pub enum SystemKind {
     MemoryUpdated,
     ToolsAdded,
     Reminder,
-    EffortChanged,
+    /// `params_changed`: в сообщениях едет только `effort`.
+    ParamsChanged,
     SystemText,
 }
 

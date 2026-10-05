@@ -77,7 +77,7 @@ module:
 | `tool(path, handler)` | Тул; вход — `#[data]`-тип, схема из его `JsonSchema`, описание — doc-комментарий типа. Повтор пути — паника при сборке |
 | `description`, `ends_turn`, `master_only`, `trusted_only`, `needs`, `parallel_safe`, `idempotent`, `timeout` | Правят последний объявленный тул; до первого `tool` — паника |
 | `on_event(topic, handler)` | Подписка на топик; обработчик `Fn(Kernel, Event) -> impl Future`, его ошибка только пишется в лог |
-| `hook(point, handler)` | Хук точки; тип входа (`BeforeTurn`, `BeforeTool`, `AfterTool`, `BeforeSend`) обязан совпасть с точкой |
+| `hook(point, handler)` | Хук точки; тип входа (`BeforeTurn`, `BeforeTool`, `AfterTool`) обязан совпасть с точкой |
 | `hooks_timeout(d)`, `hooks_fail_mode(mode)` | Потолок ответа хука (ядро режет до `modules.hooks.timeout`) и поведение при отказе: `Open` (по умолчанию) или `Closed` |
 | `provider(p)` | Запасной вход провайдера: любой `impl eva_core::Provider` |
 | `options(ClientOptions)` | Транспорт, TLS и счётчик id запросов вручную |
@@ -241,27 +241,32 @@ Module::new()
 ## Хуки
 
 ```rust
-Module::new().hook(HookPoint::BeforeSend, |_kernel, input: BeforeSend| async move {
-    if input.text.contains("secret") {
-        Decision::Cancel { reason: "leak".into() }
+Module::new().hook(HookPoint::BeforeTool, |_kernel, input: BeforeTool| async move {
+    if input.canonical == "shell_exec" {
+        Decision::Cancel { reason: "quiet hours".into() }
     } else {
         Decision::Continue
     }
 });
 ```
 
-Решения: `Continue`, `Cancel { reason }`, `Patch { payload }` — патч поля точки (`content`, `input`, `result`, `text`), он идёт следующему хуку цепочки.
+Решения: `Continue`, `Cancel { reason }`, `Patch { payload }`. Патч есть только у `after_tool` (`result`), он идёт следующему хуку цепочки; у `before_turn` и `before_tool` тип патча `NoPatch` — реплика и вызов уже в логе, менять нечего.
 
-## Что работает в M1
+## Возможности SDK
 
-| Возможность | M1 |
+| Возможность | Поведение |
 |---|---|
 | Сервис: приём ядра под Noise, вытеснение, socket activation; клиент: подключение, ожидание ядра, реконнект; `resume` | работает |
-| Вызов операций ядра | работает; операции поздних этапов отвечают `unavailable` с `M<N>_PENDING` ([Дорожная карта](roadmap.md)) |
+| Вызов операций ядра | Работает через общий библиотечный API |
 | Surface, `fs`/`sqlite`/`kv`, blob'ы, `inference.complete` | работает |
-| События (`on_event`) | работает: `chat.created`, `chat.deleted`, `chat.restored`, `chat.purged`, `memory.changed`, `module.connected`, `module.disconnected` |
+| События (`on_event`) | События чатов, памяти, модулей, туров, инструментов, крона и сна согласно подписке |
 | Провайдер (`provider`) | работает, если модуль назван в `llm.providers` с `kind: module` ([Провайдеры](providers.md#kind-module)) |
-| Тулы (`tool`) | объявляются и проверяются на handshake; ядро зовёт их с M4 |
-| Хуки (`hook`) | объявляются; ядро зовёт их с M2 |
-| `ask` | объявляется; кнопки pending-запросов — с M5 |
-| Переподписка на ленты открытых туров после смены соединения | M2 |
+| Тулы (`tool`) | Объявляются и проверяются на handshake; ядро вызывает их в турах |
+| Хуки (`hook`) | Ядро вызывает объявленные точки тура |
+| `ask` | Объявляет возможность показать вопросы и разрешения |
+| Переподписка на ленты открытых туров после смены соединения | Выполняется вызывающим кодом |
+
+После реконнекта клиент читает `chats.list {live: true}` и заново открывает нужные
+`turns.attach`, передавая сохранённый `since_seq`. SDK восстанавливает соединение,
+но не хранит курсоры лент. UI применяет завершённые items по ID и учитывает
+`ItemCompleted.replaces`, чтобы живой вывод заменился историческим без дубликата.

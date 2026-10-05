@@ -1,4 +1,5 @@
-//! Память: только рука хозяина; клиенту private не фильтруется.
+//! Память: только рука хозяина (`03 §7`); `Caller::Service` доступа не имеет,
+//! клиенту private не фильтруется.
 
 use eva_protocol::errors::AuxResult;
 
@@ -14,7 +15,13 @@ impl<'a> Policy<'a> {
 }
 
 impl MemoryPolicy<'_> {
+    /// `memory.list/get/history`.
     pub fn read(self) -> AuxResult<()> {
+        self.0.owner()
+    }
+
+    /// `memory.restore`: единственная мутация памяти вне тулов модели.
+    pub fn restore(self) -> AuxResult<()> {
         self.0.owner()
     }
 }

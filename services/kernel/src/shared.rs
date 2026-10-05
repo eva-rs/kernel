@@ -26,7 +26,12 @@ use crate::{
     hands::Endpoints,
     providers::Settle as _,
     registry::{self, Models, Snapshot},
-    subsystems::modules::{Registrations, live::Live, services::Services, tokens::ConfigTokens},
+    subsystems::{
+        modules::{Registrations, live::Live, services::Services, tokens::ConfigTokens},
+        stats::Gauges,
+        tools::Registry,
+        turns::{live::Turns, ports::Ports, secrets::Scrubber},
+    },
     world::{Demiurge, World},
 };
 
@@ -53,6 +58,13 @@ struct Inner<C: Components> {
     tokens: ConfigTokens,
     services: Services,
     live: Live,
+    gauges: Gauges,
+    turns: Turns,
+    titles: crate::subsystems::titles::Titles,
+    tools: Registry,
+    access: crate::subsystems::work::Access,
+    ports: Ports<C>,
+    models_changed: tokio::sync::watch::Sender<()>,
     /// Дочитывание каталогов встроенных провайдеров; снимаются вместе с ядром.
     settling: std::sync::Mutex<JoinSet<()>>,
 }
@@ -62,7 +74,7 @@ pub struct Shared<C: Components>(Arc<Inner<C>>);
 
 impl<C: Components> Shared<C> {
     /// `zone` — уже проверенная `system.tz`: неподдержанная роняет старт раньше.
-    pub(crate) fn new(
+    pub(crate) async fn new(
         cfg: Config,
         zone: DayZone,
         db: C::Db,
@@ -70,7 +82,18 @@ impl<C: Components> Shared<C> {
         providers: BTreeMap<String, C::Provider>,
         hands: Endpoints<C::Hands>,
         registrations: Registrations,
-    ) -> Self {
+    ) -> eyre::Result<Self> {
+        use eyre::WrapErr as _;
+        let persona_path = cfg.system.state_dir.join(&cfg.context.persona_file);
+        let persona = tokio::fs::read_to_string(&persona_path)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to read context.persona_file {}",
+                    persona_path.display()
+                )
+            })?;
+        let turns = Turns::new(persona, BUS_CAPACITY, Scrubber::new(&cfg.secrets)?);
         let started_at = demiurge.now();
         let providers: ProvidersOf<C> = providers
             .into_iter()
@@ -83,7 +106,8 @@ impl<C: Components> Shared<C> {
             })
             .collect();
         let models = Models::build(&providers, &cfg.llm);
-        Self(Arc::new(Inner {
+        let ring = usize::from(cfg.stats.latency_ring.into_inner());
+        Ok(Self(Arc::new(Inner {
             cfg,
             db,
             demiurge,
@@ -97,8 +121,15 @@ impl<C: Components> Shared<C> {
             tokens: registrations.tokens,
             services: registrations.services,
             live: Live::default(),
+            gauges: Gauges::new(ring),
+            turns,
+            titles: crate::subsystems::titles::Titles::default(),
+            tools: Registry::default(),
+            access: crate::subsystems::work::Access::default(),
+            ports: Ports::default(),
+            models_changed: tokio::sync::watch::channel(()).0,
             settling: std::sync::Mutex::default(),
-        }))
+        })))
     }
 
     /// Встроенный провайдер без каталога на старте дочитывает его фоном, и
@@ -138,6 +169,7 @@ impl<C: Components> Shared<C> {
         let count = models.iter().filter(|m| m.provider == name).count();
         let default = models.get(&llm.default_model).is_some();
         self.0.models.replace(models);
+        self.0.models_changed.send_replace(());
         log::info!(provider = name, models = count, default_model = default; "provider models reloaded");
     }
 
@@ -232,6 +264,7 @@ impl<C: Components> Shared<C> {
         }
         self.0.providers.replace(providers);
         self.0.models.replace(models);
+        self.0.models_changed.send_replace(());
         self.0.models.get()
     }
 
@@ -256,6 +289,35 @@ impl<C: Components> Shared<C> {
     /// Живые сессии модулей по имени.
     pub fn live(&self) -> &Live {
         &self.0.live
+    }
+
+    /// Живые gauge'и `stats.health` (`09 §4`).
+    pub fn gauges(&self) -> &Gauges {
+        &self.0.gauges
+    }
+
+    pub fn turns(&self) -> &Turns {
+        &self.0.turns
+    }
+
+    pub fn titles(&self) -> &crate::subsystems::titles::Titles {
+        &self.0.titles
+    }
+
+    pub fn tools(&self) -> &Registry {
+        &self.0.tools
+    }
+
+    pub fn access(&self) -> &crate::subsystems::work::Access {
+        &self.0.access
+    }
+
+    pub fn ports(&self) -> &Ports<C> {
+        &self.0.ports
+    }
+
+    pub fn models_changed(&self) -> tokio::sync::watch::Receiver<()> {
+        self.0.models_changed.subscribe()
     }
 }
 

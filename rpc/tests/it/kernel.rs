@@ -27,7 +27,7 @@ use eva_protocol::{
         BlobId, ChatId, EventId, ModuleId, SessionId, TurnId,
         module::ModuleKind,
         surface::Surface,
-        turn::{FeedEvent, TurnItem},
+        turn::{FeedEvent, TurnItem, TurnOutcome},
     },
     wire::{
         ErrorCode, RpcError,
@@ -109,9 +109,10 @@ pub fn item(n: i64) -> TurnItem {
         seq: EventId(n),
         sub: 0,
         replayed: false,
-        event: FeedEvent::TurnError {
+        event: FeedEvent::TurnDone {
             turn: TurnId::from("t"),
-            message: format!("item {n}"),
+            outcome: TurnOutcome::Failed,
+            error: Some(format!("item {n}")),
         },
     }
 }
@@ -363,6 +364,17 @@ impl Authenticator for Auth {
             models_accepted: Vec::new(),
             warnings: Vec::new(),
             resumed: false,
+        })
+    }
+
+    async fn identify(&self, token: &Token) -> Result<Caller, RpcError> {
+        let module = match token.expose() {
+            CLIENT_TOKEN => CLIENT,
+            OTHER_TOKEN => OTHER,
+            _ => return Err(RpcError::new(ErrorCode::Unauthorized, "unknown token")),
+        };
+        Ok(Caller::Client {
+            module: ModuleId::from(module),
         })
     }
 }

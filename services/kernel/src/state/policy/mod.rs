@@ -46,6 +46,11 @@ pub use self::{
     surfaces::{OnSurface, SurfacesPolicy},
 };
 
+/// Caller внутренних сессий ядра (крон, сон, GC): конструируется только здесь.
+pub const fn kernel_caller() -> Caller {
+    Caller::Kernel
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Policy<'a> {
     caller: &'a Caller,

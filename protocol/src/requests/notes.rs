@@ -22,6 +22,9 @@ pub mod list {
     pub struct Ok {
         pub notes: Vec<Note>,
         pub mode: Mode,
+        /// Master-туров в `squeeze`; вне `squeeze` = 0.
+        pub squeeze_turns: u32,
+        /// Токены inline-рендера секции: `fill` меряется по нему в любом режиме.
         pub tokens: u32,
         pub budget: u32,
     }

@@ -119,14 +119,16 @@ pub struct Message {
     pub created_at: Timestamp,
 }
 
-/// Строка результата `chats.search`.
+/// Строка результата `chats.search`: реплика либо название чата.
 #[data]
 pub struct SearchHit {
     pub chat: ChatId,
     pub title: Option<String>,
-    pub seq: u64,
-    pub role: Role,
+    /// `None` — попало название чата, не реплика.
+    pub seq: Option<u64>,
+    pub role: Option<Role>,
     pub sender: Option<PersonId>,
+    /// Через `sanitize_inline`, не длиннее `chats.search.snippet_tokens`.
     pub snippet: String,
     pub at: Timestamp,
     /// RRF-оценка: больше — выше.

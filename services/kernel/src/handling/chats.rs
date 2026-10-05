@@ -91,8 +91,109 @@ pub async fn Ingest<C: Components>(
     state: &mut State<C>,
     args: ingest::Args,
 ) -> Response<ingest::Ok, ingest::Err> {
-    let _ = (state, args);
-    Err(Aux::Unavailable("M2_PENDING: chats.ingest arrives with M2: turn engine".into()).into())
+    use crate::subsystems::turns::{ctx, ingest as input};
+    let surface = args.surface.clone();
+    let who = state.caller.clone();
+    state
+        .shared
+        .db()
+        .reader()
+        .await?
+        .run(move |c| {
+            Policy::new(&who).surfaces().named(
+                format_args!("surface {surface}"),
+                c.surfaces().get(&surface)?.map(|s| s.surface_ref()),
+            )
+        })
+        .await?;
+    if args.external_chat.id.is_empty() {
+        return Err(Aux::Invalid("external chat id must not be empty".into()).into());
+    }
+    text::bytes(
+        "external chat id",
+        &args.external_chat.id,
+        text::EXTERNAL_ID_MAX,
+    )?;
+    if let Some(title) = &args.external_chat.title {
+        text::chars("external chat title", title, text::NAME_MAX)?;
+    }
+    crate::handling::turns::validate_content(state, &args.content).await?;
+    let actor = input::actor(state, args.surface.clone(), args.sender).await?;
+    let (surface, external, now) = (args.surface.clone(), args.external_chat, state.shared.now());
+    let kind = if actor.kind == eva_protocol::types::turn::ActorKind::Unknown {
+        Kind::Ephemeral
+    } else {
+        Kind::Persistent
+    };
+    let (chat, created) = state
+        .shared
+        .db()
+        .write(move |tx| {
+            let (chat, created) = if let Some(row) = tx.chats().by_alias(&surface, &external.id)? {
+                if kind == Kind::Persistent {
+                    tx.chats().promote(row.id)?;
+                }
+                (row.id, false)
+            } else {
+                let folder = tx
+                    .folders()
+                    .by_name(&surface, UNSORTED)?
+                    .ok_or_else(|| Aux::internal("surface has no Unsorted folder"))?;
+                let id = tx.chats().insert(&NewChat {
+                    folder_id: folder.id,
+                    kind,
+                    title: None,
+                    project: None,
+                    workdir: None,
+                    workdir_on: None,
+                    now,
+                })?;
+                tx.chats()
+                    .insert_alias(id, &surface, &external.id, external.kind, now)?;
+                (id, true)
+            };
+            let title = external.title.map(|s| crate::markers::sanitize_inline(&s));
+            tx.chats().set_external_title(chat, title.as_deref())?;
+            Result::<_, Aux>::Ok((chat, created))
+        })
+        .await?;
+    if created
+        && let Some(row) = state
+            .shared
+            .db()
+            .reader()
+            .await?
+            .run(move |c| c.chats().get(chat))
+            .await?
+    {
+        publish_chat(&state.shared, Event::ChatCreated, &row);
+    }
+    let mut entry = input::entry(&state.shared, &state.caller, chat, actor);
+    entry.anchor = args.anchor;
+    if let Some(over) = args.r#override {
+        entry.overrides = ctx::Overrides {
+            model: over.model,
+            effort: over.effort,
+            thinking: over.thinking,
+        };
+    }
+    let result = input::append(
+        &state.shared,
+        entry,
+        input::Message {
+            content: args.content,
+            external_id: args.external_id,
+            reply_to_external_id: args.reply_to_external_id,
+            silent: args.silent,
+            machine: false,
+        },
+    )
+    .await?;
+    Ok(ingest::Ok {
+        chat,
+        message_id: result.message_id,
+        turn: result.turn,
+    })
 }
 
 #[eva::endpoint]
@@ -474,7 +575,7 @@ pub async fn Move<C: Components>(
 
 /// Что сделал `chats.delete`: событие публикуется после коммита.
 enum Deleted {
-    Soft(Box<ChatRow>),
+    Soft(Vec<ChatRow>),
     Purged(Vec<ChatRef>),
 }
 
@@ -484,47 +585,129 @@ pub async fn Delete<C: Components>(
     state: &mut State<C>,
     args: delete::Args,
 ) -> Response<delete::Ok, delete::Err> {
-    let State {
-        shared,
-        world,
-        caller,
-        ..
-    } = state;
-    Policy::new(caller).owner()?;
+    Policy::new(&state.caller).owner()?;
+    let tool_chat = state.tool_chat;
+    let shared = state.shared.clone();
     let delete::Args { chat, purge } = args;
-
-    let now = world.now();
-    let deleted = shared
-        .db()
-        .write(move |tx| -> Response<Deleted, delete::Err> {
-            let row = tx.chats().get(chat)?.ok_or_else(|| not_found(chat))?;
-            if row.undeletable {
-                return Err(errors::chats::Undeletable { chat }.spec());
+    let (reply, response) = tokio::sync::oneshot::channel();
+    // Задача владеет и транзакцией: отмена ожидания spawn_blocking не отменяет commit.
+    state.shared.turns().spawn(async move {
+        let mut reply = Some(reply);
+        let result: Response<delete::Ok, delete::Err> = async {
+            let mut pauses = vec![shared.turns().slot(chat).pause_ingest().await];
+            let now = shared.now();
+            let (rows, victims) = shared
+                .db()
+                .write(
+                    move |tx| -> Response<(Vec<ChatRow>, Vec<ChatRef>), delete::Err> {
+                        let row = tx.chats().get(chat)?.ok_or_else(|| not_found(chat))?;
+                        if row.undeletable {
+                            return Err(errors::chats::Undeletable { chat }.spec());
+                        }
+                        let victims = tx.chats().purge_set(chat)?;
+                        let mut rows = Vec::with_capacity(victims.len());
+                        for victim in &victims {
+                            let row = tx
+                                .chats()
+                                .get(victim.id)?
+                                .ok_or_else(|| internal_vanished(victim.id))?;
+                            if row.undeletable {
+                                return Err(errors::chats::Undeletable { chat: victim.id }.spec());
+                            }
+                            if row.deleted_at.is_none() {
+                                tx.chats().set_deleted(victim.id, Some(now))?;
+                            }
+                            tx.agents().set_status(
+                                victim.id,
+                                eva_protocol::types::agent::Status::Stopped,
+                                now,
+                            )?;
+                            if !purge {
+                                rows.push(row);
+                            }
+                        }
+                        Ok((rows, victims))
+                    },
+                )
+                .await?;
+            for victim in victims.iter().filter(|c| c.id != chat) {
+                pauses.push(shared.turns().slot(victim.id).pause_ingest().await);
             }
-            if purge {
-                let set = tx.chats().purge_set(chat)?;
-                let ids: Vec<ChatId> = set.iter().map(|c| c.id).collect();
-                tx.chats().purge(&ids)?;
-                return Ok(Deleted::Purged(set));
+            // A child append may have resolved before the first tombstone and
+            // committed an auto-restore while we waited for its ingest gate.
+            // With every victim paused, make deletion the final DB write.
+            let paused_victims = victims.clone();
+            shared
+                .db()
+                .write(move |tx| -> Response<(), delete::Err> {
+                    for victim in &paused_victims {
+                        if tx
+                            .chats()
+                            .get(victim.id)?
+                            .is_some_and(|row| row.deleted_at.is_none())
+                        {
+                            tx.chats().set_deleted(victim.id, Some(now))?;
+                        }
+                        tx.agents().set_status(
+                            victim.id,
+                            eva_protocol::types::agent::Status::Stopped,
+                            now,
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await?;
+            let running: Vec<_> = victims
+                .iter()
+                .filter_map(|c| shared.turns().get(c.id).and_then(|s| s.live()))
+                .collect();
+            for live in &running {
+                live.cancel(crate::subsystems::turns::log::EndedBy::ChatDeleted);
             }
-            if row.deleted_at.is_none() {
-                tx.chats().set_deleted(chat, Some(now))?;
+            if tool_chat.is_some_and(|id| victims.iter().any(|c| c.id == id))
+                && let Some(reply) = reply.take()
+            {
+                let _ = reply.send(Ok(delete::Ok {}));
             }
-            Ok(Deleted::Soft(Box::new(row)))
-        })
-        .await?;
-
-    match deleted {
-        Deleted::Soft(row) => {
-            publish_chat(shared, Event::ChatDeleted, &row);
-            log::info!(chat:% = chat, caller = caller.label(); "chat deleted");
+            for live in running {
+                live.closed.cancelled().await;
+            }
+            for victim in &victims {
+                shared.access().forget(victim.id);
+            }
+            let deleted = if purge {
+                shared
+                    .db()
+                    .write(move |tx| -> Response<Deleted, delete::Err> {
+                        let ids: Vec<_> = victims.iter().map(|c| c.id).collect();
+                        tx.chats().purge(&ids)?;
+                        Ok(Deleted::Purged(victims))
+                    })
+                    .await?
+            } else {
+                Deleted::Soft(rows)
+            };
+            match deleted {
+                Deleted::Soft(rows) => {
+                    for row in rows {
+                        publish_chat(&shared, Event::ChatDeleted, &row);
+                    }
+                }
+                Deleted::Purged(set) => publish_purged(&shared, set),
+            }
+            Ok(delete::Ok {})
         }
-        Deleted::Purged(set) => {
-            log::info!(chat:% = chat, purged = set.len(), caller = caller.label(); "chat purged");
-            publish_purged(shared, set);
+        .await;
+        if let Err(error) = &result {
+            log::error!(chat:% = chat, error:% = error; "chat deletion failed");
         }
-    }
-    Ok(delete::Ok {})
+        if let Some(reply) = reply {
+            let _ = reply.send(result);
+        }
+    });
+    response
+        .await
+        .map_err(|_| Aux::Internal("chat deletion task stopped".into()))?
 }
 
 /// `chat.purged` — по событию на surface: `Service` видит только id своих (`06 §7`).
@@ -552,6 +735,12 @@ pub async fn Restore<C: Components>(
     let State { shared, caller, .. } = state;
     Policy::new(caller).owner()?;
     let restore::Args { chat } = args;
+
+    let slot = shared.turns().slot(chat);
+    let _gate = slot.gate.lock().await;
+    if slot.ingest_paused() {
+        return Err(Aux::Unavailable("chat is being deleted".into()).into());
+    }
 
     let row = shared
         .db()
@@ -581,12 +770,16 @@ pub async fn Search<C: Components>(
     state: &mut State<C>,
     args: search::Args,
 ) -> Response<search::Ok, search::Err> {
-    Policy::new(&state.caller).owner()?;
-    let _ = args;
-    Err(
-        Aux::Unavailable("M3_PENDING: chats.search arrives with M3: chat search index".into())
-            .into(),
-    )
+    let State {
+        shared,
+        caller,
+        db_conn,
+        ..
+    } = state;
+    Policy::new(caller).owner()?;
+    let db = db_conn.acquire(shared).await?;
+    let hits = crate::subsystems::search::query::search(shared, db, args).await?;
+    Ok(search::Ok { hits })
 }
 
 /// Гейт видимости тура (`05 §7.3`): вне `master ∧ trusted` — текущий чат и
@@ -610,6 +803,7 @@ pub async fn HistoryRead<C: Components>(
     let history_read::Args {
         chat,
         from_seq,
+        before,
         count,
         view,
     } = args;
@@ -629,13 +823,24 @@ pub async fn HistoryRead<C: Components>(
 
     let count = count.into_inner();
     let mut rows = db
-        .run(move |c| c.chats().messages(chat, from_seq, count + 1))
+        .run(move |c| match before {
+            Some(before) => c.chats().messages_before(chat, before, count + 1),
+            None => c.chats().messages(chat, from_seq, count + 1),
+        })
         .await?;
     let next_seq = if rows.len() > usize::from(count) {
-        rows.pop().map(|m| m.seq)
+        let more = rows.pop().map(|m| m.seq);
+        if before.is_some() {
+            rows.last().map(|m| m.seq)
+        } else {
+            more
+        }
     } else {
         None
     };
+    if before.is_some() {
+        rows.reverse();
+    }
 
     Ok(history_read::Ok {
         messages: rows
@@ -653,8 +858,38 @@ pub async fn Compact<C: Components>(
     args: compact::Args,
 ) -> Response<compact::Ok, compact::Err> {
     Policy::new(&state.caller).owner()?;
-    let _ = args;
-    Err(Aux::Unavailable("M2_PENDING: chats.compact arrives with M2: turn engine".into()).into())
+    use crate::subsystems::turns::{compaction, ctx};
+    crate::handling::turns::chat::<C, compact::Err>(state, args.chat).await?;
+    let slot = state.shared.turns().slot(args.chat);
+    let _gate = slot.gate.lock().await;
+    if slot.ingest_paused() {
+        return Err(Aux::Unavailable("chat is being deleted".into()).into());
+    }
+    if slot.live().is_some() {
+        return Err(Aux::Conflict("turn in progress".into()).into());
+    }
+    slot.keep_alive(None);
+    let entry = ctx::Entry::master(args.chat, eva_protocol::types::PersonId::system());
+    let llm = state.shared.cfg().llm.clone();
+    let context = state
+        .shared
+        .db()
+        .reader()
+        .await?
+        .run(move |c| ctx::resolve(c, entry, &llm))
+        .await?;
+    let id = compaction::manual(&state.shared, &context).await?;
+    let row = state
+        .shared
+        .db()
+        .reader()
+        .await?
+        .run(move |c| c.turns().segment(id))
+        .await?
+        .ok_or_else(|| Aux::internal("compacted segment vanished"))?;
+    Ok(compact::Ok {
+        segment: convert::turn::segment_from_db(row),
+    })
 }
 
 #[eva::endpoint]
@@ -664,6 +899,52 @@ pub async fn Notify<C: Components>(
     args: notify::Args,
 ) -> Response<notify::Ok, notify::Err> {
     Policy::new(&state.caller).kernel()?;
-    let _ = args;
-    Err(Aux::Unavailable("M2_PENDING: chats.notify arrives with M2: turn engine".into()).into())
+    use crate::subsystems::turns::{ctx, ingest as input};
+    let subject = crate::markers::sanitize_inline_bounded(
+        &args.subject,
+        state.shared.cfg().chats.marker.name_tokens,
+        state.shared.cfg().context.ratio_default,
+    );
+    check_title(Some(&subject))?;
+    let now = state.shared.now();
+    let chat = state
+        .shared
+        .db()
+        .write(move |tx| {
+            let id = tx.turns().notify_chat(now)?;
+            if let Some(source) = args.source_chat {
+                tx.turns().set_alerted(source)?;
+            }
+            Result::<_, Aux>::Ok(id)
+        })
+        .await?;
+    let entry = ctx::Entry::master(chat, eva_protocol::types::PersonId::system());
+    let text = format!(
+        "[notify] {subject}\n{}",
+        crate::subsystems::turns::marker::quote(&args.body)
+    );
+    let result = input::append(
+        &state.shared,
+        entry,
+        input::Message {
+            content: vec![eva_protocol::types::content::Block::text(text)],
+            external_id: None,
+            reply_to_external_id: None,
+            silent: true,
+            machine: true,
+        },
+    )
+    .await?;
+    state.shared.bus().publish(
+        Event::Notify(eva_protocol::wire::events::NotifyEvent {
+            subject,
+            chat_id: chat,
+            source_chat: args.source_chat,
+        }),
+        None,
+    );
+    state.shared.bump(Metric::NotifySent, "").await;
+    Ok(notify::Ok {
+        message_id: result.message_id,
+    })
 }

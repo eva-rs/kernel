@@ -41,6 +41,13 @@ pub const BLOB_FLOOR: u64 = 4096;
 pub struct Blobs<'c>(pub &'c Connection);
 
 impl Blobs<'_> {
+    pub fn set_source(&self, id: &BlobId, source: Source) -> DbResult<()> {
+        self.0.execute(
+            "UPDATE blobs SET source = ?2 WHERE id = ?1",
+            (id.as_str(), Text(source)),
+        )?;
+        Ok(())
+    }
     pub fn get(&self, id: &BlobId) -> DbResult<Option<BlobRow>> {
         Ok(self
             .0

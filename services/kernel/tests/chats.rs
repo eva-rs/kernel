@@ -1100,6 +1100,15 @@ async fn delete_restore_and_purge() {
         "{published:?}"
     );
 
+    client
+        .chats()
+        .delete()
+        .call(delete::Args { chat, purge: false })
+        .await
+        .expect("repeat delete");
+    assert_eq!(get(&mut client, chat).await.deleted_at, deleted.deleted_at);
+    drain(&mut events);
+
     let restore::Ok { chat: restored } = client
         .chats()
         .restore()
@@ -1235,6 +1244,7 @@ async fn history_reads_in_pages() {
     }
 
     let read = |from_seq, count| history_read::Args {
+        before: None,
         chat,
         from_seq,
         count: HistoryCount::new(count).expect("count"),
@@ -1279,6 +1289,7 @@ async fn history_reads_in_pages() {
         .chats()
         .history_read()
         .call(history_read::Args {
+            before: None,
             chat: ChatId(404),
             ..read(0, 1)
         })
@@ -1315,6 +1326,7 @@ async fn history_respects_the_turn_view() {
         audience: Audience::Mixed,
     };
     let read = |chat, view| history_read::Args {
+        before: None,
         chat,
         from_seq: 0,
         count: HistoryCount::default(),

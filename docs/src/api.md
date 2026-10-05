@@ -89,7 +89,7 @@ pub enum Generic<S> {
 | `Db(String)` | `internal` | База недоступна или запрос к ней не прошёл |
 | `Forbidden(String)` | `forbidden` | Caller не вправе делать это. Чужой объект — `forbidden`, а не `not_found`; сервису за чужой и за несуществующий чат, папку, личность, blob — один и тот же `forbidden` (кроме `surfaces.get`/`surfaces.update`: несуществующая surface — `not_found`) |
 | `NotFound(String)` | `not_found` | Объекта нет, а своей ошибки у операции для этого нет |
-| `Unavailable(String)` | `unavailable` | Внешняя машина или модуль недостижимы; операция поздних этапов (`M<N>_PENDING: …`); обрыв соединения модуля, после которого исход мутации неизвестен |
+| `Unavailable(String)` | `unavailable` | Внешняя машина, провайдер или модуль недостижимы; подсистема выключена; обрыв соединения модуля, после которого исход мутации неизвестен |
 | `Invalid(String)` | `invalid_params` | Аргументы не прошли валидацию: формат id, длина текста, зарезервированное имя, диапазон |
 | `Quota(String)` | `quota` | Лимит или квота: `fs`/`sqlite`/`kv`, blob-store, лимиты сессии |
 | `Conflict(String)` | `conflict` | Состояние изменилось под вызовом: пропал якорь страницы, внешний id уже занят другим чатом, ответ мутации не сохранён в окне идемпотентности |
@@ -164,7 +164,7 @@ loop {
 | `Limit` | 1..=200 | 50 | `surfaces.list`, `folders.list`, `chats.list`, `persons.list`, `memory.list`, `kv.list` |
 | `RunsLimit` | 1..=200 | 20 | `cron.runs`, `sleep.runs` |
 | `SearchLimit` | 1..=50 | 10 | `chats.search` |
-| `HistoryCount` | 1..=200 | 50 | `chats.history_read` (курсор `from_seq` → `next_seq`, `None` — конец) |
+| `HistoryCount` | 1..=200 | 50 | `chats.history_read`: вперёд с `from_seq`, назад с `before`; `next_seq: None` — конец |
 | `Top` | 1..=100 | 20 | `stats.tools_usage` |
 | `Depth` | 1..=16 | 1 | `tools.catalog` |
 
@@ -195,7 +195,7 @@ session.chats().update().call(chats::update::Args {
 
 ## Операции
 
-Колонки: **вид** — read / mut / stream / upload; **ядро** — `Caller::Kernel`; **клиент** — клиент хозяина, пришедший на слушатель с токеном; **сервис** — модуль, которого набрало ядро по реестру `modules.services` / `modules.add`. «свои» — только объекты surface, созданных этим модулем; «—» — `forbidden`. Операции с пометкой *pending* существуют в API, но отвечают `unavailable` с маркером этапа ([Дорожная карта](roadmap.md)); для `chats.search`, `chats.compact`, `chats.notify`, `tools.catalog` `Policy` уже проверяется (сервису — `forbidden` раньше `unavailable`); для `chats.ingest` и `turns.*` в колонках — права, которые появятся в M2, а сейчас любой caller получает `unavailable`.
+Колонки: **вид** — read / mut / stream / upload; **ядро** — `Caller::Kernel`; **клиент** — клиент хозяина, пришедший на слушатель с токеном; **сервис** — модуль, которого набрало ядро по реестру `modules.services` / `modules.add`. «свои» — только объекты surface, созданных этим модулем; «—» — `forbidden`. Права проверяются до выполнения операции.
 
 ### `surfaces`
 
@@ -219,7 +219,7 @@ session.chats().update().call(chats::update::Args {
 
 | Операция | Вид | Ядро | Клиент | Сервис | Смысл |
 |---|---|---|---|---|---|
-| `ingest` | mut | ✓ | ✓ | свои | *pending M2.* Вход речи с поверхности: сообщение и, если надо, тур |
+| `ingest` | mut | ✓ | ✓ | свои | Вход речи с поверхности: сообщение и, если надо, тур; повтор `external_id` идемпотентен |
 | `create` | mut | ✓ | ✓ | свои | Новый чат; сервису — только в папке с trust её `Unsorted` |
 | `get` | read | ✓ | ✓ | свои | Чат по id или по alias `{surface, external_id}` |
 | `list` | read | ✓ | ✓ | свои | Фильтры `surface`, `folder`, `deleted`, `live` |
@@ -227,14 +227,14 @@ session.chats().update().call(chats::update::Args {
 | `move` | mut | ✓ | ✓ | — | В другую папку той же surface; смена эффективного trust требует `confirm` |
 | `delete` | mut | ✓ | ✓ | — | В корзину или сразу стереть (`purge`); `undeletable` — `Undeletable` |
 | `restore` | mut | ✓ | ✓ | — | Вернуть из корзины |
-| `search` | read | ✓ | ✓ | — | *pending M3.* Поиск по речи чатов |
-| `history_read` | read | ✓ | ✓ | свои | Сообщения чата с `from_seq`, страница `count` |
-| `compact` | mut | ✓ | ✓ | — | *pending M2.* Ручная компакция: новый сегмент |
-| `notify` | mut | ✓ | — | — | *pending M2.* Уведомление хозяину в чат `notify` |
+| `search` | read | ✓ | ✓ | — | Гибридный поиск (полнотекстовый ∪ векторный) по речи и названиям чатов; `view` сужает выдачу видимостью тура; сниппеты однострочные |
+| `history_read` | read | ✓ | ✓ | свои | Страница `count`: вперёд с `from_seq` либо последние реплики строго раньше `before` |
+| `compact` | mut | ✓ | ✓ | — | Ручная компакция: новый сегмент |
+| `notify` | mut | ✓ | — | — | Уведомление хозяину в чат `notify` |
 
 ### `turns`
 
-Все операции — *pending M2*.
+Лента и восстановление подписки описаны в главе [Туры](turns.md).
 
 | Операция | Вид | Ядро | Клиент | Сервис | Смысл |
 |---|---|---|---|---|---|
@@ -243,7 +243,7 @@ session.chats().update().call(chats::update::Args {
 | `append_silent` | mut | ✓ | ✓ | свои | Сообщение без тура |
 | `delivered` | mut | ✓ | ✓ | свои | Поверхность доставила реплику: её внешний id |
 | `cancel` | mut | ✓ | ✓ | свои | Отменить живой тур чата |
-| `respond` | mut | ✓ | ✓ | свои | Ответ на pending-запрос тура |
+| `respond` | mut | ✓ | ✓ | свои | Ответ на pending-запрос; разрешение требует хозяина, вопрос — подходящего актора |
 
 ### `persons`
 
@@ -260,16 +260,17 @@ session.chats().update().call(chats::update::Args {
 | Операция | Вид | Ядро | Клиент | Сервис | Смысл |
 |---|---|---|---|---|---|
 | `memory.list` | read | ✓ | ✓ | — | Текущие версии записей, фильтры `kind`, `visibility`, `since` |
-| `memory.get` | read | ✓ | ✓ | — | Запись и её архивная версия |
-| `memory.history` | read | ✓ | ✓ | — | Цепочка версий от корня |
+| `memory.get` | read | ✓ | ✓ | — | Запись и её архивная версия; с `view` недоступная туру запись — `not_found` |
+| `memory.history` | read | ✓ | ✓ | — | Цепочка версий от корня; `view` прореживает её видимостью тура |
 | `memory.restore` | mut | ✓ | ✓ | — | Вернуть забытую запись |
 | `notes.list` | read | ✓ | ✓ | — | Блокнот чата: заметки, режим, токены и бюджет; `unavailable` при `notes.enabled: false` |
-| `tools.catalog` | read | ✓ | ✓ | — | *pending M4.* Поддерево каталога тулов |
+| `tools.catalog` | read | ✓ | ✓ | — | Поддерево каталога инструментов; `chat` добавляет видимость по последнему туру |
 | `models.list` | read | ✓ | ✓ | — | Реестр моделей с caps, ценой и провайдером |
 
 ### `cron`, `sleep`, `agents`, `hands_grants`
 
-Чтение работает с M1; таблицы наполняют этапы M4 (крон, сон) и M5 (подагенты, гранты рук [`eva-hands`](https://git.desu.church/eva/hands)).
+Таблицы наполняются работающими подсистемами крона, сна, подагентов и разрешений
+рабочих машин. Подробности рук — в главе [Рабочие операции](work.md).
 
 | Операция | Вид | Ядро | Клиент | Сервис | Смысл |
 |---|---|---|---|---|---|

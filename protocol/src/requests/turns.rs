@@ -55,7 +55,8 @@ pub mod attach {
     #[data]
     pub struct Args {
         pub chat: ChatId,
-        /// Отдать хвост ленты после этого `seq`; `None` — с буфера живого тура.
+        /// История — события с `events.id` больше этого; `None` — без истории,
+        /// только текущее состояние и живое.
         pub since_seq: Option<EventId>,
     }
 

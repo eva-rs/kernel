@@ -66,7 +66,7 @@ fn io(what: &str, e: std::io::Error) -> Aux {
     Aux::internal(format_args!("blob store: {what}: {e}"))
 }
 
-fn file(dir: &Path, row: &BlobRow) -> PathBuf {
+pub(crate) fn file(dir: &Path, row: &BlobRow) -> PathBuf {
     dir.join(row.id.as_str()).join(&row.name)
 }
 
@@ -115,6 +115,11 @@ pub async fn Put<C: Components>(
     state: &mut State<C>,
     args: put::Args,
 ) -> Response<put::Ok, put::Err> {
+    let source = if state.tool_upload {
+        Source::Tool
+    } else {
+        Source::Upload
+    };
     let State {
         shared,
         world,
@@ -179,7 +184,7 @@ pub async fn Put<C: Components>(
         media_type,
         size,
         hash: Vec::new(),
-        source: Source::Upload,
+        source,
         created_at: now,
         expires_at: expires(now, *work.blob_keep),
     };
@@ -388,7 +393,7 @@ pub async fn sweep(blob_dir: &Path) -> std::io::Result<usize> {
     .map_err(std::io::Error::other)?
 }
 
-fn expires(now: Timestamp, keep: std::time::Duration) -> Timestamp {
+pub(crate) fn expires(now: Timestamp, keep: std::time::Duration) -> Timestamp {
     let nanos = u64::try_from(keep.as_nanos()).unwrap_or(u64::MAX);
     Timestamp::from_nanos(now.as_nanos().saturating_add(nanos))
 }

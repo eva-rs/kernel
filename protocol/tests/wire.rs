@@ -10,7 +10,7 @@ use eva_protocol::{
         ChatId, EventId, TurnId,
         content::Block,
         generate::{GenItem, Stop, StopReason},
-        turn::{FeedEvent, TurnItem},
+        turn::{FeedEvent, TurnItem, TurnOutcome},
     },
 };
 
@@ -85,10 +85,11 @@ fn args_ok_err_roundtrip() {
         replayed: true,
         event: FeedEvent::TurnDone {
             turn: TurnId::from("t"),
-            message_ids: vec![EventId(3)],
+            outcome: TurnOutcome::Failed,
+            error: Some("boom".into()),
         },
     });
-    assert_eq!(item["event"]["turn_done"]["message_ids"], json!([3]));
+    assert_eq!(item["event"]["turn_done"]["outcome"], json!("failed"));
 
     roundtrip(&GenItem::Stop(Stop {
         reason: StopReason::Refusal,

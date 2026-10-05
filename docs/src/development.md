@@ -7,7 +7,7 @@
 | `protocol/` | `eva-protocol` | типы данных, операции `requests/<ns>.rs` (`Args`/`Ok`/`Err`), доменные ошибки `errors/<ns>.rs`, wire-кадры и handshake; без I/O |
 | `macros/` | `eva-kernel-macros` | список операций `endpoints!`: трейты неймспейсов и X-макро `for_each_op!` |
 | `core/` | `eva-core` | `Session`, `CallStep`, трейты неймспейсов и `for_each_op!` из списка операций, `Caller`, трейт `Provider`, `prelude` |
-| `rpc/` | `eva-rpc` | кадры msgpack, транспорты uds/ws/wss, симметричный пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
+| `rpc/` | `eva-rpc` | кадры msgpack, транспорты uds/ws/wss, HTTP-мост JSON-RPC, симметричный пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
 | `sdk/` | `eva-sdk` | `Module` → `Listening` / `Connected`: SDK для модулей |
 | `providers/openai/`, `providers/mock/` | `eva-provider-*` | `impl Provider` одного вендора |
 | `providers/all/` | `eva-providers` | `ProviderConfig` под тегом `kind`, `AnyProvider`, `build` |
@@ -82,7 +82,7 @@ nix develop -c cargo test --workspace
 
 - Одна реализация операции: RPC-метод и тул — обёртки над ней.
 - Авторизация стоит в начале хендлера: общие проверки (`owner()`, `module()`) идут до любой работы, проверки по объекту — сразу после его загрузки и до первой записи. На чужой объект хендлер отвечает `forbidden`, а не `not_found`, чтобы не выдавать факт существования.
-- Операции поздних этапов отвечают `Aux::Unavailable` с маркером `M2_PENDING`, `M3_PENDING` или `M4_PENDING` в тексте; `services/kernel/tests/harness.rs` это проверяет.
+- `Aux::Unavailable` означает недоступность нужного компонента или неподходящее текущее состояние. Маркеры незавершённых этапов в ответах операций не используются.
 - Строки, которые вызывающий пишет в базу ядра, ограничиваются потолками из `handling/text.rs`.
 - Миграции только вперёд: применённые миграции должны быть префиксом встроенных с теми же blake3-чексуммами, иначе ядро отказывается стартовать. Правка схемы — новый файл `NNNN_name.sql` и строка в `MIGRATIONS`, не правка старого.
 

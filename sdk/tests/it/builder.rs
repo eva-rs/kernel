@@ -8,7 +8,7 @@ use eva_protocol::{
     wire::{capabilities::FailMode, events::Topic},
 };
 use eva_sdk::{
-    BeforeSend, Decision, HookPoint, Module, ToolContent, ToolCtx, ToolError, ToolResult,
+    AfterTool, Decision, HookPoint, Module, ToolContent, ToolCtx, ToolError, ToolResult,
     tool::input_schema,
 };
 
@@ -88,7 +88,7 @@ fn builder_fills_every_section() {
         .on_event(Topic::ChatDeleted, |_, _| async {})
         .on_event(Topic::ChatCreated, |_, _| async {})
         .on_event(Topic::ChatDeleted, |_, _| async { Ok::<(), String>(()) })
-        .hook(HookPoint::BeforeSend, |_, _: BeforeSend| async {
+        .hook(HookPoint::AfterTool, |_, _: AfterTool| async {
             Decision::Continue
         })
         .hooks_fail_mode(FailMode::Closed)
@@ -114,7 +114,7 @@ fn builder_fills_every_section() {
     );
 
     let hooks = caps.hooks.expect("hooks section");
-    assert_eq!(hooks.points, vec![HookPoint::BeforeSend]);
+    assert_eq!(hooks.points, vec![HookPoint::AfterTool]);
     assert_eq!(hooks.fail_mode, FailMode::Closed);
     assert!(caps.provider.is_none());
 }
@@ -122,7 +122,7 @@ fn builder_fills_every_section() {
 #[test]
 #[should_panic(expected = "does not match")]
 fn hook_point_must_match_input() {
-    _ = Module::new().hook(HookPoint::BeforeTurn, |_, _: BeforeSend| async {
+    _ = Module::new().hook(HookPoint::BeforeTurn, |_, _: AfterTool| async {
         Decision::Continue
     });
 }

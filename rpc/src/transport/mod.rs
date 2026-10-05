@@ -1,7 +1,8 @@
 //! Транспорты (`06 §1`): клиенты звонят ядру по uds (`u32 BE` длина + кадр),
 //! ws и wss (один binary-message — один кадр); ядро набирает сервисы по uds
 //! и tcp под Noise (`service`). Выше транспорта все они — `Conn`: поток сырых
-//! кадров туда и обратно.
+//! кадров туда и обратно. Особняком `http`: мост JSON-RPC без сессии кадров,
+//! `Server::serve` ведёт его своим циклом.
 
 use std::{
     fmt,
@@ -29,6 +30,7 @@ use self::{
 
 pub mod activation;
 pub mod framed;
+pub mod http;
 pub(crate) mod meter;
 pub mod noise;
 pub mod service;
@@ -39,6 +41,9 @@ pub use self::service::{Incoming, ServiceListener, dial};
 
 /// Путь Upgrade у ws/wss.
 pub const WS_PATH: &str = "/v1/modules";
+
+/// Пауза после отказа `accept`: исчерпанные дескрипторы не крутят цикл вхолостую.
+pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 #[data(error, not(serde, JsonSchema))]
 pub enum TransportError {
@@ -216,6 +221,7 @@ enum ListenerKind {
         listener: TcpListener,
         acceptor: TlsAcceptor,
     },
+    Http(http::Bound),
 }
 
 impl Listener {
@@ -244,6 +250,17 @@ impl Listener {
                 let acceptor = TlsAcceptor::from(tls::server_config(&wss.tls).await?);
                 (ListenerKind::Wss { listener, acceptor }, adopted)
             }
+            Listen::Http(http) => {
+                let (listener, adopted) = open_tcp(http.addr, inherited).await?;
+                let bound = http::Bound::new(listener, None, http.cors.clone());
+                (ListenerKind::Http(bound), adopted)
+            }
+            Listen::Https(https) => {
+                let (listener, adopted) = open_tcp(https.addr, inherited).await?;
+                let acceptor = TlsAcceptor::from(tls::server_config(&https.tls).await?);
+                let bound = http::Bound::new(listener, Some(acceptor), https.cors.clone());
+                (ListenerKind::Http(bound), adopted)
+            }
         };
 
         Ok(Self {
@@ -265,6 +282,15 @@ impl Listener {
             ListenerKind::Ws { listener } | ListenerKind::Wss { listener, .. } => {
                 listener.local_addr().ok()
             }
+            ListenerKind::Http(bound) => bound.local_addr(),
+        }
+    }
+
+    /// Слушатель HTTP-моста: запросы вместо кадров, цикл приёма свой.
+    pub(crate) fn http(&self) -> Option<&http::Bound> {
+        match &self.kind {
+            ListenerKind::Http(bound) => Some(bound),
+            _ => None,
         }
     }
 
@@ -283,6 +309,11 @@ impl Listener {
             ListenerKind::Wss { listener, acceptor } => {
                 let (stream, addr) = listener.accept().await.map_err(TransportError::io)?;
                 Raw::Wss(stream, addr, acceptor.clone())
+            }
+            ListenerKind::Http(_) => {
+                return Err(TransportError::Protocol(String::from(
+                    "the http bridge serves requests, not frames",
+                )));
             }
         };
 

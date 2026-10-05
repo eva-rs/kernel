@@ -15,9 +15,9 @@ use tokio::sync::broadcast;
 use eva_core::Caller;
 use eva_protocol::{
     types::{ModuleId, SessionId, module::ModuleKind},
-    wire::{Capabilities, RpcError},
+    wire::{Capabilities, RpcError, capabilities::HooksCap, hooks::HookPoint},
 };
-use eva_rpc::Peer;
+use eva_rpc::{ModuleClient, Peer};
 
 use crate::{
     bus::Published,
@@ -39,8 +39,7 @@ pub struct Entry {
     pub session: SessionId,
     pub caller: Caller,
     pub source: Source,
-    /// Объявленное в `hello`: `tools`/`hooks` исполняются с M2/M4, до тех
-    /// пор только хранятся.
+    /// Объявленные в `hello` возможности определяют доступные обратные вызовы.
     pub capabilities: Capabilities,
     pub since: Timestamp,
     /// Подписка capability `events`, взятая до `welcome`: первые вызовы
@@ -229,6 +228,13 @@ impl Live {
         self.lock().sessions.is_empty()
     }
 
+    pub fn has_client(&self) -> bool {
+        self.lock()
+            .sessions
+            .values()
+            .any(|entry| entry.closing.is_none() && entry.caller.kind() == Some(ModuleKind::Client))
+    }
+
     /// Имена и caller'ы живых сессий.
     pub fn sessions(&self) -> Vec<(ModuleId, Caller)> {
         self.lock()
@@ -249,6 +255,39 @@ impl Live {
             .collect()
     }
 
+    /// Клиент живой сессии модуля для `tools.call`; закрываемая — `None`.
+    pub fn client(&self, module: &ModuleId) -> Option<(SessionId, ModuleClient)> {
+        let live = self.lock();
+        let entry = live.sessions.get(module)?;
+        if entry.closing.is_some() {
+            return None;
+        }
+        let peer = entry.peer.clone()?;
+        Some((entry.session.clone(), ModuleClient::new(peer)))
+    }
+
+    /// Сессии, объявившие точку хука, по имени модуля (`06 §7`); модуль
+    /// запасного входа `provider` хуков не получает.
+    pub fn hooked(&self, point: HookPoint) -> Vec<Hooked> {
+        self.lock()
+            .sessions
+            .iter()
+            .filter(|(_, e)| e.closing.is_none() && e.capabilities.provider.is_none())
+            .filter_map(|(module, e)| {
+                let cap = e.capabilities.hooks.as_ref()?;
+                if !cap.points.contains(&point) {
+                    return None;
+                }
+                Some(Hooked {
+                    module: module.clone(),
+                    caller: e.caller.clone(),
+                    cap: cap.clone(),
+                    client: e.peer.clone().map(ModuleClient::new),
+                })
+            })
+            .collect()
+    }
+
     /// `ask_ui` чатов surface (`07 §1`): хоть одна обслуживающая его живая
     /// сессия объявила capability `ask`.
     pub fn ask_ui(&self, surface: &SurfaceRef) -> bool {
@@ -257,6 +296,15 @@ impl Live {
             .iter()
             .any(|(module, entry)| entry.capabilities.ask && serves(module, entry, surface))
     }
+}
+
+/// Цель хука; `client: None` — сессия ещё до `welcome`, хук недоступен.
+#[derive(Debug, Clone)]
+pub struct Hooked {
+    pub module: ModuleId,
+    pub caller: Caller,
+    pub cap: HooksCap,
+    pub client: Option<ModuleClient>,
 }
 
 /// Закрываемая сессия уже никого не обслуживает; `system` не обслуживает никто.

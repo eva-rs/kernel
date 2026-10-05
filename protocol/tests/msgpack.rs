@@ -29,7 +29,7 @@ use eva_protocol::{
         turn::{
             Actor, ActorKind, Decision as Button, FeedEvent, Item, ItemBody, ItemDelta, ItemStatus,
             PendingKind, PendingOutcome, PlanTask, StepUsage, TaskStatus, ToolCallResult, TurnCtx,
-            TurnItem,
+            TurnItem, TurnOutcome,
         },
     },
     wire::{
@@ -38,11 +38,10 @@ use eva_protocol::{
         events::{
             ChatEvent, ChatPurged, CronFired, Event, MemoryChanged, MemoryOp, ModuleEvent,
             NotifyEvent, PhaseState, Publish, SleepPhase, ToolCalled, Topic, TurnEvent,
-            TurnOutcome,
         },
         frame::{Cancel, Notify, Request, Response, StreamEnd, StreamHeartbeat, StreamItem},
         handshake::{Ping, ProtoVersion, Resume, Warning},
-        hooks::{AfterTool, BeforeSend, BeforeTool, BeforeTurn, Decision, Hook, HookPoint},
+        hooks::{AfterTool, BeforeTool, BeforeTurn, Decision, Hook, HookPoint},
         provider::TokenCount,
         tools::{ToolCall, ToolItem, ToolResult},
     },
@@ -263,7 +262,7 @@ fn handshake() {
             subscriptions: vec![Topic::ChatDeleted, Topic::TurnFinished],
         }),
         hooks: Some(HooksCap {
-            points: vec![HookPoint::BeforeSend, HookPoint::AfterTool],
+            points: vec![HookPoint::BeforeTool, HookPoint::AfterTool],
             timeout: Some(HumanDuration(Duration::from_millis(1500))),
             fail_mode: FailMode::Closed,
         }),
@@ -567,6 +566,7 @@ fn turn_item() {
             text: "hi".into(),
             sender: Some("p1".into()),
             master: true,
+            external_id: Some("0199-optimistic".into()),
         },
         ItemBody::AgentMessage {
             text: "hello".into(),
@@ -597,6 +597,12 @@ fn turn_item() {
             name: "cat.png".into(),
             media_type: "image/png".into(),
         },
+        ItemBody::File {
+            blob: "0198-document".into(),
+            url: "eva-blob://0198-document".into(),
+            name: "notes.txt".into(),
+            media_type: "text/plain".into(),
+        },
         ItemBody::Compaction {
             summary_ref: 3.into(),
         },
@@ -614,6 +620,7 @@ fn turn_item() {
         .into_iter()
         .map(|body| FeedEvent::ItemCompleted {
             item: item(ItemStatus::Completed, body),
+            replaces: Some("0198-turn:1:a".into()),
         })
         .collect();
     events.extend([
@@ -653,11 +660,8 @@ fn turn_item() {
         }),
         FeedEvent::TurnDone {
             turn: "0198-turn".into(),
-            message_ids: vec![EventId(101), EventId(102)],
-        },
-        FeedEvent::TurnError {
-            turn: "0198-turn".into(),
-            message: "provider failed".into(),
+            outcome: TurnOutcome::Failed,
+            error: Some("provider failed".into()),
         },
         FeedEvent::ItemDelta {
             id: "future".into(),
@@ -762,25 +766,23 @@ fn hooks() {
         input: json!({}),
         result: ToolResult::ok(vec![image()]),
     };
-    let before_send = BeforeSend {
-        ctx: ctx(),
-        text: "reply".into(),
-        attachments: vec![content::Block::File {
-            blob: "0198-blob".into(),
-        }],
-    };
     roundtrip(&before_turn);
     roundtrip(&before_tool);
     roundtrip(&after_tool);
-    roundtrip(&before_send);
 
-    decisions::<BeforeTurn>(vec![content::Block::text("patched")]);
-    decisions::<BeforeTool>(json!({"chat": 2}));
     decisions::<AfterTool>(ToolResult::error("redacted"));
-    decisions::<BeforeSend>("patched".to_owned());
+    // Патч на точке без патчуемого поля не читается: ядро считает его отказом хука.
+    let patch = encode(&json!({"patch": {"payload": {"chat": 2}}}));
+    assert!(rmp_serde::from_slice::<Decision<<BeforeTool as Hook>::Patch>>(&patch).is_err());
+    assert!(rmp_serde::from_slice::<Decision<<BeforeTurn as Hook>::Patch>>(&patch).is_err());
+    for point in [HookPoint::BeforeTool, HookPoint::BeforeTurn] {
+        let decision: Decision<<BeforeTool as Hook>::Patch> =
+            rmp_serde::from_slice(&encode(&json!("continue"))).expect("continue decodes");
+        assert_eq!(decision, Decision::Continue, "{point}");
+    }
 
     assert_eq!(HookPoint::AfterTool.method(), "hooks.after_tool");
-    assert_eq!(encode(&HookPoint::BeforeSend), encode(&"before_send"));
+    assert_eq!(encode(&HookPoint::BeforeTool), encode(&"before_tool"));
 }
 
 #[test]
@@ -1361,7 +1363,10 @@ fn unknown_payload_is_skipped_exactly() {
         },
         NewerTurnItem {
             seq: 2,
-            event: BTreeMap::from([("turn_error", json!({"turn": "t", "message": "boom"}))]),
+            event: BTreeMap::from([(
+                "turn_done",
+                json!({"turn": "t", "outcome": "failed", "error": "boom"}),
+            )]),
             replayed: false,
             extra: "ignored",
         },
@@ -1370,9 +1375,10 @@ fn unknown_payload_is_skipped_exactly() {
     assert!(items[0].replayed);
     assert_eq!(
         items[1].event,
-        FeedEvent::TurnError {
+        FeedEvent::TurnDone {
             turn: "t".into(),
-            message: "boom".into(),
+            outcome: TurnOutcome::Failed,
+            error: Some("boom".into()),
         }
     );
 }
@@ -1519,13 +1525,20 @@ mod props {
 
     fn feed_event() -> impl Strategy<Value = FeedEvent> {
         let body = prop_oneof![
-            (text(), option::of(text()), any::<bool>()).prop_map(|(text, sender, master)| {
-                ItemBody::UserMessage {
-                    text,
-                    sender: sender.map(Into::into),
-                    master,
-                }
-            }),
+            (
+                text(),
+                option::of(text()),
+                any::<bool>(),
+                option::of(text())
+            )
+                .prop_map(|(text, sender, master, external_id)| {
+                    ItemBody::UserMessage {
+                        text,
+                        sender: sender.map(Into::into),
+                        master,
+                        external_id,
+                    }
+                }),
             (text(), cost()).prop_map(|(text, cost)| ItemBody::AgentMessage { text, cost }),
             (text(), text(), text(), raw(), option::of(text())).prop_map(
                 |(call_id, name, media_type, data, progress)| ItemBody::ToolCall {
@@ -1542,8 +1555,14 @@ mod props {
             ),
         ];
         prop_oneof![
-            (text(), option::of(text()), any::<i64>(), body).prop_map(|(id, turn, seq, body)| {
-                FeedEvent::ItemCompleted {
+            (
+                text(),
+                option::of(text()),
+                any::<i64>(),
+                body,
+                option::of(text())
+            )
+                .prop_map(|(id, turn, seq, body, replaces)| FeedEvent::ItemCompleted {
                     item: Item {
                         id,
                         turn: turn.map(Into::into),
@@ -1551,8 +1570,8 @@ mod props {
                         status: ItemStatus::Completed,
                         body,
                     },
-                }
-            }),
+                    replaces,
+                }),
             (text(), text()).prop_map(|(id, text)| FeedEvent::ItemDelta {
                 id,
                 delta: ItemDelta::Text { text },
@@ -1569,9 +1588,10 @@ mod props {
                     cost,
                 })
             ),
-            (text(), vec(any::<i64>(), 0..4)).prop_map(|(turn, ids)| FeedEvent::TurnDone {
+            (text(), option::of(text())).prop_map(|(turn, error)| FeedEvent::TurnDone {
                 turn: turn.into(),
-                message_ids: ids.into_iter().map(EventId).collect(),
+                outcome: TurnOutcome::Completed,
+                error,
             }),
         ]
     }

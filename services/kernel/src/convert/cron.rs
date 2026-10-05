@@ -47,6 +47,7 @@ pub fn run(row: RunRow) -> Run {
         ok,
         output,
         cost,
+        due,
     } = row;
 
     Run {
@@ -57,5 +58,6 @@ pub fn run(row: RunRow) -> Run {
         ok,
         output,
         cost,
+        due,
     }
 }

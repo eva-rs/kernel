@@ -241,7 +241,7 @@ impl Module {
         self
     }
 
-    /// Хук точки `point`; тип входа задаёт замыкание (`BeforeSend` и т.д.).
+    /// Хук точки `point`; тип входа задаёт замыкание (`AfterTool` и т. д.).
     ///
     /// # Panics
     ///
@@ -550,7 +550,6 @@ impl Runtime {
                 .client
                 .peer()
                 .close(RpcError::new(ErrorCode::Conflict, "superseded"));
-            replay_attach(self).await;
         }
         Ok(client)
     }
@@ -717,7 +716,6 @@ impl Connected {
                 match attempt {
                     Ok(()) => {
                         backoff.reset();
-                        replay_attach(&runtime).await;
                         break;
                     }
                     Err(e) if fatal(&e) => {
@@ -731,10 +729,6 @@ impl Connected {
         }
     }
 }
-
-/// M2: после смены соединения `turns.attach{chat, since_seq}` по каждому чату
-/// из `chats.list{live: true}` (`06 §8`); пока ядро отвечает на них `M2_PENDING`.
-pub(crate) async fn replay_attach(_runtime: &Runtime) {}
 
 impl std::fmt::Debug for Connected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

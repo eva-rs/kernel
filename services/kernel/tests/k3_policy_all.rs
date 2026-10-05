@@ -47,7 +47,7 @@ const MATRIX: &[(&str, [Outcome; 5])] = &[
     ("folders.update", [K, K, F, F, F]),
     ("folders.delete", [K, K, F, F, F]),
     ("folders.list", [K, K, F, F, F]),
-    ("chats.ingest", [U, U, U, U, U]),
+    ("chats.ingest", [K, K, K, F, F]),
     ("chats.create", [K, K, K, F, F]),
     ("chats.get", [K, K, K, F, F]),
     ("chats.get#alias", [K, K, K, F, F]),
@@ -61,17 +61,18 @@ const MATRIX: &[(&str, [Outcome; 5])] = &[
     ("chats.move", [K, K, F, F, F]),
     ("chats.delete", [K, K, F, F, F]),
     ("chats.restore", [K, K, F, F, F]),
-    ("chats.search", [U, U, F, F, F]),
+    ("chats.search", [K, K, F, F, F]),
     ("chats.history_read", [K, K, K, F, F]),
     ("chats.compact", [U, U, F, F, F]),
-    ("chats.notify", [U, F, F, F, F]),
-    // M2: до движка туров операции недоступны всем одинаково.
-    ("turns.start", [U, U, U, U, U]),
-    ("turns.attach", [U, U, U, U, U]),
-    ("turns.append_silent", [U, U, U, U, U]),
-    ("turns.delivered", [U, U, U, U, U]),
-    ("turns.cancel", [U, U, U, U, U]),
-    ("turns.respond", [U, U, U, U, U]),
+    ("chats.notify", [K, F, F, F, F]),
+    ("turns.start", [K, K, K, F, F]),
+    ("turns.attach", [K, K, K, F, F]),
+    ("turns.append_silent", [K, K, K, F, F]),
+    // Отсутствует исходящее сообщение, но чат доступен.
+    ("turns.delivered", [S, S, S, F, F]),
+    ("turns.cancel", [K, K, K, F, F]),
+    // Подпись клиента позволяет ответить без actor; ядру и сервису нужен актор.
+    ("turns.respond", [F, K, F, F, F]),
     ("persons.resolve", [K, K, K, F, F]),
     ("persons.list", [K, K, F, F, F]),
     ("persons.rename", [K, K, F, F, F]),
@@ -82,7 +83,7 @@ const MATRIX: &[(&str, [Outcome; 5])] = &[
     ("memory.history", [K, K, F, F, F]),
     ("memory.restore", [K, K, F, F, F]),
     ("notes.list", [K, K, F, F, F]),
-    ("tools.catalog", [U, U, F, F, F]),
+    ("tools.catalog", [K, K, F, F, F]),
     ("models.list", [K, K, F, F, F]),
     ("cron.list", [K, K, F, F, F]),
     ("cron.runs", [K, K, F, F, F]),
@@ -334,6 +335,7 @@ fn service_args(module: &str) -> modules::add::Args {
 
 fn history(chat: ChatId) -> chats::history_read::Args {
     chats::history_read::Args {
+        before: None,
         chat,
         from_seq: 0,
         count: Default::default(),
@@ -747,20 +749,44 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                     .await,
             )
         }
-        "turns.respond" => outcome(
-            &ctx.s()
+        "turns.respond" => {
+            let chat = ctx.chat().await;
+            let id = PendingId::from(format!("pending-{n}"));
+            let now = ctx.h.clock.get();
+            let row = eva_kernel::db::agents::PendingRow {
+                id: id.clone(),
+                chat,
+                turn: eva_protocol::types::TurnId::from(format!("turn-{n}")),
+                call_id: format!("call-{n}"),
+                kind: eva_protocol::types::turn::PendingKind::Ask,
+                payload: serde_json::json!({"questions": [{"text": "Choose", "options": [{"label": "A"}, {"label": "B"}]}]}),
+                created_at: now,
+                expires_at: now + std::time::Duration::from_secs(60),
+                resolved_at: None,
+                outcome: None,
+            };
+            ctx.h
+                .kernel
+                .shared()
+                .db()
+                .write(move |tx| tx.agents().insert_pending(&row))
                 .await
-                .turns()
-                .respond()
-                .call(turns::respond::Args {
-                    pending: PendingId::from("pending"),
-                    answer: Answer::Text {
-                        text: String::from("yes"),
-                    },
-                    actor: None,
-                })
-                .await,
-        ),
+                .expect("pending");
+            outcome(
+                &ctx.s()
+                    .await
+                    .turns()
+                    .respond()
+                    .call(turns::respond::Args {
+                        pending: id,
+                        answer: Answer::Text {
+                            text: String::from("yes"),
+                        },
+                        actor: None,
+                    })
+                    .await,
+            )
+        }
 
         "persons.resolve" => outcome(
             &ctx.s()

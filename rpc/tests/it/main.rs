@@ -2,6 +2,7 @@ mod activation;
 mod config;
 mod errors;
 mod harness;
+mod http;
 mod kernel;
 mod limits;
 mod loopback;

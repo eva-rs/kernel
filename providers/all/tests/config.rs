@@ -104,3 +104,27 @@ fn build_error_names_the_config_key_path() {
         "{error}"
     );
 }
+
+#[test]
+fn embed_local_kind() {
+    let config = parse(&[
+        ("kind", "embed_local"),
+        ("base_url", "http://127.0.0.1:9000/v1"),
+        ("timeout", "5s"),
+    ])
+    .unwrap();
+    let ProviderConfig::EmbedLocal(config) = config else {
+        panic!("expected embed_local, got {config:?}");
+    };
+    assert_eq!(config.base_url, "http://127.0.0.1:9000/v1");
+    assert_eq!(config.timeout.as_secs(), 5);
+    assert!(config.models.is_empty() && config.local.is_none());
+
+    let ProviderConfig::EmbedLocal(defaults) = parse(&[("kind", "embed_local")]).unwrap() else {
+        panic!("expected embed_local");
+    };
+    assert_eq!(
+        defaults.base_url,
+        eva_providers::embed_local::DEFAULT_BASE_URL
+    );
+}

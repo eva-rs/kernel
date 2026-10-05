@@ -11,10 +11,12 @@ use eva_rpc::config::{Listen, UdsListen};
 #[data]
 #[serde(default)]
 pub struct ModulesConfig {
-    /// Слушатели клиентов; относительный путь сокета — от `system.state_dir`.
+    /// Слушатели клиентов (`uds`, `ws`, `wss`, `http`, `https`); относительный
+    /// путь сокета — от `system.state_dir`.
     pub listen: Vec<Listen>,
     /// `handshake_timeout`, `ping_*`, `request_timeout`, `stream_*`, `max_inflight`,
-    /// `max_streams`, `max_frame`, `max_hello`, `blob_chunk`, `idempotency_window`.
+    /// `max_streams`, `max_frame`, `max_hello`, `blob_chunk`, `idempotency_window`,
+    /// `max_batch`.
     #[serde(flatten)]
     pub transport: eva_rpc::Config,
     /// Ключ — id клиента; токен конфига сильнее выданного (`module_tokens`).

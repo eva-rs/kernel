@@ -16,8 +16,9 @@ use serde::{
 use serde_json::Value;
 
 use crate::types::{
-    ChatId, CronJobId, MemoryId, ModuleId, RunId, SurfaceId, ToolId, TurnId, sleep::Phase,
-    turn::Actor,
+    ChatId, CronJobId, MemoryId, ModuleId, RunId, SurfaceId, ToolId, TurnId,
+    sleep::Phase,
+    turn::{Actor, TurnOutcome},
 };
 
 /// Params `events.publish`; на проводе `{topic, seq, at, payload}` (`06 §4`),
@@ -345,21 +346,6 @@ pub struct TurnEvent {
     /// Только у `turn.finished`.
     pub outcome: Option<TurnOutcome>,
 }
-
-/// Исход тура — `turn_ended.outcome` лога.
-#[data(copy, ord, display(name))]
-#[serde(remote = "TurnOutcome")]
-pub enum TurnOutcome {
-    Completed,
-    Cancelled,
-    Failed,
-    Interrupted,
-    /// Исход новее этого пира.
-    #[serde(other)]
-    Unknown,
-}
-
-tolerant!(TurnOutcome);
 
 #[data]
 pub struct ToolCalled {

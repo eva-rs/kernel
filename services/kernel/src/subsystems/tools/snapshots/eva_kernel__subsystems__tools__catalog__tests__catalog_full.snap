@@ -1,0 +1,8 @@
+---
+source: services/kernel/src/subsystems/tools/catalog.rs
+assertion_line: 347
+expression: full
+---
+## Reserved tools (load with tools_load)
+- mcp_github (14 tools): GitHub issues, pull requests and CI.
+- memory_history: Show change history of a memory record.

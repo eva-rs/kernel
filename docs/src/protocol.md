@@ -9,9 +9,9 @@
 | Вид | Соединение | Транспорты | Аутентификация |
 |---|---|---|---|
 | сервис (мост мессенджера, MCP) | ядро → модуль | uds, tcp — оба под Noise | общий PSK |
-| клиент (телефон, TUI) | модуль → ядро | uds, ws, wss | токен в `hello` |
+| клиент (телефон, TUI) | модуль → ядро | uds, ws, wss; http, https — [HTTP-мост](#http-мост-json-rpc) | токен в `hello`; у моста — `Authorization: Bearer` |
 
-Сервис адреса ядра не знает — только слушает. Клиенты за NAT и приходят-уходят, поэтому звонят сами. Все транспорты несут одинаковые кадры.
+Сервис адреса ядра не знает — только слушает. Клиенты за NAT и приходят-уходят, поэтому звонят сами. Транспорты кадров несут одинаковые кадры; HTTP-мост несёт те же операции в конверте JSON-RPC без сессии.
 
 ### Слушатель ядра (клиенты)
 
@@ -20,11 +20,33 @@
 | Unix-сокет | `{uds: <путь>}` | `uds:///run/eva-kernel/modules.sock` (или `unix://`) | `u32` big-endian длина, затем msgpack-кадр |
 | WebSocket | `{ws: <addr:port>}` | `ws://host:port/v1/modules` | один binary-message — один кадр |
 | WebSocket + TLS | `{wss: <addr:port>, tls: {cert, key}}` | `wss://host:port/v1/modules` | то же поверх TLS |
+| HTTP | `{http: <addr:port>, cors?: [origin]}` | `http://host:port/v1/rpc` | конверт JSON-RPC 2.0 в теле `POST`, без кадров и сессии |
+| HTTPS | `{https: <addr:port>, tls: {cert, key}, cors?}` | `https://host:port/v1/rpc` | то же поверх TLS |
 
 - WebSocket-Upgrade принимается только на пути `/v1/modules`, иначе HTTP 404. У клиента SDK пустой путь дополняется до `/v1/modules`.
 - Text-message в WebSocket — нарушение протокола, соединение закрывается. Ping/pong WebSocket-уровня протокол не использует — у него свой `ping`.
 - Кадр больше `max_frame` (16 MiB) закрывает соединение с `invalid_params`.
 - Закрытие с причиной: перед закрытием сокета пир шлёт уведомление `close` (см. ниже). WebSocket дополнительно передаёт причину close-кадром: код 1008 и текст до 123 байт; штатное закрытие — код 1000 без текста. У uds и Noise close-кадра нет — причину несёт только `close`.
+
+### HTTP-мост (JSON-RPC)
+
+Для клиентов без постоянного соединения (скрипт, `curl`, веб-страница): те же операции и те же права, что по кадрам, но потоков, загрузок и событий нет — за ними ws.
+
+- `POST /v1/rpc`, тело — объект JSON-RPC 2.0 `{"jsonrpc": "2.0", "id": …, "method": "<ns>.<op>", "params": {…}}`; `params` — ровно `Args` операции, как `params` кадра `request`; без `params` — `Args` по умолчанию. `id` — число, строка или `null`, возвращается как пришёл; запрос без `id` — уведомление: исполняется, ответа не получает.
+- Кодек: `Content-Type: application/json` или `application/msgpack` задаёт кодек запроса (иначе `415`), `Accept` — кодек ответа (по умолчанию — кодек запроса). msgpack-конверт — карта с теми же ключами; типы в теле — как в [кодировке](#кодировка) провода, в JSON байты — массив чисел, `Timestamp` — строка.
+- Токен — `Authorization: Bearer <token>`: проверяется как `hello.token` (конфиг `modules.tokens` и выданные `modules.token_issue`, отозванный не годится, отказ после паузы 250 мс), нет или не принят — `401` с `WWW-Authenticate: Bearer`. Каждый запрос — одноразовая сессия клиента: строки `modules` она не создаёт, живую сессию того же клиента не вытесняет, окна идемпотентности и `resume` у неё нет.
+- Массив запросов — batch до `max_batch` (64): исполняется по порядку, ответ — массив ответов в том же порядке без ответов на уведомления; пустой или слишком длинный batch отвергается целиком одной ошибкой с `id: null`. Нечего ответить — `204 No Content`.
+- Ответ: `{"jsonrpc": "2.0", "id": …, "result": <Ok>}` либо `{"jsonrpc": "2.0", "id": …, "error": {"code", "message", "data"}}`. `error.code` — стандартный JSON-RPC (`-32700` тело не разобрано, `-32600` не запрос, `-32601` метода нет, `-32602` `invalid_params`, `-32603` `internal`) или свой на [код провода](#коды-и-данные-ошибок): `-32001` `unauthorized`, `-32003` `forbidden`, `-32004` `not_found`, `-32008` `timeout`, `-32009` `conflict`, `-32010` `cancelled`, `-32011` `unavailable`, `-32012` `proto_version`, `-32013` `quota`. `error.message` — текст ошибки, `error.data` — `{"code": "<код провода>", "retry_after"?: длительность, "error"?: <Generic<Err>>}`, где `error` — тот же объект, что `data` в `RpcError` кадра (`{"forbidden": "…"}`, `{"not_found": {"surface": "x"}}`).
+- Операция-поток или загрузка (`turns.attach`, `blobs.get`, `blobs.put`) отвечает `-32601` с текстом `use ws`.
+- HTTP-статус не `200` только когда тело до операции не дошло: `415` кодек, `413` тело больше `max_frame`, `401` токен, `403` чужой `Origin`, `404`/`405` не `POST /v1/rpc`. Ошибки операций и разбора — `200` с объектом `error`.
+- CORS: без `cors` слушатель на loopback-адресе отвечает любому `Origin`, слушатель на другом адресе — никакому; `cors: [origin, …]` — только перечисленным (`scheme://host[:port]`, без учёта регистра). Preflight `OPTIONS /v1/rpc` разрешает `POST` с заголовками `Authorization`, `Content-Type`, `Accept`. Запрос без `Origin` (не браузер) списка не касается.
+- До первого принятого токена соединение занимает место в том же лимите, что и ws до `hello` (64 соединений, 8 на сеть); заголовки запроса приходят за `handshake_timeout`, иначе соединение закрывается.
+
+```sh
+curl -s http://127.0.0.1:7080/v1/rpc \
+  -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"surfaces.get","params":{"surface":"local"}}'
+```
 
 ### Сервисное соединение (Noise)
 
@@ -123,7 +145,7 @@ sequenceDiagram
 | `proto_version` | `"MAJOR.MINOR"` | Версия протокола ядра |
 | `kind` | `"client"` \| `"service"` | Вид соединения — набрано ядром или пришло с токеном: по нему модуль знает свои права ([Безопасность](security.md#вызывающие-и-их-права)) |
 | `services` | [str] | Неймспейсы операций, которые ядро обслуживает по RPC |
-| `tool_ids` | {путь тула: id} | Id зарегистрированных тулов; в M1 пусто |
+| `tool_ids` | {путь тула: id} | Постоянные ID зарегистрированных инструментов; сохраняются после реконнекта |
 | `models_accepted` | [str] | Принятые модели провайдера модуля |
 | `warnings` | [`{code, subject, message}`] | Отклонённые части `hello`; сессия при этом жива |
 | `resumed` | bool | `hello.resume` продолжил окно идемпотентности прошлой сессии |
@@ -157,13 +179,13 @@ sequenceDiagram
 
 Секция отсутствует — capability не объявлена; пустой список — ровно ноль элементов. Незнакомый ключ `capabilities` ядро пропускает и сообщает в `welcome.warnings` (`invalid_params`, `subject: capabilities.<ключ>`).
 
-| Ключ | Форма | Что делает ядро в M1 |
+| Ключ | Форма | Что делает ядро |
 |---|---|---|
 | `provider` | `{decl, models}` | Принимает и регистрирует модели (запасной вход провайдера) |
-| `tools` | `{groups: [{path, about}], tools: [ToolDecl]}` | Проверяет и хранит; `tools.call` — с M4 |
+| `tools` | `{groups: [{path, about}], tools: [ToolDecl]}` | Проверяет, регистрирует и вызывает через `tools.call` |
 | `events` | `{subscriptions: [топик]}` | Рассылает события |
-| `hooks` | `{points: [точка], timeout?, fail_mode}` | Хранит; хуки зовут туры с M2 |
-| `ask` | bool | Хранит; кнопки pending-запросов — с рабочими турами в M5 |
+| `hooks` | `{points: [точка], timeout?, fail_mode}` | Вызывает объявленные хуки в турах |
+| `ask` | bool | Учитывает возможность показать вопросы и запросы разрешений |
 
 Surface — не capability, а сущность ядра: модуль создаёт её операцией `surfaces.create`, ядро запоминает создателя. Обслуживает surface живая сессия её модуля-создателя, встроенную `local` — каждая сессия `client`; `system` не обслуживает никто. После реконнекта регистрировать surface заново не нужно.
 
@@ -175,7 +197,7 @@ Surface — не capability, а сущность ядра: модуль созд
 
 `ToolDecl`: `path` (через точку, не меньше двух сегментов `[a-z][a-z0-9_]*`; каноничное имя — точки заменены на `_`, не длиннее 64 символов), `description` (одна строка), `input` (JSON Schema draft 2020-12), флаги `master_only`, `trusted_only`, `ends_turn`, `parallel_safe`, `waits_on_cancel`, `idempotent`, `needs: [need]`, `result: windowed|uncapped`, `timeout?`. Группа: `path` (от одного сегмента) и `about` (одна строка). Невалидный тул или группа отклоняются по одному, с причиной в `warnings`.
 
-Вызов (с M4) — поток `tools.call` от ядра:
+Вызов — поток `tools.call` от ядра:
 
 | Шаг | Форма |
 |---|---|
@@ -190,21 +212,21 @@ Surface — не capability, а сущность ядра: модуль созд
 
 `notify events.publish` с `params` `{topic, seq, at, payload}`. В msgpack `topic` обязан идти раньше `payload`: форма `payload` зависит от топика. `seq` — счётчик сессии с 0; порядок — порядок публикации; реплея после реконнекта нет. Сервис получает только события своих surface; события без surface — только клиенты.
 
-| Топик | `payload` | Публикуется с |
-|---|---|---|
-| `chat.created`, `chat.deleted`, `chat.restored` | `{chat, surface, external_id?}` | M1 |
-| `chat.purged` | `{ids}` — по событию на surface | M1 |
-| `memory.changed` | `{ids, op}`; без surface | M1 (`memory.restore`) |
-| `module.connected`, `module.disconnected` | `{module}`; без surface | M1 |
-| `turn.started`, `turn.finished` | `{turn_id, chat, surface, actor, run_id?, outcome?}` | M2 |
-| `tool.called` | `{turn_id, chat, tool_id?, canonical, is_error, duration}` | M2 |
-| `notify` | `{subject, chat_id, source_chat?}`; только клиентам | M2 |
-| `cron.fired` | `{job, run_id, chat}` | M4 |
-| `sleep.phase` | `{phase, run_id, state}` | M4 |
+| Топик | `payload` |
+|---|---|
+| `chat.created`, `chat.deleted`, `chat.restored` | `{chat, surface, external_id?}` |
+| `chat.purged` | `{ids}` — по событию на surface |
+| `memory.changed` | `{ids, op}`; без surface |
+| `module.connected`, `module.disconnected` | `{module}`; без surface |
+| `turn.started`, `turn.finished` | `{turn_id, chat, surface, actor, run_id?, outcome?}` |
+| `tool.called` | `{turn_id, chat, tool_id?, canonical, is_error, duration}` |
+| `notify` | `{subject, chat_id, source_chat?}`; только клиентам |
+| `cron.fired` | `{job, run_id, chat}` |
+| `sleep.phase` | `{phase, run_id, state}` |
 
 ### `hooks`
 
-Точки: `before_turn` (патч — `content`), `before_tool` (`input`), `after_tool` (`result`), `before_send` (`text`). Ядро зовёт только объявленные точки: `request hooks.<point>` с входом точки, ответ — решение:
+Точки: `before_turn` (после актора, до первого шага), `before_tool` (после проверки видимости, до исполнения), `after_tool` (до скраба секретов, окна и записи в лог; патч — `result`). У `before_turn` и `before_tool` патчить нечего: реплика и вызов уже в логе, и `patch` там считается отказом хука по `fail_mode`. Хуки идут цепочкой по модулям в порядке имён; сервис получает только туры чатов своих surface, клиент — любые, модуль запасного входа `provider` — никакие. Ядро зовёт только объявленные точки: `request hooks.<point>` с входом точки, ответ — решение:
 
 ```text
 "continue" | {"cancel": {"reason": "…"}} | {"patch": {"payload": …}}
@@ -224,8 +246,8 @@ Surface — не capability, а сущность ядра: модуль созд
 | `ping` | оба | notify, `params` — `{}` | Соединение живо |
 | `close` | оба | notify, `params` — `RpcError` | Причина закрытия; последний кадр перед закрытием сокета |
 | `<namespace>.<op>` | модуль | request | Операция библиотеки: `surfaces.create`, `chats.move`, `kv.set`… ([список](api.md#операции)) |
-| `tools.call` | ядро | request → поток | Вызов тула модуля (M4) |
-| `hooks.<point>` | ядро | request | Хук (M2) |
+| `tools.call` | ядро | request → поток | Вызов тула модуля |
+| `hooks.<point>` | ядро | request | Хук тура |
 | `events.publish` | ядро | notify | Событие по подписке |
 | `provider.generate` | ядро | request → поток | Генерация |
 | `provider.embed`, `provider.count_tokens` | ядро | request | Эмбеддинги, подсчёт токенов |
@@ -250,7 +272,7 @@ Surface — не capability, а сущность ядра: модуль созд
 | `conflict` | Состояние изменилось; сессия вытеснена; ответ мутации не сохранён в окне идемпотентности |
 | `timeout` | Нет `hello`, ответа, кадров потока или любых байт дольше срока |
 | `cancelled` | Вызов отменён |
-| `unavailable` | Недостижимо; операция будущего этапа (`M<N>_PENDING: …`); соединение закрыто |
+| `unavailable` | Компонент недоступен, операция невозможна в текущем состоянии или соединение закрыто |
 | `proto_version` | MAJOR версии протокола не поддерживается |
 | `quota` | Лимит: `max_inflight`, `max_streams`, буфер потока, квоты песочницы |
 | `internal` | Сбой ядра или базы |
@@ -279,6 +301,20 @@ sequenceDiagram
 - **Обратное давление.** У получателя на каждый поток буфер в `stream_buffer` (64) элементов; читатель сокета никого не ждёт. Переполнение рвёт только этот поток: получатель видит `quota` («stream buffer overflow») и шлёт отправителю `cancel`. Уведомления обрабатываются по одному в порядке прихода; переполненная очередь уведомлений теряет новые.
 - **Лимиты сессии.** Одновременных не-потоковых запросов и загрузок — `max_inflight` (64), потоков — `max_streams` (256); сверх — сразу `quota`. Ответ, не влезший в `max_frame`, заменяется `invalid_params`; если неотправленных ответов больше 4 × `max_frame` (пир не читает сокет), новый ответ заменяется `quota`.
 - **Данные одного ответа или элемента** — `max_frame` минус 256 байт конверта.
+
+### Лента тура
+
+`turns.attach` передаёт `TurnItem {seq, sub, replayed, event}`. Курсор `seq`
+принадлежит журналу чата; он отличается от транспортного номера `stream_item.seq`.
+Клиент сохраняет курсор и после реконнекта открывает подписку заново с `since_seq`.
+Повторившийся исторический item применяется по его ID, без второго пузыря.
+
+`ItemStarted` и `ItemDelta` показывают текущий вывод. `ItemCompleted` содержит
+авторитетный item и `replaces` — ID живого item, который нужно заменить на месте.
+`UserMessage.external_id` связывает реплику с отправленным сообщением поверхности.
+Вложения представлены отдельно: `ItemBody::Image` и `ItemBody::File`, оба с blob ID
+и ссылкой `eva-blob://<id>`; байты выдаёт `blobs.get`. `TurnDone` содержит `outcome`
+и текст `error` при неудаче. Детали — в главе [Туры](turns.md).
 
 ### Загрузка
 

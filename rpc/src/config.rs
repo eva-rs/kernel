@@ -42,6 +42,8 @@ pub struct Config {
     pub blob_chunk: ByteSize,
     /// Сколько помнится ответ мутирующего запроса по `(session_id, request.id)`.
     pub idempotency_window: HumanDuration,
+    /// Запросов в одном batch'е HTTP-моста; длиннее — отказ целиком.
+    pub max_batch: BatchLimit,
 }
 
 impl Default for Config {
@@ -59,6 +61,7 @@ impl Default for Config {
             max_hello: ByteSize::mib(4),
             blob_chunk: ByteSize::mib(1),
             idempotency_window: secs(600),
+            max_batch: BatchLimit::POS64,
         }
     }
 }
@@ -101,6 +104,10 @@ impl Config {
         usize::from(self.max_streams.into_inner())
     }
 
+    pub fn max_batch(&self) -> usize {
+        usize::from(self.max_batch.into_inner())
+    }
+
     /// Принимается только текущий MAJOR.
     pub fn accepts(&self, version: ProtoVersion) -> bool {
         version.major == ProtoVersion::CURRENT.major
@@ -125,14 +132,21 @@ impl Default for StreamBuffer {
 #[eva::int(u16, 1..=4096)]
 pub enum SessionLimit {}
 
-/// Слушатель клиентов у ядра: `{uds: path}`, `{ws: addr}` или
-/// `{wss: addr, tls: {cert, key}}` — вид задаёт ключ адреса.
+/// Потолок batch'а HTTP-моста.
+#[eva::int(u16, 1..=1024)]
+pub enum BatchLimit {}
+
+/// Слушатель клиентов у ядра: `{uds: path}`, `{ws: addr}`,
+/// `{wss: addr, tls: {cert, key}}`, `{http: addr}` или
+/// `{https: addr, tls}` — вид задаёт ключ адреса.
 #[data]
 #[serde(untagged)]
 pub enum Listen {
     Uds(UdsListen),
     Ws(WsListen),
     Wss(WssListen),
+    Http(HttpListen),
+    Https(HttpsListen),
 }
 
 /// Права и группу файла сокета задаёт окружение — umask процесса или
@@ -156,6 +170,32 @@ pub struct WssListen {
     pub addr: SocketAddr,
     pub tls: TlsFiles,
 }
+
+/// JSON-RPC мост `POST /v1/rpc` для клиентов без постоянного соединения.
+#[data]
+pub struct HttpListen {
+    #[serde(rename = "http")]
+    pub addr: SocketAddr,
+    #[serde(default)]
+    pub cors: Cors,
+}
+
+#[data]
+pub struct HttpsListen {
+    #[serde(rename = "https")]
+    pub addr: SocketAddr,
+    pub tls: TlsFiles,
+    #[serde(default)]
+    pub cors: Cors,
+}
+
+/// Браузерные origin'ы (`scheme://host[:port]`), которым отвечает мост;
+/// пустой список: слушатель на loopback пускает любой origin, прочие —
+/// ни одного. Запросы без `Origin` (не браузер) списка не касаются.
+#[data]
+#[derive(Default)]
+#[serde(transparent)]
+pub struct Cors(pub Vec<String>);
 
 /// Слушатель сервисного модуля, куда звонит ядро: `{uds: path}` или
 /// `{tcp: "ip:port"}`; оба под Noise.
