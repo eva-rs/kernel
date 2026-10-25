@@ -1,8 +1,7 @@
 //! Память: только чтение и восстановление; мутации — тулы модели.
 
 use crate::requests::Response;
-use eva::service;
-use eva::time::Timestamp;
+use eva::{service, time::Timestamp};
 
 use crate::{
     errors,
@@ -14,7 +13,7 @@ use crate::{
     },
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Memory {
     #[args(derive(Default))]
     fn list(

@@ -4,7 +4,7 @@ mod common;
 
 use common::{OTHER, Outcome, SVC, outcome};
 
-use eva_protocol::requests::models::list;
+use eva_protocol::requests::Models::list;
 
 use Outcome::{Forbidden as F, Ok as K};
 

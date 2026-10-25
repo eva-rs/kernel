@@ -1,8 +1,7 @@
 //! Статистика: только чтение.
 
 use crate::requests::Response;
-use eva::service;
-use eva::time::Date;
+use eva::{service, time::Date};
 
 use crate::{
     errors,
@@ -26,7 +25,7 @@ impl Default for Top {
     }
 }
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Stats {
     fn tools_usage(
         #[serde(default)] scope: Scope,

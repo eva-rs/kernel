@@ -11,7 +11,11 @@ use eva::{bytesize::ByteSize, time::HumanDuration};
 use eva_kernel::handling::sqlite::{Limits, open};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::sqlite::{Cell, Statement, exec, query, tx},
+    requests::{
+        Cell,
+        Sqlite::{exec, query, tx},
+        Statement,
+    },
     types::{Bytes, Value as Param},
 };
 use rusqlite::limits::Limit;

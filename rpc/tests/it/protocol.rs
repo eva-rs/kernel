@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use eva_protocol::{
-    requests::{surfaces::create, turns::attach},
+    requests::{Surfaces::create, Turns::attach},
     wire::{
         ErrorCode, Frame, RpcError,
         frame::{Notify, Response},
@@ -309,7 +309,7 @@ async fn reads_are_not_cached() {
     let mut raw = h.raw().await;
     raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
 
-    let get = codec::encode(&eva_protocol::requests::surfaces::get::Args {
+    let get = codec::encode(&eva_protocol::requests::Surfaces::get::Args {
         surface: "late".into(),
     })
     .unwrap();

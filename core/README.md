@@ -29,10 +29,10 @@
 
 ```rust
 use eva_core::prelude::*;
-use eva_protocol::requests::surfaces;
+use eva_protocol::requests::Surfaces;
 
 let mut session = kernel.make_session(Caller::Kernel).await?;
-let surfaces::get::Ok { surface } = session
+let Surfaces::get::Ok { surface } = session
     .surfaces()
     .get("local".into())
     .await?;

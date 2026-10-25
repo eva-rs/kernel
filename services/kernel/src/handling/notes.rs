@@ -3,7 +3,7 @@
 
 use eva_protocol::{
     errors::{self, Aux, ext::*},
-    requests::{Response, notes::list},
+    requests::{Notes::list, Response},
 };
 
 use crate::{

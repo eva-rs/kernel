@@ -10,7 +10,7 @@ use eva::{bytes::Bytes, time::Clock as _};
 
 use eva_protocol::{
     errors::Aux,
-    requests::blobs,
+    requests::Blobs,
     types::{BlobId, ChatId, SurfaceId, blob, stats::Scope},
 };
 
@@ -43,7 +43,7 @@ async fn blobs_answer_aux_db() {
     let blob = client
         .blobs()
         .put(
-            blobs::put::Meta {
+            Blobs::put::Meta {
                 chat,
                 name: String::from("a.txt"),
                 media_type: String::from("text/plain"),
@@ -76,7 +76,7 @@ async fn blobs_answer_aux_db() {
     let res = client
         .blobs()
         .put(
-            blobs::put::Meta {
+            Blobs::put::Meta {
                 chat,
                 name: String::from("b.txt"),
                 media_type: String::from("text/plain"),

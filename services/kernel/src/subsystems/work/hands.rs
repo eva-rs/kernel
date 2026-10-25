@@ -11,12 +11,11 @@ use crate::{
         turns::{pending, ports::ToolsetCall},
     },
 };
-use eva::{data, time::HumanDuration};
-use eva_core::{CallStep as _, service::HandsGrants::Trait as _};
+use eva::{data, handling::CallStep as _, time::HumanDuration};
 use eva_hands::{Error, Kind, Limits};
 use eva_protocol::{
     errors::Aux,
-    requests::hands_grants,
+    requests::HandsGrants::{self, Trait as _},
     types::{
         SegmentId,
         hands::GrantKind,
@@ -170,7 +169,7 @@ pub fn decls(cfg: &Config) -> Vec<ToolDecl> {
         (
             "hands.grants.revoke",
             "Revoke a permanent working-machine permission by id.",
-            input_schema::<hands_grants::revoke::Args>(),
+            input_schema::<HandsGrants::revoke::Args>(),
         ),
     ] {
         out.push(ToolDecl {
@@ -440,7 +439,7 @@ pub async fn call<C: Components>(
                     .hands_grants()
                     .inner_mut()
                     .list()
-                    .call(hands_grants::list::Args {
+                    .call(HandsGrants::list::Args {
                         surface: Some(call.ctx.surface.clone()),
                         ..Default::default()
                     })

@@ -202,7 +202,7 @@ module:
 
 ```rust
 use eva_sdk::prelude::*;
-use eva_sdk::{ClientConfig, protocol::requests::surfaces};
+use eva_sdk::{ClientConfig, protocol::requests::Surfaces};
 
 let connected = Module::new()
     .ask(true)                     // рисует кнопки вопросов и разрешений
@@ -211,16 +211,15 @@ let connected = Module::new()
 log::info!(module:% = connected.module(); "connected");   // "phone" — ключ записи токена
 
 let mut kernel = connected.kernel();
-let surfaces::get::Ok { surface } = kernel
+let Surfaces::get::Ok { surface } = kernel
     .surfaces()
-    .get()
-    .call(surfaces::get::Args { surface: "local".into() })
+    .get("local".into())
     .await?;
 
 connected.run(shutdown).await?;
 ```
 
-Surface не объявляются: ядро выводит, кто их обслуживает, из живых сессий. Клиент обслуживает `local`. Служебный модуль создаёт свою surface сам — `kernel.surfaces().create()` сразу после подключения (`surfaces::create::Args {id, name, rules}`); ядро записывает модуль-создателя в `surface.module`, и обслуживает surface его живая сессия. Для создателя вызов идемпотентен, поэтому безопасен на каждом старте; `name`/`rules` меняет `surfaces.update`.
+Surface не объявляются: ядро выводит, кто их обслуживает, из живых сессий. Клиент обслуживает `local`. Служебный модуль создаёт свою surface сам — `kernel.surfaces().create()` сразу после подключения (`Surfaces::create::Args {id, name, rules}`); ядро записывает модуль-создателя в `surface.module`, и обслуживает surface его живая сессия. Для создателя вызов идемпотентен, поэтому безопасен на каждом старте; `name`/`rules` меняет `surfaces.update`.
 
 `connect_config` ждёт ядро до `module.connect_wait` (по умолчанию 3 минуты); `run` переподключается с `hello.resume`, и регистрировать после реконнекта нечего: surface уже в базе ядра, обслуживание ядро выводит из новой сессии. Подробно — в главе [SDK модулей](sdk.md).
 
@@ -253,8 +252,7 @@ let listening = Module::new()
 let mut kernel = listening.kernel().await?;   // ждёт первого звонка до `module.kernel_wait`
 kernel
     .surfaces()
-    .create()
-    .call(surfaces::create::Args { id: "bridge".into(), name: "Bridge".into(), rules: None })
+    .create("bridge".into(), "Bridge".into(), None)
     .await?;
 listening.run(shutdown).await?;
 ```

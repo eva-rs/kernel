@@ -10,7 +10,7 @@ use common::{Harness, bind_keyed, dialed};
 
 use eva_kernel::subsystems::modules::dial::{Backoff, Pacing};
 use eva_protocol::{
-    requests::modules::add,
+    requests::Modules::add,
     types::{
         ModuleId,
         module::{ModuleKind, ServiceAddress, ServiceKey, State},

@@ -6,7 +6,7 @@
 use eva_core::{GenSink, Provider as _};
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
-    requests::{Response, inference::complete},
+    requests::{Inference::complete, Response},
     types::{
         Effort, ModelId, ModuleId,
         content::Block,

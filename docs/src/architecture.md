@@ -66,7 +66,7 @@ flowchart BT
 
 ```rust
 let mut session = kernel.make_session(Caller::Kernel).await?;
-let surfaces::get::Ok { surface } = session
+let Surfaces::get::Ok { surface } = session
     .surfaces()
     .get("local".into())
     .await?;
@@ -74,6 +74,7 @@ let surfaces::get::Ok { surface } = session
 
 - `Session<S>` — неймспейс на домен, метод на операцию. 20 неймспейсов: `surfaces`, `folders`, `chats`, `turns`, `persons`, `memory`, `notes`, `tools`, `models`, `cron`, `sleep`, `agents`, `stats`, `modules`, `hands_grants`, `blobs`, `inference`, `fs`, `sqlite`, `kv`.
 - Операции объявлены один раз — в `#[service]` в `protocol/src/requests/<ns>.rs`. Макрос создаёт модуль с `Trait`, `Client<S>` и типами методов. `#[export]` в `core/src/service.rs` объединяет сервисы и X-макро `for_each_op!`, по которому собраны RPC-диспетчер, RPC-клиент и SDK. Клиент принимает аргументы напрямую; низкоуровневый `CallStep` доступен через `.inner_mut().<op>().call(args)`.
+- Модули файлов в `requests` приватные; сервисы реэкспортируются как `eva_protocol::requests::Chats`. В `#[export]` используется короткая запись `chats: Chats`. `eva_core::service` не реэкспортирует эти модули.
 - Вид операции задаётся через `#[flags(...)]`: без флага — чтение; `mutating` — повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ; `stream` — `Ok` оборачивает поток `Items`; `upload` — `Args` несёт тело `ByteStream`.
 - RPC-метод — `<namespace>.<op>`; msgpack-RPC и будущие инструменты модели — обёртки над той же операцией, а не отдельные реализации. Контрактный тест проверяет, что вызов в процессе и через UDS даёт побайтно равные ответы.
 - Внутри `eva-kernel` код разложен по слоям: `handling/` — хендлер на операцию, `impls/` — namespace-трейты над хендлерами (общий `for_each_op!(project)`), `state/policy/` — авторизация, `db/` — весь SQL, `convert/` — строки БД в типы протокола, `subsystems/` — компоненты `Supervisor`.
@@ -154,7 +155,7 @@ chat.trusted ?? folder.trusted ?? surface.trusted ?? false
 sequenceDiagram
   participant Main as main
   participant K as Kernel::start
-  participant L as modules::listen
+  participant L as Modules::listen
   participant Sup as Supervisor
   Main->>K: БД, миграции, сид, провайдеры, endpoint'ы рук
   Note over K: фоном дочитывает каталоги моделей провайдеров

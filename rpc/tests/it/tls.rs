@@ -7,7 +7,7 @@ use std::{path::PathBuf, time::Duration};
 
 use eva::url::Url;
 
-use eva_protocol::requests::surfaces::create;
+use eva_protocol::requests::Surfaces::create;
 use eva_rpc::{
     ClientOptions, ClientTls, ConnectError, Listener, NoHandler, RpcClient, Server,
     config::{Listen, TlsFiles, WssListen},

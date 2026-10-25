@@ -4,10 +4,10 @@ mod common;
 
 use std::{sync::atomic::Ordering, time::Duration};
 
-use eva_core::{CallStep as _, service::Tools::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::tools,
+    requests::Tools::{self, Trait as _},
     types::{ChatId, ModelId, TurnId},
 };
 
@@ -73,7 +73,7 @@ async fn turn_operations_validate_objects_and_catalog_is_registered() {
         .tools()
         .inner_mut()
         .catalog()
-        .call(tools::catalog::Args::default())
+        .call(Tools::catalog::Args::default())
         .await
         .expect("tool catalog is available");
     assert!(!res.entries.is_empty());

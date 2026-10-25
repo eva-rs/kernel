@@ -4,12 +4,15 @@ use std::collections::BTreeSet;
 
 use eva::{
     data,
+    handling::CallStep as _,
     time::{HumanDuration, Timestamp},
 };
-use eva_core::{CallStep as _, service::Cron::Trait as _};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{RunsLimit, cron::list},
+    requests::{
+        Cron::{Trait as _, list},
+        RunsLimit,
+    },
     types::{
         CronJobId, Effort, ModelId, SurfaceId, ToolId,
         chat::Kind,

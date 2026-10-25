@@ -6,13 +6,12 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, with_modules};
-use eva::bytesize::ByteSize;
-use eva_core::{CallStep as _, service::Kv::Trait as _};
+use eva::{bytesize::ByteSize, handling::CallStep as _};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
+        Kv::{Trait as _, list, set},
         Limit,
-        kv::{list, set},
     },
     types::{Bytes, Value},
 };

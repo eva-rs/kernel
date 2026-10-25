@@ -4,7 +4,7 @@ use eva_protocol::{
     errors::{self, Aux, ext::*},
     requests::{
         Response,
-        sleep::{phase_runs, runs},
+        Sleep::{phase_runs, runs},
     },
 };
 

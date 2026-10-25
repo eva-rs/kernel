@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Modules {
     #[args(derive(Default))]
     fn list() -> ok! {

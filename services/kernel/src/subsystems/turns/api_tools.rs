@@ -9,7 +9,7 @@ use eva::{
 
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{Limit, Patch, Response, chats},
+    requests::{Chats, HistoryCount, Limit, Patch, Response, SearchLimit},
     types::{
         ChatId, FolderId, PersonId, SurfaceId,
         chat::{Chat, Kind, Role},
@@ -56,7 +56,7 @@ impl Default for PersonLimit {
 pub struct Search {
     pub query: String,
     #[serde(default)]
-    pub limit: chats::SearchLimit,
+    pub limit: SearchLimit,
     pub since: Option<HumanDuration>,
     pub surface: Option<SurfaceId>,
     pub folder: Option<String>,
@@ -70,7 +70,7 @@ pub struct History {
     #[serde(default)]
     pub from_seq: u64,
     #[serde(default)]
-    pub count: chats::HistoryCount,
+    pub count: HistoryCount,
 }
 #[data]
 #[serde(deny_unknown_fields)]
@@ -597,7 +597,7 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
                 .chats()
                 .update(
                     chat,
-                    chats::update::Update {
+                    Chats::update::Update {
                         alerted: Patch::Change(args.on),
                         ..Default::default()
                     },
@@ -623,7 +623,7 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
                 .chats()
                 .update(
                     args.chat_id.unwrap_or(current),
-                    chats::update::Update {
+                    Chats::update::Update {
                         pinned: Patch::Change(args.on),
                         ..Default::default()
                     },
@@ -637,7 +637,7 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
                 .chats()
                 .update(
                     args.chat_id.unwrap_or(current),
-                    chats::update::Update {
+                    Chats::update::Update {
                         kind: Patch::Change(Kind::Persistent),
                         ..Default::default()
                     },
@@ -652,7 +652,7 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
                 .chats()
                 .update(
                     args.chat_id.unwrap_or(current),
-                    chats::update::Update {
+                    Chats::update::Update {
                         title: Patch::Change(Some(title.clone())),
                         ..Default::default()
                     },

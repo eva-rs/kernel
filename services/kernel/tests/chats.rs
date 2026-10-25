@@ -6,13 +6,12 @@ mod common;
 use std::{sync::atomic::Ordering, time::Duration};
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::Chats::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     errors::Generic,
     requests::{
-        Limit, Patch,
-        chats::{HistoryCount, create, delete, get, history_read, list, r#move, restore, update},
-        folders,
+        Chats::{Trait as _, create, delete, get, history_read, list, r#move, restore, update},
+        Folders, HistoryCount, Limit, Patch,
     },
     types::{
         ChatId, Effort, FolderId, PersonId, SurfaceId, TurnId,
@@ -73,7 +72,7 @@ async fn set_folder_trust(session: &mut TestSession, folder: FolderId, trusted: 
         .folders()
         .update(
             folder,
-            folders::update::Update {
+            Folders::update::Update {
                 trusted: Patch::Change(trusted),
                 ..Default::default()
             },

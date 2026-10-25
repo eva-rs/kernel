@@ -5,8 +5,8 @@
 use eva_protocol::{
     errors::{Aux, AuxResult, ext::*},
     requests::{
+        Kv::{del, get, list, set},
         Response,
-        kv::{del, get, list, set},
     },
     types::Value,
 };

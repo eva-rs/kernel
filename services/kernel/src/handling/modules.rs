@@ -9,8 +9,8 @@ use eva::rand::Rng as _;
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
+        Modules::{add, list, remove, token_issue, token_revoke},
         Response,
-        modules::{add, list, remove, token_issue, token_revoke},
     },
     types::{
         ModuleId,

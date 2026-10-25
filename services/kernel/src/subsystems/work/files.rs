@@ -5,11 +5,10 @@ use crate::{
     shared::Shared,
     subsystems::{tools::schema::input_schema, turns::ports::ToolsetCall},
 };
-use eva::data;
-use eva_core::{CallStep as _, service::Blobs::Trait as _};
+use eva::{data, handling::CallStep as _};
 use eva_protocol::{
     errors::Aux,
-    requests::blobs::{get, put},
+    requests::Blobs::{Trait as _, get, put},
     types::{
         BlobId, Bytes,
         blob::Kind,

@@ -8,7 +8,7 @@ use futures::stream;
 use eva::bytesize::ByteSize;
 
 use eva_protocol::{
-    requests::{ByteStream, blobs::put, surfaces::create},
+    requests::{Blobs::put, ByteStream, Surfaces::create},
     types::{ModuleId, blob::Kind as BlobKind, module::ModuleKind},
     wire::ErrorCode,
 };

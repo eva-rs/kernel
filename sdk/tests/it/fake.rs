@@ -9,7 +9,7 @@ use std::{
 use eva::{time::Timestamp, utils::SecretString};
 use eva_protocol::{
     errors::{self, Generic},
-    requests::surfaces::{create, get, update},
+    requests::Surfaces::{create, get, update},
     types::{
         ChatId, ModuleId, SessionId, SurfaceId, ToolId, TurnId,
         module::ModuleKind,

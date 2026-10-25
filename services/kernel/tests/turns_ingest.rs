@@ -2,10 +2,7 @@ mod common;
 mod turns_support;
 
 use common::Harness;
-use eva_core::{
-    CallStep as _,
-    service::{Chats::Trait as _, Turns::Trait as _},
-};
+use eva::handling::CallStep as _;
 use eva_kernel::{
     config::chats::MasterIdentity,
     db::{Db as _, Queries as _},
@@ -18,7 +15,11 @@ use eva_kernel::{
 };
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{chats, turns},
+    requests::{
+        Chats::{self, Trait as _},
+        HistoryCount,
+        Turns::{self, Trait as _},
+    },
     types::{
         ChatId, EventId, SurfaceId,
         content::Block,
@@ -78,7 +79,7 @@ async fn delivery_conflict_returns_the_saved_surface_id() {
         .delivered(chat, message_id, "surface-retry".into())
         .await;
     assert!(
-        matches!(conflict, Err(Generic::Spec(turns::delivered::Err::AlreadyDelivered(e)))
+        matches!(conflict, Err(Generic::Spec(Turns::delivered::Err::AlreadyDelivered(e)))
         if e.message == message_id && e.external_id == "surface-first")
     );
 }
@@ -138,8 +139,8 @@ async fn speaker_names_and_handles_are_bounded_before_the_log_snapshot() {
     assert_eq!(speaker.handle.as_deref(), Some("? malici"));
     assert!(h.provider.requests().is_empty());
 }
-fn request(chat: ChatId, ext: &str) -> turns::start::Args {
-    turns::start::Args {
+fn request(chat: ChatId, ext: &str) -> Turns::start::Args {
+    Turns::start::Args {
         chat,
         actor: Some(ActorRef {
             external_id: "master".into(),
@@ -316,11 +317,11 @@ async fn history_before_pages_backwards_without_overlap() {
         .expect("append");
     }
     let mut session = h.client_session().await;
-    let args = |before| chats::history_read::Args {
+    let args = |before| Chats::history_read::Args {
         chat,
         from_seq: 0,
         before: Some(before),
-        count: chats::HistoryCount::new(2).unwrap(),
+        count: HistoryCount::new(2).unwrap(),
         view: None,
     };
     let page = session

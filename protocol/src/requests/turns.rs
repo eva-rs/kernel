@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Turns {
     #[flags(mutating)]
     #[errors(errors::chats::NotFound)]

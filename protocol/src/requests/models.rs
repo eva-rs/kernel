@@ -5,7 +5,7 @@ use eva::service;
 
 use crate::types::model::ModelEntry;
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Models {
     #[args(derive(Default))]
     fn list() -> ok! {

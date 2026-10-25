@@ -1,11 +1,12 @@
 //! Blob-store глазами тура (`07 §6`): байты и метаданные для рендера,
 //! картинки тулов и модели — в `blobs` до записи события.
 
-use eva_core::{CallStep as _, service::Blobs::Trait as _};
+use eva::handling::CallStep as _;
 use std::collections::BTreeMap;
 
 use eva_protocol::{
     errors::Aux,
+    requests::Blobs::Trait as _,
     types::{BlobId, Bytes, ChatId, blob::Kind, content::Block as Content},
 };
 
@@ -124,8 +125,8 @@ pub async fn store<C: Components>(
         .unwrap_or("bin");
     let mut session = crate::session::internal(shared);
     let data = bytes::Bytes::copy_from_slice(data);
-    let args = eva_protocol::requests::blobs::put::Args {
-        meta: eva_protocol::requests::blobs::put::Meta {
+    let args = eva_protocol::requests::Blobs::put::Args {
+        meta: eva_protocol::requests::Blobs::put::Meta {
             chat,
             name: format!("image.{ext}"),
             media_type: media_type.to_owned(),

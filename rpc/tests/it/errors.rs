@@ -149,19 +149,19 @@ where
 
 /// Проверяет строки таблицы и возвращает их RPC-методы `ns.op`.
 macro_rules! ops {
-    ($($ns:ident::$op:ident => [$($dom:ident::$atom:ident),* $(,)?];)*) => {{
+    ($($ns:ident: $Service:ident { $($op:ident => [$($dom:ident::$atom:ident),* $(,)?];)* })*) => {{
         let mut methods = Vec::new();
-        $(
+        $($(
             methods.push(format!(
                 "{}.{}",
                 stringify!($ns),
                 stringify!($op).trim_start_matches("r#"),
             ));
-            check_err::<requests::$ns::$op::Err>(vec![$((
-                requests::$ns::$op::Err::from(<errors::$dom::$atom as Case>::sample()),
+            check_err::<requests::$Service::$op::Err>(vec![$((
+                requests::$Service::$op::Err::from(<errors::$dom::$atom as Case>::sample()),
                 <errors::$dom::$atom as Case>::CODE,
             )),*]);
-        )*
+        )*)*
         methods
     }};
 }
@@ -169,77 +169,117 @@ macro_rules! ops {
 #[test]
 fn every_operation_error() {
     let mut methods = ops! {
-        agents::list => [];
-        blobs::put => [blobs::BadName, blobs::SizeMismatch, blobs::HashMismatch];
-        blobs::get => [blobs::NotFound];
-        blobs::stat => [blobs::NotFound];
-        chats::ingest => [];
-        chats::create => [];
-        chats::get => [chats::NotFound];
-        chats::list => [];
-        chats::update => [chats::NotFound, chats::KindMonotonic, chats::AgentTrust];
-        chats::r#move => [chats::NotFound, chats::TrustChange, chats::CrossSurface];
-        chats::delete => [chats::NotFound, chats::Undeletable];
-        chats::restore => [chats::NotFound, chats::NotDeleted];
-        chats::search => [];
-        chats::history_read => [chats::NotFound];
-        chats::compact => [chats::NotFound];
-        chats::notify => [];
-        cron::list => [];
-        cron::runs => [];
-        folders::create => [folders::NameTaken];
-        folders::update => [folders::NotFound, folders::Builtin, folders::NameTaken];
-        folders::delete => [folders::NotFound, folders::Builtin];
-        folders::list => [];
-        fs::read => [fs::NotFound, fs::IsDir];
-        fs::write => [fs::NotFound, fs::IsDir];
-        fs::list => [fs::NotFound, fs::NotDir];
-        fs::stat => [fs::NotFound];
-        fs::remove => [fs::NotFound];
-        hands_grants::list => [];
-        hands_grants::revoke => [hands_grants::NotFound];
-        inference::complete => [inference::Provider];
-        kv::get => [];
-        kv::set => [];
-        kv::del => [];
-        kv::list => [];
-        memory::list => [];
-        memory::get => [memory::NotFound];
-        memory::history => [memory::NotFound];
-        memory::restore => [memory::NotFound, memory::NotArchived, memory::Superseded];
-        models::list => [];
-        modules::list => [];
-        modules::add => [modules::Taken];
-        modules::remove => [modules::ServiceNotFound];
-        modules::token_issue => [];
-        modules::token_revoke => [modules::NotFound];
-        notes::list => [chats::NotFound];
-        persons::resolve => [];
-        persons::list => [];
-        persons::rename => [persons::NotFound, persons::System];
-        persons::merge => [persons::NotFound, persons::System, persons::SelfMerge, persons::MasterMerge];
-        persons::whitelist => [persons::NotFound, persons::System, persons::MasterWhitelist];
-        sleep::runs => [];
-        sleep::phase_runs => [sleep::RunNotFound];
-        sqlite::exec => [sqlite::Sql];
-        sqlite::query => [sqlite::Sql];
-        sqlite::tx => [sqlite::Sql];
-        stats::tools_usage => [];
-        stats::spend => [];
-        stats::spend_series => [];
-        stats::chat_spend => [chats::NotFound];
-        stats::health => [];
-        surfaces::create => [surfaces::Taken, surfaces::BadRules];
-        surfaces::get => [surfaces::NotFound];
-        surfaces::list => [];
-        surfaces::update => [surfaces::NotFound, surfaces::Builtin, surfaces::BadRules];
-        tools::catalog => [tools::PathNotFound];
-        turns::start => [chats::NotFound];
-        turns::attach => [chats::NotFound];
-        turns::append_silent => [chats::NotFound];
-        turns::delivered => [chats::NotFound, chats::MessageNotFound, chats::AlreadyDelivered];
-        turns::cancel => [chats::NotFound];
-        turns::respond => [turns::PendingNotFound, turns::AlreadyResolved];
+        agents: Agents {
+            list => [];
+        }
+        blobs: Blobs {
+            put => [blobs::BadName, blobs::SizeMismatch, blobs::HashMismatch];
+            get => [blobs::NotFound];
+            stat => [blobs::NotFound];
+        }
+        chats: Chats {
+            ingest => [];
+            create => [];
+            get => [chats::NotFound];
+            list => [];
+            update => [chats::NotFound, chats::KindMonotonic, chats::AgentTrust];
+            r#move => [chats::NotFound, chats::TrustChange, chats::CrossSurface];
+            delete => [chats::NotFound, chats::Undeletable];
+            restore => [chats::NotFound, chats::NotDeleted];
+            search => [];
+            history_read => [chats::NotFound];
+            compact => [chats::NotFound];
+            notify => [];
+        }
+        cron: Cron {
+            list => [];
+            runs => [];
+        }
+        folders: Folders {
+            create => [folders::NameTaken];
+            update => [folders::NotFound, folders::Builtin, folders::NameTaken];
+            delete => [folders::NotFound, folders::Builtin];
+            list => [];
+        }
+        fs: Fs {
+            read => [fs::NotFound, fs::IsDir];
+            write => [fs::NotFound, fs::IsDir];
+            list => [fs::NotFound, fs::NotDir];
+            stat => [fs::NotFound];
+            remove => [fs::NotFound];
+        }
+        hands_grants: HandsGrants {
+            list => [];
+            revoke => [hands_grants::NotFound];
+        }
+        inference: Inference {
+            complete => [inference::Provider];
+        }
+        kv: Kv {
+            get => [];
+            set => [];
+            del => [];
+            list => [];
+        }
+        memory: Memory {
+            list => [];
+            get => [memory::NotFound];
+            history => [memory::NotFound];
+            restore => [memory::NotFound, memory::NotArchived, memory::Superseded];
+        }
+        models: Models {
+            list => [];
+        }
+        modules: Modules {
+            list => [];
+            add => [modules::Taken];
+            remove => [modules::ServiceNotFound];
+            token_issue => [];
+            token_revoke => [modules::NotFound];
+        }
+        notes: Notes {
+            list => [chats::NotFound];
+        }
+        persons: Persons {
+            resolve => [];
+            list => [];
+            rename => [persons::NotFound, persons::System];
+            merge => [persons::NotFound, persons::System, persons::SelfMerge, persons::MasterMerge];
+            whitelist => [persons::NotFound, persons::System, persons::MasterWhitelist];
+        }
+        sleep: Sleep {
+            runs => [];
+            phase_runs => [sleep::RunNotFound];
+        }
+        sqlite: Sqlite {
+            exec => [sqlite::Sql];
+            query => [sqlite::Sql];
+            tx => [sqlite::Sql];
+        }
+        stats: Stats {
+            tools_usage => [];
+            spend => [];
+            spend_series => [];
+            chat_spend => [chats::NotFound];
+            health => [];
+        }
+        surfaces: Surfaces {
+            create => [surfaces::Taken, surfaces::BadRules];
+            get => [surfaces::NotFound];
+            list => [];
+            update => [surfaces::NotFound, surfaces::Builtin, surfaces::BadRules];
+        }
+        tools: Tools {
+            catalog => [tools::PathNotFound];
+        }
+        turns: Turns {
+            start => [chats::NotFound];
+            attach => [chats::NotFound];
+            append_silent => [chats::NotFound];
+            delivered => [chats::NotFound, chats::MessageNotFound, chats::AlreadyDelivered];
+            cancel => [chats::NotFound];
+            respond => [turns::PendingNotFound, turns::AlreadyResolved];
+        }
     };
     methods.sort();
 

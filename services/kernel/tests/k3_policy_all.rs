@@ -6,6 +6,8 @@
 
 mod common;
 
+use eva::handling::CallStep as _;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, client, outcome, service};
@@ -15,8 +17,8 @@ use eva_kernel::db::{Db as _, DbError, Queries as _, hands_grants::NewGrant};
 use eva_protocol::{
     errors::Aux,
     requests::{
-        ByteStream, Patch, agents, blobs, chats, cron, folders, fs, hands_grants, kv, memory,
-        models, modules, persons, sleep, sqlite::Statement, surfaces, tools,
+        Agents, Blobs, ByteStream, Chats, Cron, Folders, Fs, HandsGrants, Kv, Memory, Models,
+        Modules, Patch, Persons, Selector, Sleep, Statement, Surfaces, Tools,
     },
     types::{
         BlobId, ChatId, EventId, FolderId, HandsGrantId, MemoryId, ModuleId, PendingId, PersonId,
@@ -183,8 +185,8 @@ impl Ctx<'_> {
         self.h.kernel_session().await
     }
 
-    fn new_chat(&self) -> chats::create::Args {
-        chats::create::Args {
+    fn new_chat(&self) -> Chats::create::Args {
+        Chats::create::Args {
             surface: self.target.clone(),
             folder: None,
             external_id: None,
@@ -197,7 +199,7 @@ impl Ctx<'_> {
         }
     }
 
-    async fn chat_with(&self, args: chats::create::Args) -> ChatId {
+    async fn chat_with(&self, args: Chats::create::Args) -> ChatId {
         self.owner()
             .await
             .chats()
@@ -303,8 +305,8 @@ impl Ctx<'_> {
     }
 }
 
-fn put_args(chat: ChatId) -> blobs::put::Meta {
-    blobs::put::Meta {
+fn put_args(chat: ChatId) -> Blobs::put::Meta {
+    Blobs::put::Meta {
         chat,
         name: String::from("a.txt"),
         media_type: String::from("text/plain"),
@@ -315,16 +317,16 @@ fn put_args(chat: ChatId) -> blobs::put::Meta {
 }
 
 /// Сервис по адресу, где никто не слушает: ядро здесь без `listen`, не звонит.
-fn service_args(module: &str) -> modules::add::Args {
-    modules::add::Args {
+fn service_args(module: &str) -> Modules::add::Args {
+    Modules::add::Args {
         module: ModuleId::from(module),
         address: ServiceAddress::Uds(format!("/run/eva-{module}/module.sock").into()),
         key: Some(ServiceKey::from("policy-key-0123456789abcdef0123456789")),
     }
 }
 
-fn history(chat: ChatId) -> chats::history_read::Args {
-    chats::history_read::Args {
+fn history(chat: ChatId) -> Chats::history_read::Args {
+    Chats::history_read::Args {
         before: None,
         chat,
         from_seq: 0,
@@ -346,7 +348,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
     let n = ctx.n;
     Some(match key {
         "surfaces.create" => {
-            let args = surfaces::create::Args {
+            let args = Surfaces::create::Args {
                 id: target,
                 name: format!("surface {n}"),
                 rules: None,
@@ -368,7 +370,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .surfaces()
                 .inner_mut()
                 .list()
-                .call(surfaces::list::Args::default())
+                .call(Surfaces::list::Args::default())
                 .await,
         ),
         "surfaces.update" => outcome(
@@ -377,7 +379,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .surfaces()
                 .update(
                     target,
-                    surfaces::update::Update {
+                    Surfaces::update::Update {
                         name: Patch::Change(format!("renamed {n}")),
                         ..Default::default()
                     },
@@ -400,7 +402,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                     .folders()
                     .update(
                         folder,
-                        folders::update::Update {
+                        Folders::update::Update {
                             name: Patch::Change(format!("renamed {n}")),
                             ..Default::default()
                         },
@@ -418,7 +420,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .folders()
                 .inner_mut()
                 .list()
-                .call(folders::list::Args {
+                .call(Folders::list::Args {
                     surface: Some(target),
                     ..Default::default()
                 })
@@ -431,7 +433,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .chats()
                 .ingest(
                     target,
-                    chats::ingest::ExternalChat {
+                    Chats::ingest::ExternalChat {
                         id: format!("ext {n}"),
                         kind: ExternalKind::Direct,
                         title: None,
@@ -461,7 +463,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
         }
         "chats.get#alias" => {
             let external_id = format!("alias {n}");
-            ctx.chat_with(chats::create::Args {
+            ctx.chat_with(Chats::create::Args {
                 external_id: Some(external_id.clone()),
                 ..ctx.new_chat()
             })
@@ -470,7 +472,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .chats()
-                    .get(chats::Selector::Alias {
+                    .get(Selector::Alias {
                         surface: target,
                         external_id,
                     })
@@ -485,7 +487,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                     .chats()
                     .inner_mut()
                     .list()
-                    .call(chats::list::Args::default())
+                    .call(Chats::list::Args::default())
                     .await,
             )
         }
@@ -495,7 +497,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .chats()
                 .inner_mut()
                 .list()
-                .call(chats::list::Args {
+                .call(Chats::list::Args {
                     surface: Some(target),
                     ..Default::default()
                 })
@@ -509,7 +511,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                     .chats()
                     .inner_mut()
                     .list()
-                    .call(chats::list::Args {
+                    .call(Chats::list::Args {
                         folder: Some(folder),
                         ..Default::default()
                     })
@@ -524,7 +526,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                     .chats()
                     .inner_mut()
                     .list()
-                    .call(chats::list::Args {
+                    .call(Chats::list::Args {
                         after: Some(chat),
                         ..Default::default()
                     })
@@ -534,12 +536,12 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
         "chats.update" | "chats.update#trust" => {
             let chat = ctx.chat().await;
             let update = if key == "chats.update" {
-                chats::update::Update {
+                Chats::update::Update {
                     title: Patch::Change(Some(format!("title {n}"))),
                     ..Default::default()
                 }
             } else {
-                chats::update::Update {
+                Chats::update::Update {
                     trusted: Patch::Change(Some(false)),
                     ..Default::default()
                 }
@@ -724,7 +726,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .persons()
                 .inner_mut()
                 .list()
-                .call(persons::list::Args::default())
+                .call(Persons::list::Args::default())
                 .await,
         ),
         "persons.rename" => {
@@ -752,7 +754,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .memory()
                 .inner_mut()
                 .list()
-                .call(memory::list::Args::default())
+                .call(Memory::list::Args::default())
                 .await,
         ),
         "memory.get" => {
@@ -778,7 +780,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .tools()
                 .inner_mut()
                 .catalog()
-                .call(tools::catalog::Args::default())
+                .call(Tools::catalog::Args::default())
                 .await,
         ),
         "models.list" => outcome(
@@ -787,7 +789,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .models()
                 .inner_mut()
                 .list()
-                .call(models::list::Args::default())
+                .call(Models::list::Args::default())
                 .await,
         ),
         "cron.list" => outcome(
@@ -796,7 +798,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .cron()
                 .inner_mut()
                 .list()
-                .call(cron::list::Args::default())
+                .call(Cron::list::Args::default())
                 .await,
         ),
         "cron.runs" => outcome(
@@ -805,7 +807,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .cron()
                 .inner_mut()
                 .runs()
-                .call(cron::runs::Args::default())
+                .call(Cron::runs::Args::default())
                 .await,
         ),
         "sleep.runs" => outcome(
@@ -814,7 +816,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .sleep()
                 .inner_mut()
                 .runs()
-                .call(sleep::runs::Args::default())
+                .call(Sleep::runs::Args::default())
                 .await,
         ),
         "sleep.phase_runs" => outcome(&ctx.s().await.sleep().phase_runs(RunId::from(NIGHT)).await),
@@ -824,7 +826,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .agents()
                 .inner_mut()
                 .list()
-                .call(agents::list::Args::default())
+                .call(Agents::list::Args::default())
                 .await,
         ),
 
@@ -861,7 +863,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .modules()
                 .inner_mut()
                 .list()
-                .call(modules::list::Args::default())
+                .call(Modules::list::Args::default())
                 .await,
         ),
         "modules.add" => outcome(
@@ -913,7 +915,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .hands_grants()
                 .inner_mut()
                 .list()
-                .call(hands_grants::list::Args::default())
+                .call(HandsGrants::list::Args::default())
                 .await,
         ),
         "hands_grants.revoke" => {
@@ -982,7 +984,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .fs()
                 .inner_mut()
                 .list()
-                .call(fs::list::Args::default())
+                .call(Fs::list::Args::default())
                 .await,
         ),
         "sqlite.exec" => outcome(
@@ -1024,7 +1026,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .kv()
                 .inner_mut()
                 .list()
-                .call(kv::list::Args::default())
+                .call(Kv::list::Args::default())
                 .await,
         ),
         _ => return None,

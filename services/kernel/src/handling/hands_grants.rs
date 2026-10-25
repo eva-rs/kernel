@@ -4,8 +4,8 @@
 use eva_protocol::{
     errors::{self, ext::*},
     requests::{
+        HandsGrants::{list, revoke},
         Response,
-        hands_grants::{list, revoke},
     },
 };
 

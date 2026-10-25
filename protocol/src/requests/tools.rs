@@ -18,7 +18,7 @@ impl Default for Depth {
     }
 }
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Tools {
     #[args(derive(Default))]
     #[errors(errors::tools::PathNotFound)]

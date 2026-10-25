@@ -4,9 +4,9 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::Persons::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
-    requests::persons::{list, merge, rename, resolve, whitelist},
+    requests::Persons::{Trait as _, list, merge, rename, resolve, whitelist},
     types::{PersonId, SurfaceId},
 };
 

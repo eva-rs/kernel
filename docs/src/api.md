@@ -6,20 +6,20 @@
 
 ```rust
 use eva_core::prelude::*;
-use eva_protocol::requests::surfaces;
+use eva_protocol::requests::Surfaces;
 
 let mut session = kernel.make_session(Caller::Kernel).await?;
-let surfaces::get::Ok { surface } = session
+let Surfaces::get::Ok { surface } = session
     .surfaces()
     .get("local".into())
     .await?;
 ```
 
 - `SessionMaker::make_session(caller)` выдаёт `Session<S>`: у ядра это `Kernel`, у модуля — `Listening::kernel()` или `Connected::kernel()` (caller фиксирует соединение). Отказ `make_session` — только `Aux`.
-- `session.<ns>()` возвращает `Client<&mut S>`, `.<op>(arguments).await` вызывает операцию. Импорт трейта для такого вызова не нужен. Если `Args` уже собран, используется `.inner_mut().<op>().call(args)` и импорт `CallStep`.
+- `session.<ns>()` возвращает `Client<&mut S>`, `.<op>(arguments).await` вызывает операцию. Импорт трейта для такого вызова не нужен. Если `Args` уже собран, используется `.inner_mut().<op>().call(args)` и импорт `eva::handling::CallStep`.
 - Операция `chats.move` в Rust — `session.chats().r#move(chat, surface)`.
 
-Каждая операция — модуль `eva_protocol::requests::<ns>::<op>` с тремя типами:
+Каждая операция — модуль `eva_protocol::requests::<Service>::<op>` с тремя типами:
 
 | Тип | Что это |
 |---|---|
@@ -40,13 +40,13 @@ let surfaces::get::Ok { surface } = session
 
 ```rust
 use futures::StreamExt as _;
-use eva_protocol::requests::blobs;
+use eva_protocol::requests::Blobs;
 
 let mut items = session.blobs().get(id, 0).await?.0;
 while let Some(item) = items.next().await {
     match item? {
-        blobs::get::Item::Meta { size, .. } => log::info!(size; "blob"),
-        blobs::get::Item::Chunk(bytes) => sink.write_all(&bytes).await?,
+        Blobs::get::Item::Meta { size, .. } => log::info!(size; "blob"),
+        Blobs::get::Item::Chunk(bytes) => sink.write_all(&bytes).await?,
     }
 }
 ```
@@ -54,7 +54,7 @@ while let Some(item) = items.next().await {
 При загрузке тело передаётся отдельным аргументом:
 
 ```rust
-use eva_protocol::{requests::{ByteStream, blobs::put}, types::blob::Kind};
+use eva_protocol::{requests::{ByteStream, Blobs::put}, types::blob::Kind};
 
 let body: ByteStream = Box::pin(futures::stream::iter(chunks.into_iter().map(Ok)));
 let put::Ok { id, .. } = session.blobs().put(
@@ -97,9 +97,12 @@ pub enum Generic<S> {
 `Spec` — атомарные ошибки домена (`eva_protocol::errors::<ns>`), каждая со своим кодом. Примеры: `surfaces::Taken` (`conflict`), `surfaces::BadRules` (`invalid_params`), `chats::NotFound` (`not_found`), `chats::TrustChange` (`conflict`, повторить с `confirm: true`).
 
 ```rust
+use eva::handling::CallStep as _;
+use eva_protocol::requests::Chats::{self, Trait as _};
+
 match session.chats().inner_mut().r#move().call(args).await {
-    Ok(chats::r#move::Ok { chat }) => { /* … */ }
-    Err(Generic::Spec(chats::r#move::Err::TrustChange(e))) => { /* спросить хозяина */ }
+    Ok(Chats::r#move::Ok { chat }) => { /* … */ }
+    Err(Generic::Spec(Chats::r#move::Err::TrustChange(e))) => { /* спросить хозяина */ }
     Err(Generic::Aux(Aux::Forbidden(why))) => { /* … */ }
     Err(other) => return Err(other.into()),
 }
@@ -135,7 +138,7 @@ match session.chats().inner_mut().r#move().call(args).await {
 | `BlobId` | непрозрачная строка |
 | `TurnId`, `RunId`, `PendingId`, `CronJobId`, `SessionId` | uuid v7 |
 
-Чат и папку можно адресовать селектором: `chats::Selector` — `42` или `{surface, external_id}`, `folders::Selector` — `7` или `{surface, name}`.
+Чат и папку можно адресовать селектором: `types::chat::Selector` — `42` или `{surface, external_id}`, `types::folder::Selector` — `7` или `{surface, name}`.
 
 Прочие формы провода: `Timestamp` — наносекунды Unix-эпохи (`u64`), `Date` — дни от Unix-эпохи (`u16`), длительность — строка humantime (`"30s"`, `"10m"`), `Bytes` — msgpack `bin`.
 
@@ -144,13 +147,16 @@ match session.chats().inner_mut().r#move().call(args).await {
 Списки — keyset: `after` — последний элемент прошлой страницы (его id), `limit` — размер страницы. Короткая страница (меньше `limit`) — последняя.
 
 ```rust
+use eva::handling::CallStep as _;
+use eva_protocol::requests::Chats::{self, Trait as _};
+
 let mut after = None;
 loop {
-    let chats::list::Ok { found } = session
+    let Chats::list::Ok { found } = session
         .chats()
         .inner_mut()
         .list()
-        .call(chats::list::Args { limit, after, ..Default::default() })
+        .call(Chats::list::Args { limit, after, ..Default::default() })
         .await?;
     let last = found.len() < usize::from(limit.into_inner());
     after = found.last().map(|c| c.id);
@@ -183,7 +189,7 @@ loop {
 ```rust
 session.chats().update(
     chat,
-    chats::update::Update {
+    Chats::update::Update {
         title: Patch::Change(Some("Отпуск".into())),
         trusted: Patch::Change(None),
         ..Default::default()

@@ -4,14 +4,14 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::Chats::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     requests::{
-        Patch,
-        chats::{
-            Selector, compact, create, delete, get, history_read, list, r#move, notify, restore,
+        Chats::{
+            Trait as _, compact, create, delete, get, history_read, list, r#move, notify, restore,
             search, update,
         },
+        Patch, Selector,
     },
     types::{ChatId, FolderId, SurfaceId, folder},
 };

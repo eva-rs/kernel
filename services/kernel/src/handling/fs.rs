@@ -18,8 +18,9 @@ use eva::time::Timestamp;
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
+        Entry, EntryKind,
+        Fs::{list, read, remove, stat, write},
         Response,
-        fs::{Entry, EntryKind, list, read, remove, stat, write},
     },
     types::{Bytes, ModuleId},
 };

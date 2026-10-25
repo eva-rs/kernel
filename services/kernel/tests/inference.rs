@@ -9,14 +9,16 @@ use std::{
 };
 
 use common::{CountingHands, FaultyDb, Outcome, SVC, outcome, service};
-use eva_core::{
-    CallStep as _, Caller, GenSink, Provider, SessionMaker as _,
-    service::{self, Inference::Trait as _},
-};
+use eva::handling::CallStep as _;
+use eva_core::{Caller, GenSink, Provider, SessionMaker as _, service};
 use eva_hands::Limits;
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{ByteStream, blobs::put, inference::complete},
+    requests::{
+        Blobs::put,
+        ByteStream,
+        Inference::{Trait as _, complete},
+    },
     types::{
         BlobId, ChatId, Effort, ModelId, ModuleId,
         blob::Kind,

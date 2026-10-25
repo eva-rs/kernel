@@ -141,18 +141,20 @@ Socket activation: если `LISTEN_PID` — pid модуля, SDK ищет ср
 `Kernel = Session<LiveSession>`: те же неймспейсы и форма вызова, что в [Библиотечном API](api.md), и те же права, что у caller'а модуля. Ручку можно клонировать и держать всё время жизни модуля: каждый вызов берёт текущее соединение — после реконнекта клиента и после нового дозвона ядра к сервису тоже.
 
 ```rust
+use eva::handling::CallStep as _;
 use eva_sdk::prelude::*;
-use eva_sdk::protocol::requests::chats;
+use eva_sdk::protocol::requests::Chats;
 
 let mut kernel = listening.kernel().await?; // у клиента — connected.kernel()
-let chats::list::Ok { found } = kernel
+let Chats::list::Ok { found } = kernel
     .chats()
+    .inner_mut()
     .list()
-    .call(chats::list::Args { surface: Some("x".into()), ..Default::default() })
+    .call(Chats::list::Args { surface: Some("x".into()), ..Default::default() })
     .await?;
 ```
 
-Поток и загрузка зовутся тем же `.call(args)`: у `blobs.get` и `turns.attach` `Ok` — поток `Items`, у `blobs.put` тело `ByteStream` едет в `Args` рядом с `Meta` ([Форма вызова](api.md#форма-вызова)). SDK шлёт `Meta` в `params` запроса, а тело — чанками потока.
+Поток и загрузка вызываются методами клиента с обычными аргументами: у `blobs.get` и `turns.attach` `Ok` — поток `Items`, у `blobs.put` тело `ByteStream` едет в `Args` рядом с `Meta` ([Форма вызова](api.md#форма-вызова)). SDK шлёт `Meta` в `params` запроса, а тело — чанками потока.
 
 Если соединение оборвалось, а новое возможно (у сервиса идёт приём, у клиента жив `run`):
 
@@ -169,11 +171,11 @@ let chats::list::Ok { found } = kernel
 Surface — лицо модуля, в котором живут его чаты. Модуль создаёт её сам:
 
 ```rust
-kernel.surfaces().create().call(surfaces::create::Args {
-    id: "x".into(),                 // slug [a-z][a-z0-9_]{0,31}
-    name: "Messenger X".into(),
-    rules: Some(RULES.into()),       // prompt-блок канала
-}).await?;
+kernel.surfaces().create(
+    "x".into(),                     // slug [a-z][a-z0-9_]{0,31}
+    "Messenger X".into(),
+    Some(RULES.into()),              // prompt-блок канала
+).await?;
 ```
 
 - Ядро записывает создателя в `surface.module`. Для него `create` идемпотентен: свой `id` возвращается как есть, поэтому вызов безопасен на каждом старте. Чужой `id` — `Taken`, `local`/`system` — `forbidden`.
@@ -187,24 +189,22 @@ kernel.surfaces().create().call(surfaces::create::Args {
 
 ```rust
 use eva_sdk::protocol::{
-    requests::{fs, kv, sqlite::{self, Statement}},
+    requests::{Kv, Statement},
     types::{Bytes, Value},
 };
 
-kernel.fs().write().call(fs::write::Args {
-    path: "cache/state.json".into(),
-    data: Bytes(serde_json::to_vec(&state)?),
-    create_dirs: true,
+kernel.fs().write(
+    "cache/state.json".into(),
+    Bytes(serde_json::to_vec(&state)?),
+    true,
+).await?;
+
+kernel.sqlite().exec(Statement {
+    sql: "INSERT INTO seen (external_id) VALUES (?1)".into(),
+    params: vec![Value::String(external_id)],
 }).await?;
 
-kernel.sqlite().exec().call(sqlite::exec::Args {
-    statement: Statement {
-        sql: "INSERT INTO seen (external_id) VALUES (?1)".into(),
-        params: vec![Value::String(external_id)],
-    },
-}).await?;
-
-let kv::get::Ok { value } = kernel.kv().get().call(kv::get::Args { key: "cursor".into() }).await?;
+let Kv::get::Ok { value } = kernel.kv().get("cursor".into()).await?;
 ```
 
 `sqlite.query` отдаёт `columns` и `rows` ячеек `Cell` (`Null`, `Integer`, `Real`, `Text`, `Blob`); несколько операторов атомарно — `sqlite.tx`.

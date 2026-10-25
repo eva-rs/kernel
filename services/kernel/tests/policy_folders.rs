@@ -3,11 +3,11 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::Folders::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     requests::{
+        Folders::{Trait as _, create, delete, list, update},
         Patch,
-        folders::{create, delete, list, update},
     },
     types::{FolderId, SurfaceId},
 };

@@ -5,11 +5,10 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{Harness, Outcome, SVC, matrix_callers, outcome};
-use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::HandsGrants::Trait as _};
+use eva::{handling::CallStep as _, time::Clock as _};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::hands_grants::{list, revoke},
+    requests::HandsGrants::{Trait as _, list, revoke},
     types::{
         ChatId, HandsGrantId, PersonId, SurfaceId,
         hands::{Grant, GrantKind},

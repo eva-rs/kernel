@@ -6,10 +6,10 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{CLIENT, OTHER, Outcome, SVC, TestSession, client, matrix_callers, outcome, service};
-use eva_core::{CallStep as _, service::Modules::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::modules::{add, list, remove, token_issue, token_revoke},
+    requests::Modules::{Trait as _, add, list, remove, token_issue, token_revoke},
     types::{
         ModuleId, PersonId,
         module::{Dial, ModuleKind, ServiceAddress, ServiceKey, State},

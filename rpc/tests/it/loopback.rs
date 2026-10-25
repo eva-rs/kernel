@@ -4,17 +4,15 @@ use std::time::Duration;
 
 use futures::{StreamExt as _, stream};
 
-use eva_core::{
-    CallStep as _, Caller, SessionMaker as _,
-    service::{Blobs::Trait as _, Surfaces::Trait as _, Turns::Trait as _},
-};
+use eva::handling::CallStep as _;
+use eva_core::{Caller, SessionMaker as _};
 use eva_protocol::{
     errors::{self, Aux, Generic},
     requests::{
+        Blobs::{Trait as _, put},
         ByteStream,
-        blobs::put,
-        surfaces::{create, get, list},
-        turns::attach,
+        Surfaces::{Trait as _, create, get, list},
+        Turns::{Trait as _, attach},
     },
     types::blob::Kind as BlobKind,
     wire::{ErrorCode, RpcError, frame::Payload, method},

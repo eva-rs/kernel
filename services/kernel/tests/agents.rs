@@ -4,12 +4,11 @@
 mod common;
 
 use common::{Harness, Outcome, outcome};
-use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::Agents::Trait as _};
+use eva::{handling::CallStep as _, time::Clock as _};
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::agents::list,
+    requests::Agents::{Trait as _, list},
     types::{ChatId, ToolId, agent::Status},
 };
 

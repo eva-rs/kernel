@@ -32,7 +32,8 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-use eva_core::{CallStep, Caller, Session};
+use eva::handling::CallStep;
+use eva_core::{Caller, Session};
 use eva_protocol::{
     errors::HasCode,
     requests::Response as OpResponse,

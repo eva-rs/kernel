@@ -9,7 +9,10 @@ use eva::{
 
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::stats::{self, Top, spend, tools_usage},
+    requests::{
+        Stats::{self, spend, tools_usage},
+        Top,
+    },
     types::{
         ChatId, FolderId, SurfaceId,
         stats::{GroupBy, Scope, Target},
@@ -334,7 +337,7 @@ fn duration(value: Option<HumanDuration>) -> String {
         .unwrap_or_else(|| "n/a".into())
 }
 
-fn health_text(result: stats::health::Ok, public: bool) -> String {
+fn health_text(result: Stats::health::Ok, public: bool) -> String {
     let g = result.gauges;
     let mut text = format!(
         "turns_in_flight: {}; agents_running: {}; pending_open: {}; db_bytes: {}; uptime: {:?}\nlast_sleep_at: {}; next_gc_at: {}; gc_duration_last: {}\nindex_pending: {}; index_lag: {}; memory_hot_tokens: {}; memory_embed_pending: {}\n",

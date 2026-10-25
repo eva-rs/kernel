@@ -5,14 +5,14 @@
 mod common;
 
 use common::{Harness, Outcome, outcome};
-use eva::time::Clock as _;
-use eva_core::{CallStep as _, Provider as _, service::Chats::Trait as _};
+use eva::{handling::CallStep as _, time::Clock as _};
+use eva_core::Provider as _;
 use eva_kernel::{
     db::{Db as _, DbError, Queries as _},
     subsystems::search,
 };
 use eva_protocol::{
-    requests::chats::search as op,
+    requests::Chats::{Trait as _, search as op},
     types::{
         ChatId, ModelId, PersonId,
         chat::{Role, SearchHit},

@@ -1,6 +1,6 @@
 //! Реализации сервисов следуют метаданным протокола и именам обработчиков.
 
-use eva_core::CallStep;
+use eva::handling::CallStep;
 
 use crate::{components::Components, handling, session::Session};
 

@@ -12,8 +12,8 @@ use eva::bytesize::ByteSize;
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
+        Blobs::{get, put, stat},
         ByteStream,
-        blobs::{get, put, stat},
     },
     types::{BlobId, ChatId, blob::Kind},
 };

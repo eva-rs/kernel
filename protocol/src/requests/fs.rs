@@ -19,7 +19,7 @@ pub struct Entry {
     pub modified: Timestamp,
 }
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Fs {
     #[errors(errors::fs::NotFound, errors::fs::IsDir)]
     fn read(

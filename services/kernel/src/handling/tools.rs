@@ -2,7 +2,7 @@
 
 use eva_protocol::{
     errors::{Aux, ext::*, tools::PathNotFound},
-    requests::{Response, tools::catalog},
+    requests::{Response, Tools::catalog},
     types::tool::Exposure,
 };
 

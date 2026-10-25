@@ -4,10 +4,10 @@
 mod common;
 
 use common::{CLIENT, Harness, SVC, with_modules};
-use eva_core::{CallStep as _, service::Inference::Trait as _};
+use eva::handling::CallStep as _;
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
-    requests::inference,
+    requests::Inference::{self, Trait as _},
     types::{
         ModelId, SurfaceId,
         content::Block,
@@ -151,7 +151,7 @@ async fn inference_errors_and_unpriced_spend_are_counted() {
     let h = common::start().await;
     h.register_module(CLIENT).await;
     let mut client = h.client_session().await;
-    let ask = || inference::complete::Args {
+    let ask = || Inference::complete::Args {
         model: Some(ModelId::from(common::MODEL)),
         system: String::from("Answer briefly."),
         input: vec![Block::text("hi")],

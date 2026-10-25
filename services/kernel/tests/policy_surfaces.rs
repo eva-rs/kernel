@@ -6,11 +6,11 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::Surfaces::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     requests::{
         Patch,
-        surfaces::{create, get, list, update},
+        Surfaces::{Trait as _, create, get, list, update},
     },
     types::SurfaceId,
 };

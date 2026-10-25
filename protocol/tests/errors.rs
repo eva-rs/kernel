@@ -30,7 +30,7 @@ fn msgpack<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) -> T 
 
 #[test]
 fn every_aux_variant() {
-    type E = Generic<requests::chats::delete::Err>;
+    type E = Generic<requests::Chats::delete::Err>;
 
     let cases = [
         (Aux::Db("locked".into()), ErrorCode::Internal),
@@ -87,7 +87,7 @@ fn provider_error_kinds() {
         assert_eq!(error.retry_after(), error.retry_after);
 
         let op = errors::inference::Provider { error };
-        let generic = Generic::<requests::inference::complete::Err>::Spec(op.into());
+        let generic = Generic::<requests::Inference::complete::Err>::Spec(op.into());
         assert_eq!(generic.code(), code);
         assert_eq!(
             generic.retry_after(),
@@ -123,20 +123,20 @@ fn transport_codes_to_aux() {
 #[test]
 fn not_found_by_alias() {
     let alias = errors::chats::NotFound {
-        chat: requests::chats::Selector::Alias {
+        chat: requests::Selector::Alias {
             surface: "x".into(),
             external_id: "ext-1".into(),
         },
     };
-    let back = msgpack(&Generic::<requests::chats::get::Err>::Spec(
+    let back = msgpack(&Generic::<requests::Chats::get::Err>::Spec(
         alias.clone().into(),
     ));
     assert_eq!(back.code(), ErrorCode::NotFound);
     assert!(back.to_string().contains("x:ext-1"), "{back}");
-    let back = msgpack(&Generic::<requests::chats::r#move::Err>::Spec(alias.into()));
+    let back = msgpack(&Generic::<requests::Chats::r#move::Err>::Spec(alias.into()));
     assert!(matches!(back, Generic::Spec(_)));
 
-    let by_id = msgpack(&Generic::<requests::turns::start::Err>::Spec(
+    let by_id = msgpack(&Generic::<requests::Turns::start::Err>::Spec(
         errors::chats::NotFound {
             chat: ChatId(4).into(),
         }

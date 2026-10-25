@@ -1,6 +1,6 @@
 mod common;
 
-use eva_core::{CallStep as _, service::Tools::Trait as _};
+use eva::handling::CallStep as _;
 use eva_kernel::{
     db::{Db as _, DbResult, Queries as _},
     subsystems::tools::{
@@ -9,7 +9,7 @@ use eva_kernel::{
     },
 };
 use eva_protocol::{
-    requests::tools::catalog,
+    requests::Tools::{Trait as _, catalog},
     types::{ChatId, ModuleId, tool::ToolDecl},
 };
 use serde_json::json;

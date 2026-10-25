@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Sleep {
     #[args(derive(Default))]
     fn runs(

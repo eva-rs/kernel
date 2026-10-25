@@ -22,8 +22,9 @@ use std::{
 use eva_protocol::{
     errors::{self, Aux, AuxResult, Generic, ext::*},
     requests::{
-        Response,
-        sqlite::{Cell, Statement, exec, query, tx},
+        Cell, Response,
+        Sqlite::{exec, query, tx},
+        Statement,
     },
     types::{Bytes, Value},
 };

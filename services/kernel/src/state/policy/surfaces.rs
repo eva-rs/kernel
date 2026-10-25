@@ -6,7 +6,7 @@ use std::fmt::Display;
 use eva_core::Caller;
 use eva_protocol::{
     errors::{Aux, AuxResult},
-    requests::surfaces::create,
+    requests::Surfaces::create,
     types::ModuleId,
 };
 

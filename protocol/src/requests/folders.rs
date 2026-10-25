@@ -1,8 +1,7 @@
 //! Папки: CRUD хозяина, наследование trust и модели.
 
 use crate::requests::Response;
-use eva::data;
-use eva::service;
+use eva::{data, service};
 
 use crate::{
     errors,
@@ -10,7 +9,7 @@ use crate::{
     types::{Effort, FolderId, ModelId, SurfaceId, Thinking, folder::Folder},
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Folders {
     #[flags(mutating)]
     #[errors(errors::folders::NameTaken)]

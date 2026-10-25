@@ -9,7 +9,7 @@ use crate::{
     types::{PersonId, SurfaceId, person::Person},
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Persons {
     #[flags(mutating)]
     fn resolve(

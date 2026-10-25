@@ -13,15 +13,15 @@ use std::{
 use futures::{StreamExt as _, stream};
 use tokio::sync::Notify;
 
-use eva::{fut::Fut, time::Timestamp};
-use eva_core::{CallStep, Caller, Session, SessionMaker, service::AuxFut};
+use eva::{fut::Fut, handling::CallStep, time::Timestamp};
+use eva_core::{Caller, Session, SessionMaker, service::AuxFut};
 use eva_protocol::{
     errors::{self, Aux, Generic},
     requests::{
+        Blobs::put,
         Items, Response,
-        blobs::put,
-        surfaces::{create, get, list},
-        turns::attach,
+        Surfaces::{create, get, list},
+        Turns::attach,
     },
     types::{
         BlobId, ChatId, EventId, ModuleId, SessionId, TurnId,

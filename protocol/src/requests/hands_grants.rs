@@ -8,7 +8,7 @@ use crate::{
     types::{ChatId, HandsGrantId, SurfaceId, hands::Grant},
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait HandsGrants {
     #[args(derive(Default))]
     fn list(

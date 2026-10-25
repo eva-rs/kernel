@@ -5,12 +5,12 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::Persons::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     errors::Generic,
     requests::{
-        Limit, chats,
-        persons::{list, merge, rename, resolve, whitelist},
+        Chats, Limit,
+        Persons::{Trait as _, list, merge, rename, resolve, whitelist},
     },
     types::{PersonId, SurfaceId, person::Person},
 };
@@ -431,7 +431,7 @@ async fn merge_moves_every_reference() {
         .await
         .expect("whitelist from");
 
-    let chats::create::Ok { chat } = client
+    let Chats::create::Ok { chat } = client
         .chats()
         .create(
             SurfaceId::from(SVC),

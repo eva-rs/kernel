@@ -11,8 +11,8 @@ use eva::time::Timestamp;
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
+        Blobs::{get, put, stat},
         ByteStream, Response,
-        blobs::{get, put, stat},
     },
     types::{BlobId, Bytes},
 };

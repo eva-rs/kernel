@@ -1,6 +1,6 @@
 //! Хендлеры `models.*` (`01 §8.2`, `11 §3`).
 
-use eva_protocol::requests::{Response, models::list};
+use eva_protocol::requests::{Models::list, Response};
 
 use crate::{
     components::Components,

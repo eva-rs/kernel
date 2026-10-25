@@ -1,7 +1,7 @@
 //! Сессия ядра: `Session<C>(State<C>)` реализует все namespace-трейты
 //! (`impls/`), отдавая шаги поверх хендлеров.
 
-use eva_core::CallStep;
+use eva::handling::CallStep;
 use eva_protocol::requests::Response;
 
 use crate::{

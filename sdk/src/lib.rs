@@ -51,7 +51,7 @@ pub mod live;
 pub mod module;
 pub mod tool;
 
-/// Шаги и трейты неймспейсов: `use eva_sdk::prelude::*`.
+/// Сессии и трейты неймспейсов: `use eva_sdk::prelude::*`.
 pub mod prelude {
     pub use eva_core::prelude::*;
 

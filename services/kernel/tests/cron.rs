@@ -9,8 +9,7 @@ use std::{
 };
 
 use common::{Harness, Outcome, outcome};
-use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::Cron::Trait as _};
+use eva::{handling::CallStep as _, time::Clock as _};
 use eva_kernel::{
     db::{Db as _, DbResult},
     subsystems::{
@@ -21,9 +20,9 @@ use eva_kernel::{
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
+        Cron::{Trait as _, list, runs},
         RunsLimit,
-        cron::{list, runs},
-        stats::health,
+        Stats::health,
     },
     types::{CronJobId, Effort, RunId},
     wire::events::Event,

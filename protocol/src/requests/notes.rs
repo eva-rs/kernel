@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Notes {
     #[errors(errors::chats::NotFound)]
     fn list(

@@ -8,54 +8,39 @@ use eva::{auto_impl, export, handling, trait_set};
 
 use eva_protocol::{errors::Aux, requests::Response};
 
-use crate::Caller;
+use crate::{
+    Caller,
+    protocol::requests::{
+        Agents, Blobs, Chats, Cron, Folders, Fs, HandsGrants, Inference, Kv, Memory, Models,
+        Modules, Notes, Persons, Sleep, Sqlite, Stats, Surfaces, Tools, Turns,
+    },
+};
 
-pub use eva::handling::CallStep;
-
-pub use crate::protocol::requests::agents::Agents;
-pub use crate::protocol::requests::blobs::Blobs;
-pub use crate::protocol::requests::chats::Chats;
-pub use crate::protocol::requests::cron::Cron;
-pub use crate::protocol::requests::folders::Folders;
-pub use crate::protocol::requests::fs::Fs;
-pub use crate::protocol::requests::hands_grants::HandsGrants;
-pub use crate::protocol::requests::inference::Inference;
-pub use crate::protocol::requests::kv::Kv;
-pub use crate::protocol::requests::memory::Memory;
-pub use crate::protocol::requests::models::Models;
-pub use crate::protocol::requests::modules::Modules;
-pub use crate::protocol::requests::notes::Notes;
-pub use crate::protocol::requests::persons::Persons;
-pub use crate::protocol::requests::sleep::Sleep;
-pub use crate::protocol::requests::sqlite::Sqlite;
-pub use crate::protocol::requests::stats::Stats;
-pub use crate::protocol::requests::surfaces::Surfaces;
-pub use crate::protocol::requests::tools::Tools;
-pub use crate::protocol::requests::turns::Turns;
 #[export(name = for_each_op)]
 #[derive(Debug, Clone)]
 pub struct Services {
-    surfaces: crate::protocol::requests::surfaces::Surfaces,
-    folders: crate::protocol::requests::folders::Folders,
-    chats: crate::protocol::requests::chats::Chats,
-    turns: crate::protocol::requests::turns::Turns,
-    persons: crate::protocol::requests::persons::Persons,
-    memory: crate::protocol::requests::memory::Memory,
-    notes: crate::protocol::requests::notes::Notes,
-    tools: crate::protocol::requests::tools::Tools,
-    models: crate::protocol::requests::models::Models,
-    cron: crate::protocol::requests::cron::Cron,
-    sleep: crate::protocol::requests::sleep::Sleep,
-    agents: crate::protocol::requests::agents::Agents,
-    stats: crate::protocol::requests::stats::Stats,
-    modules: crate::protocol::requests::modules::Modules,
-    hands_grants: crate::protocol::requests::hands_grants::HandsGrants,
-    blobs: crate::protocol::requests::blobs::Blobs,
-    inference: crate::protocol::requests::inference::Inference,
-    fs: crate::protocol::requests::fs::Fs,
-    sqlite: crate::protocol::requests::sqlite::Sqlite,
-    kv: crate::protocol::requests::kv::Kv,
+    surfaces: Surfaces,
+    folders: Folders,
+    chats: Chats,
+    turns: Turns,
+    persons: Persons,
+    memory: Memory,
+    notes: Notes,
+    tools: Tools,
+    models: Models,
+    cron: Cron,
+    sleep: Sleep,
+    agents: Agents,
+    stats: Stats,
+    modules: Modules,
+    hands_grants: HandsGrants,
+    blobs: Blobs,
+    inference: Inference,
+    fs: Fs,
+    sqlite: Sqlite,
+    kv: Kv,
 }
+
 pub use ServicesFeatures as IsSession;
 
 /// Из метаданных сервисов: `traits` для `prelude` и `NAMESPACES`.

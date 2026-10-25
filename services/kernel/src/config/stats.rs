@@ -49,5 +49,5 @@ impl Default for CacheConfig {
 #[derive(Default)]
 #[serde(default)]
 pub struct ToolsConfig {
-    pub default_top: eva_protocol::requests::stats::Top,
+    pub default_top: eva_protocol::requests::Top,
 }

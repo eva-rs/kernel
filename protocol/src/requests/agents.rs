@@ -5,7 +5,7 @@ use eva::service;
 
 use crate::types::{ChatId, agent::Agent};
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Agents {
     #[args(derive(Default))]
     fn list(

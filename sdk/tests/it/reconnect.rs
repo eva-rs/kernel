@@ -1,6 +1,8 @@
 //! `run`: обрыв → реконнект с `hello.resume` и продолжением счётчика id, без
 //! повторной регистрации surface; `shutdown` закрывает соединение.
 
+use eva::handling::CallStep as _;
+
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -14,9 +16,9 @@ use eva_core::prelude::*;
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
+        Blobs::{get as blob_get, put as blob_put},
         ByteStream, Response,
-        blobs::{get as blob_get, put as blob_put},
-        surfaces::{get, update},
+        Surfaces::{get, update},
     },
     types::{BlobId, Bytes, ChatId, SurfaceId, blob},
     wire::{ErrorCode, RpcError, Welcome, frame::Payload},

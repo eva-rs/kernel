@@ -2,14 +2,14 @@
 
 mod common;
 
-use eva_core::{CallStep as _, service::Surfaces::Trait as _};
+use eva::handling::CallStep as _;
 use eva_kernel::{
     config::chats::MasterIdentity,
     db::{DbResult, Queries as _},
 };
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::surfaces::create,
+    requests::Surfaces::{Trait as _, create},
     types::{ModuleId, PersonId, SurfaceId, surface::Builtin},
 };
 

@@ -1,8 +1,7 @@
 //! Blob-store: байты вложений ходят потоками, не в `Args`.
 
 use crate::requests::Response;
-use eva::data;
-use eva::service;
+use eva::{data, service};
 
 use crate::{
     errors,
@@ -13,7 +12,7 @@ use crate::{
     },
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Blobs {
     #[flags(upload)]
     #[args(
@@ -75,7 +74,7 @@ pub trait Blobs {
     }
 
     #[errors(errors::blobs::NotFound)]
-    fn stat(id: BlobId) -> ok!(Meta);
+    fn stat(id: BlobId) -> Meta;
     embed! {
         code!(Err => [NotFound]);
     }

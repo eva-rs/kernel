@@ -11,7 +11,7 @@ use crate::{
 };
 use eva_protocol::{
     errors::Aux,
-    requests::turns::attach,
+    requests::Turns::attach,
     types::{
         ChatId, EventId,
         chat::Role,

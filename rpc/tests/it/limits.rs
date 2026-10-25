@@ -16,7 +16,7 @@ use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 
 use eva::{bytesize::ByteSize, url::Url};
 use eva_protocol::{
-    requests::blobs::put,
+    requests::Blobs::put,
     types::Bytes,
     wire::{
         ErrorCode, Frame, RpcError,

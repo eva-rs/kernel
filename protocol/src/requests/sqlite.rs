@@ -132,7 +132,7 @@ impl JsonSchema for Cell {
     }
 }
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Sqlite {
     #[flags(mutating)]
     #[errors(errors::sqlite::Sql)]

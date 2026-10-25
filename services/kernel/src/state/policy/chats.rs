@@ -3,7 +3,7 @@
 use eva_core::Caller;
 use eva_protocol::{
     errors::{Aux, AuxResult},
-    requests::chats::update::Update,
+    requests::Chats::update::Update,
     types::SurfaceId,
 };
 

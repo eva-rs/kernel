@@ -3,8 +3,8 @@
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
+        Folders::{create, delete, list, update},
         Patch, Response,
-        folders::{create, delete, list, update},
     },
 };
 

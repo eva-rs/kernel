@@ -5,7 +5,7 @@ use eva::service;
 
 use crate::{requests::Limit, types::Value};
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Kv {
     fn get(
         key: String,

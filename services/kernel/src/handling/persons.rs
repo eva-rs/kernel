@@ -4,8 +4,8 @@
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
+        Persons::{list, merge, rename, resolve, whitelist},
         Response,
-        persons::{list, merge, rename, resolve, whitelist},
     },
     types::PersonId,
 };

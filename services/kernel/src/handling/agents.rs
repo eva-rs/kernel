@@ -1,6 +1,6 @@
 //! Хендлеры `agents.*` (`07 §2.3`): только хозяину.
 
-use eva_protocol::requests::{Response, agents::list};
+use eva_protocol::requests::{Agents::list, Response};
 
 use crate::{
     components::Components,

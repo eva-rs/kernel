@@ -20,8 +20,8 @@ use futures::StreamExt as _;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{sync::watch, time::Instant};
 
-use eva::fut::Fut;
-use eva_core::{CallStep, Session, service::op_name};
+use eva::{fut::Fut, handling::CallStep};
+use eva_core::{Session, service::op_name};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{Items, Response},

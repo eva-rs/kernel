@@ -1,8 +1,8 @@
 //! Хендлеры: по `#[eva::endpoint]` на операцию, файл на домен (`11 §5`).
 //! `ProvideState` ниже превращает хендлер над `&mut State<C>` в шаг сессии.
 
-use eva::trait_set;
-use eva_core::{CallStep, service};
+use eva::{handling::CallStep, trait_set};
+use eva_core::service;
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::Response,

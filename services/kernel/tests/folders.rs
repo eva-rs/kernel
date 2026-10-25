@@ -5,12 +5,13 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::Folders::Trait as _};
+use eva::handling::CallStep as _;
 use eva_protocol::{
     errors::{Generic, folders::NameTaken},
     requests::{
-        Limit, Patch, chats,
-        folders::{create, delete, list, update},
+        Chats,
+        Folders::{Trait as _, create, delete, list, update},
+        Limit, Patch,
     },
     types::{ChatId, Effort, FolderId, ModelId, SurfaceId, Thinking, folder::Folder},
 };
@@ -268,7 +269,7 @@ async fn delete_moves_chats_to_unsorted() {
 
     let mut ids = Vec::new();
     for _ in 0..3 {
-        let chats::create::Ok { chat } = client
+        let Chats::create::Ok { chat } = client
             .chats()
             .create(
                 SurfaceId::from("local"),
@@ -301,7 +302,7 @@ async fn delete_moves_chats_to_unsorted() {
     );
 
     for id in ids {
-        let chats::get::Ok { chat } = client.chats().get(id.into()).await.expect("get");
+        let Chats::get::Ok { chat } = client.chats().get(id.into()).await.expect("get");
         let folder: String = h
             .query(move |c| {
                 Ok(c.query_row(
@@ -406,7 +407,7 @@ async fn chat_in(session: &mut TestSession, folder: FolderId, trusted: Option<bo
             .chats()
             .update(
                 chat,
-                chats::update::Update {
+                Chats::update::Update {
                     trusted: Patch::Change(trusted),
                     ..Default::default()
                 },

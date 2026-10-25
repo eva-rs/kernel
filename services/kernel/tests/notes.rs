@@ -9,7 +9,7 @@ use eva::time::Clock as _;
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
     errors::Generic,
-    requests::notes::list,
+    requests::Notes::list,
     types::{ChatId, note::Mode},
 };
 

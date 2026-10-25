@@ -14,26 +14,49 @@ use serde::{Deserialize, Deserializer};
 
 use crate::errors::{self, Aux};
 
-pub mod agents;
-pub mod blobs;
-pub mod chats;
-pub mod cron;
-pub mod folders;
-pub mod fs;
-pub mod hands_grants;
-pub mod inference;
-pub mod kv;
-pub mod memory;
-pub mod models;
-pub mod modules;
-pub mod notes;
-pub mod persons;
-pub mod sleep;
-pub mod sqlite;
-pub mod stats;
-pub mod surfaces;
-pub mod tools;
-pub mod turns;
+mod agents;
+mod blobs;
+mod chats;
+mod cron;
+mod folders;
+mod fs;
+mod hands_grants;
+mod inference;
+mod kv;
+mod memory;
+mod models;
+mod modules;
+mod notes;
+mod persons;
+mod sleep;
+mod sqlite;
+mod stats;
+mod surfaces;
+mod tools;
+mod turns;
+
+pub use self::{
+    agents::Agents,
+    blobs::Blobs,
+    chats::{Chats, HistoryCount, SearchLimit, Selector},
+    cron::Cron,
+    folders::Folders,
+    fs::{Entry, EntryKind, Fs},
+    hands_grants::HandsGrants,
+    inference::Inference,
+    kv::Kv,
+    memory::Memory,
+    models::Models,
+    modules::Modules,
+    notes::Notes,
+    persons::Persons,
+    sleep::Sleep,
+    sqlite::{Cell, Sqlite, Statement},
+    stats::{Stats, Top},
+    surfaces::Surfaces,
+    tools::{Depth, Tools},
+    turns::Turns,
+};
 
 /// Результат операции: свой `Err` либо беда подсистемы.
 pub type Response<O, E> = errors::Result<O, E>;

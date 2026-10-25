@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use eva_protocol::{
     errors::AuxResult,
-    requests::chats::search,
+    requests::Chats::search,
     types::{ChatId, chat::SearchHit},
 };
 

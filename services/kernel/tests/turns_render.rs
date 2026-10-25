@@ -28,17 +28,14 @@ use eva_kernel::{
         snapshot::{self, Participant, SegmentSnapshot, SystemInput},
     },
 };
-use eva_protocol::{
-    types::turn::TurnOutcome,
-    types::{
-        BlobId, Bytes, ChatId, Effort, EventId, ModelId, PersonId, SegmentId, Thinking, Tseq,
-        TurnId,
-        chat::{Role, SegmentReason},
-        content::Block as Content,
-        generate::{Block, CacheMode, Message, Purpose, ResultBlock, StopReason, ToolSpec},
-        model::{ModelCaps, ModelDecl},
-        note::{NoteUpdated, Op as NoteOp},
-    },
+use eva_protocol::types::{
+    BlobId, Bytes, ChatId, Effort, EventId, ModelId, PersonId, SegmentId, Thinking, Tseq, TurnId,
+    chat::{Role, SegmentReason},
+    content::Block as Content,
+    generate::{Block, CacheMode, Message, Purpose, ResultBlock, StopReason, ToolSpec},
+    model::{ModelCaps, ModelDecl},
+    note::{NoteUpdated, Op as NoteOp},
+    turn::TurnOutcome,
 };
 use eva_providers::wire;
 

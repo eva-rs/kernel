@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use eva_protocol::{
     errors::{self, Aux, Generic},
-    requests::{self, Patch, chats},
+    requests::{self, Chats, Patch, Selector},
     types::{
         ChatId, EventId, TurnId,
         content::Block,
@@ -33,26 +33,26 @@ fn parse<T: DeserializeOwned>(json: Value) -> T {
 
 #[test]
 fn args_ok_err_roundtrip() {
-    let json = roundtrip(&chats::delete::Args {
+    let json = roundtrip(&Chats::delete::Args {
         chat: ChatId(42),
         purge: true,
     });
     assert_eq!(json, json!({"chat": 42, "purge": true}));
 
-    let args: chats::delete::Args = parse(json!({"chat": 7}));
+    let args: Chats::delete::Args = parse(json!({"chat": 7}));
     assert!(!args.purge);
 
-    roundtrip(&chats::delete::Ok {});
-    roundtrip(&chats::delete::Err::from(errors::chats::Undeletable {
+    roundtrip(&Chats::delete::Ok {});
+    roundtrip(&Chats::delete::Err::from(errors::chats::Undeletable {
         chat: ChatId(1),
     }));
 
-    let by_id = roundtrip(&chats::get::Args {
+    let by_id = roundtrip(&Chats::get::Args {
         chat: ChatId(42).into(),
     });
     assert_eq!(by_id, json!({"chat": 42}));
-    let by_alias = roundtrip(&chats::get::Args {
-        chat: chats::Selector::Alias {
+    let by_alias = roundtrip(&Chats::get::Args {
+        chat: Selector::Alias {
             surface: "local".into(),
             external_id: "x".into(),
         },
@@ -62,9 +62,9 @@ fn args_ok_err_roundtrip() {
         json!({"chat": {"surface": "local", "external_id": "x"}})
     );
 
-    let ingest = roundtrip(&chats::ingest::Args {
+    let ingest = roundtrip(&Chats::ingest::Args {
         surface: "local".into(),
-        external_chat: chats::ingest::ExternalChat {
+        external_chat: Chats::ingest::ExternalChat {
             id: "1".into(),
             kind: eva_protocol::types::chat::ExternalKind::Direct,
             title: None,
@@ -74,7 +74,7 @@ fn args_ok_err_roundtrip() {
         external_id: None,
         reply_to_external_id: None,
         anchor: Some(json!([1, 2])),
-        r#override: Some(chats::ingest::Override::default()),
+        r#override: Some(Chats::ingest::Override::default()),
         silent: false,
     });
     assert!(ingest.get("override").is_some(), "{ingest}");
@@ -99,18 +99,18 @@ fn args_ok_err_roundtrip() {
 
 #[test]
 fn patch_defaults() {
-    let upd: chats::update::Update = parse(json!({}));
-    assert_eq!(upd, chats::update::Update::default());
+    let upd: Chats::update::Update = parse(json!({}));
+    assert_eq!(upd, Chats::update::Update::default());
 
-    parse::<requests::surfaces::update::Update>(json!({}));
-    parse::<requests::folders::update::Update>(json!({}));
-    parse::<chats::update::Args>(json!({"chat": 1}));
+    parse::<requests::Surfaces::update::Update>(json!({}));
+    parse::<requests::Folders::update::Update>(json!({}));
+    parse::<Chats::update::Args>(json!({"chat": 1}));
 
-    let upd: chats::update::Update = parse(json!({"title": null, "pinned": "keep"}));
+    let upd: Chats::update::Update = parse(json!({"title": null, "pinned": "keep"}));
     assert!(upd.title.is_keep());
     assert!(upd.pinned.is_keep());
 
-    let upd: chats::update::Update =
+    let upd: Chats::update::Update =
         parse(json!({"title": {"change": null}, "pinned": {"change": true}}));
     assert_eq!(upd.title, Patch::Change(None));
     assert_eq!(upd.pinned, Patch::Change(true));
@@ -118,7 +118,7 @@ fn patch_defaults() {
 
 #[test]
 fn generic_untagged() {
-    type E = Generic<chats::delete::Err>;
+    type E = Generic<Chats::delete::Err>;
 
     let aux = E::Aux(Aux::Forbidden("owner only".into()));
     let json = roundtrip(&aux);
@@ -137,7 +137,7 @@ fn generic_untagged() {
 
 #[test]
 fn schema_uses_wire_names() {
-    let schema = eva::_priv::schemars::schema_for!(chats::ingest::Args);
+    let schema = eva::_priv::schemars::schema_for!(Chats::ingest::Args);
     let json = serde_json::to_value(&schema).unwrap();
     assert!(json["properties"].get("override").is_some(), "{json}");
 }

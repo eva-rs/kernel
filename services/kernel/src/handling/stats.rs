@@ -7,7 +7,7 @@ use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
         Response,
-        stats::{chat_spend, health, spend, spend_series, tools_usage},
+        Stats::{chat_spend, health, spend, spend_series, tools_usage},
     },
     types::{
         stats::{CronLag, Gauges, Scope, Target},

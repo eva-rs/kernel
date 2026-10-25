@@ -5,8 +5,8 @@
 use eva_protocol::{
     errors::{self, Aux, ext::*},
     requests::{
+        Memory::{get, history, list, restore},
         Response,
-        memory::{get, history, list, restore},
     },
     types::memory::Kind,
     wire::events::{Event, MemoryChanged, MemoryOp},

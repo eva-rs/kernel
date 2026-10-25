@@ -1,7 +1,7 @@
 //! Агрегаты статистики (`09 §7`) → тип протокола.
 
 use eva_protocol::{
-    requests::stats::chat_spend,
+    requests::Stats::chat_spend,
     types::{
         ModuleId,
         module::{Dial, ModuleKind, State},

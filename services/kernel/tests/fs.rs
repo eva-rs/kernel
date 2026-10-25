@@ -9,11 +9,13 @@ use std::path::PathBuf;
 use common::{
     Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, with_modules,
 };
-use eva::bytesize::ByteSize;
-use eva_core::{CallStep as _, service::Fs::Trait as _};
+use eva::{bytesize::ByteSize, handling::CallStep as _};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::fs::{EntryKind, list, read, remove, stat, write},
+    requests::{
+        EntryKind,
+        Fs::{Trait as _, list, read, remove, stat, write},
+    },
     types::Bytes,
     wire::Capabilities,
 };

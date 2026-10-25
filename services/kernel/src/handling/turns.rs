@@ -14,7 +14,7 @@ use eva_protocol::{
     errors::{self, Aux, ext::*},
     requests::{
         Response,
-        turns::{append_silent, attach, cancel, delivered, respond, start},
+        Turns::{append_silent, attach, cancel, delivered, respond, start},
     },
     types::{
         ChatId, PersonId,

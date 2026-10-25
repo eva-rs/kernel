@@ -4,8 +4,8 @@
 use eva_protocol::{
     errors::{Aux, ext::*},
     requests::{
+        Cron::{list, runs},
         Response,
-        cron::{list, runs},
     },
 };
 

@@ -6,15 +6,14 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{Harness, Outcome, outcome};
-use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::Memory::Trait as _};
+use eva::{handling::CallStep as _, time::Clock as _};
 
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
         Limit,
-        memory::{get, history, list, restore},
+        Memory::{Trait as _, get, history, list, restore},
     },
     types::{
         ChatId, MemoryId,

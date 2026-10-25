@@ -6,13 +6,13 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{CLIENT, CLIENT2, OTHER, Outcome, SVC, outcome, service};
-use eva_core::{CallStep as _, service::Surfaces::Trait as _};
+use eva::handling::CallStep as _;
 use eva_kernel::db::{Db as _, DbError, Queries as _};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
-        Limit, Patch, chats, folders,
-        surfaces::{create, get, list, update},
+        Chats, Folders, Limit, Patch,
+        Surfaces::{Trait as _, create, get, list, update},
     },
     types::{ChatId, Effort, FolderId, SurfaceId, module::ModuleKind},
 };
@@ -556,7 +556,7 @@ async fn trust_change_resets_the_chats_that_inherit_it() {
         .chats()
         .update(
             own,
-            chats::update::Update {
+            Chats::update::Update {
                 trusted: Patch::Change(Some(false)),
                 ..Default::default()
             },
@@ -574,7 +574,7 @@ async fn trust_change_resets_the_chats_that_inherit_it() {
         .folders()
         .update(
             folder,
-            folders::update::Update {
+            Folders::update::Update {
                 trusted: Patch::Change(Some(false)),
                 ..Default::default()
             },

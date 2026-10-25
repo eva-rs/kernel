@@ -2,8 +2,7 @@
 //! хозяин настраивает доверие.
 
 use crate::requests::Response;
-use eva::data;
-use eva::service;
+use eva::{data, service};
 
 use crate::{
     errors,
@@ -11,7 +10,7 @@ use crate::{
     types::{Effort, ModelId, SurfaceId, Thinking, surface::Surface},
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Surfaces {
     #[flags(mutating)]
     #[args(

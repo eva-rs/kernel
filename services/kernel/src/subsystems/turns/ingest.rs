@@ -18,7 +18,7 @@ use crate::{
 use eva_core::Caller;
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::persons::resolve,
+    requests::Persons::resolve,
     types::{
         ChatId, EventId, MessageId, PersonId, SurfaceId,
         content::Block,

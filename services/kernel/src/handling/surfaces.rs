@@ -6,7 +6,7 @@ use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
         Patch, Response,
-        surfaces::{create, get, list, update},
+        Surfaces::{create, get, list, update},
     },
     types::SurfaceId,
 };

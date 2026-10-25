@@ -4,11 +4,11 @@
 use eva_protocol::{
     errors::{self, Aux, AuxResult, ext::*},
     requests::{
-        Patch, Response,
-        chats::{
+        Chats::{
             compact, create, delete, get, history_read, ingest, list, r#move, notify, restore,
             search, update,
         },
+        Patch, Response,
     },
     types::{
         ChatId,

@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Inference {
     #[flags(mutating)]
     #[errors(errors::inference::Provider)]

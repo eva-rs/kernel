@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use common::{CLIENT, Harness, OTHER, Outcome, SVC, outcome};
 use eva::{
+    handling::CallStep as _,
     time::{Clock as _, Date},
     utils::SecretString,
 };
-use eva_core::{CallStep as _, service::Stats::Trait as _};
 use eva_kernel::{
     config::modules::TokenEntry,
     db::{
@@ -22,7 +22,10 @@ use eva_kernel::{
 };
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::stats::{Top, chat_spend, health, spend, spend_series, tools_usage},
+    requests::{
+        Stats::{Trait as _, chat_spend, health, spend, spend_series, tools_usage},
+        Top,
+    },
     types::{
         ChatId, FolderId, ModelId, ModuleId, SurfaceId, ToolId, TurnId,
         generate::{RateLimits, Usage},

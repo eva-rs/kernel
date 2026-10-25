@@ -9,8 +9,7 @@ use std::{
 };
 
 use common::{Harness, Outcome, outcome};
-use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::Sleep::Trait as _};
+use eva::{handling::CallStep as _, time::Clock as _};
 use eva_kernel::{
     db::{Db as _, DbResult},
     subsystems::{
@@ -25,7 +24,7 @@ use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
         RunsLimit,
-        sleep::{phase_runs, runs},
+        Sleep::{Trait as _, phase_runs, runs},
     },
     types::{
         MemoryId, RunId,

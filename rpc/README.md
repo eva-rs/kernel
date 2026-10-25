@@ -55,7 +55,7 @@ msgpack-RPC Евы: кадры поверх unix-сокета, WebSocket и WebS
 
 ```rust
 use eva_core::prelude::*;
-use eva_protocol::{requests::surfaces::create, wire::{Capabilities, Hello, handshake::ProtoVersion}};
+use eva_protocol::{requests::Surfaces::create, wire::{Capabilities, Hello, handshake::ProtoVersion}};
 use eva_rpc::RpcClient;
 
 let hello = Hello {

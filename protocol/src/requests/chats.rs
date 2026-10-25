@@ -39,7 +39,7 @@ impl Default for HistoryCount {
     }
 }
 
-#[service(export, result = Response)]
+#[service(result = Response)]
 pub trait Chats {
     #[flags(mutating)]
     fn ingest(

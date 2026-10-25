@@ -28,7 +28,7 @@ use eva::{
 use eva_sdk::{
     Event, Kernel, Module, ServiceConfig, ToolContent, ToolCtx, ToolError, ToolResult, Topic,
     protocol::{
-        requests::{kv, surfaces},
+        requests::{Kv, Surfaces},
         types::Value,
     },
 };
@@ -78,12 +78,12 @@ async fn entrypoint(_: NoArgs, cfgs: ComponentConfigs) -> eyre::Result<()> {
     log::info!(module:? = listening.module(), caller:? = kernel.caller(); "kernel connected");
 
     // Идемпотентно для создателя: безопасно звать на каждом старте.
-    let surfaces::create::Ok { surface } = kernel
+    let Surfaces::create::Ok { surface } = kernel
         .surfaces()
         .create(SURFACE.into(), "Echo".into(), None)
         .await?;
 
-    let kv::get::Ok { value } = kernel.kv().get("starts".into()).await?;
+    let Kv::get::Ok { value } = kernel.kv().get("starts".into()).await?;
     let starts = match value {
         Some(Value::Integer(n)) => n + 1,
         _ => 1,

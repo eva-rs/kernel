@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use eva_protocol::{
     errors::{self, Generic},
-    requests::{Patch, blobs, chats, folders, sqlite, surfaces},
+    requests::{Blobs, Cell, Chats, Folders, Patch, Selector, Sqlite, Statement, Surfaces},
     types::{
         Bytes, ChatId, Effort, EventId, FolderId, MemoryId, Thinking, ToolId, Value as Param,
         blob::{self, Meta},
@@ -113,7 +113,7 @@ fn tool_decl() -> ToolDecl {
 
 #[test]
 fn frame_every_variant() {
-    let params = chats::delete::Args {
+    let params = Chats::delete::Args {
         chat: ChatId(7),
         purge: true,
     };
@@ -129,7 +129,7 @@ fn frame_every_variant() {
             method: "chats.delete".into(),
             params: encode(&params).into(),
         }),
-        Frame::Response(Response::ok(1, encode(&chats::delete::Ok {}).into())),
+        Frame::Response(Response::ok(1, encode(&Chats::delete::Ok {}).into())),
         Frame::Response(Response::err(2, error.clone())),
         Frame::Notify(Notify {
             method: "ping".into(),
@@ -158,7 +158,7 @@ fn frame_every_variant() {
     let Frame::Request(request) = decode(&encode(&frames[0])) else {
         panic!("request expected");
     };
-    assert_eq!(decode::<chats::delete::Args>(&request.params), params);
+    assert_eq!(decode::<Chats::delete::Args>(&request.params), params);
     // На проводе `params` — `bin` с msgpack `Args`, не вложенная карта.
     let Param::Map(outer) = decode::<Param>(&encode(&frames[0])) else {
         panic!("frame is a map");
@@ -985,7 +985,7 @@ fn int_ids_accept_display_form() {
     assert_eq!(decode::<ChatId>(&encode(&json!("c-7"))), ChatId(-7));
 
     // Внутри untagged `Selector` и как ключ JSON-карты.
-    let args: chats::get::Args = decode(&encode(&json!({"chat": "c42"})));
+    let args: Chats::get::Args = decode(&encode(&json!({"chat": "c42"})));
     assert_eq!(args.chat, ChatId(42).into());
     let map: BTreeMap<ChatId, u8> =
         serde_json::from_value(json!({"42": 1, "c43": 2})).expect("json keys");
@@ -1038,7 +1038,7 @@ fn effort_names_and_levels() {
     }
 
     // Под `Patch`/`Option` и в `caps.effort_levels`.
-    let update: surfaces::update::Update = decode(&encode(&json!({"effort": {"change": 2}})));
+    let update: Surfaces::update::Update = decode(&encode(&json!({"effort": {"change": 2}})));
     assert_eq!(update.effort, Patch::Change(Some(Effort::Medium)));
     let caps: ModelCaps = decode(&encode(&json!({"effort_levels": [1, "high", 4]})));
     assert_eq!(caps.effort_levels, [Effort::Low, Effort::High, Effort::Max]);
@@ -1060,39 +1060,39 @@ fn patch_over_msgpack() {
         assert!(cleared(&value), "{field}: {value:?}");
     }
 
-    check::<surfaces::update::Update>(
+    check::<Surfaces::update::Update>(
         "rules",
         |u| u.rules.is_keep(),
         |u| u.rules == Patch::Change(None),
     );
-    check::<folders::update::Update>(
+    check::<Folders::update::Update>(
         "trusted",
         |u| u.trusted.is_keep(),
         |u| u.trusted == Patch::Change(None),
     );
-    check::<chats::update::Update>(
+    check::<Chats::update::Update>(
         "title",
         |u| u.title.is_keep(),
         |u| u.title == Patch::Change(None),
     );
 
-    roundtrip(&surfaces::update::Update {
+    roundtrip(&Surfaces::update::Update {
         rules: Patch::Change(None),
         name: Patch::Change("n".into()),
         ..Default::default()
     });
-    roundtrip(&surfaces::update::Update {
+    roundtrip(&Surfaces::update::Update {
         rules: Patch::Change(Some("be nice".into())),
         ..Default::default()
     });
-    roundtrip(&folders::update::Update {
+    roundtrip(&Folders::update::Update {
         trusted: Patch::Change(None),
         name: Patch::Change("n".into()),
         ..Default::default()
     });
-    roundtrip(&chats::update::Args {
+    roundtrip(&Chats::update::Args {
         chat: ChatId(1),
-        update: chats::update::Update {
+        update: Chats::update::Update {
             title: Patch::Change(None),
             pinned: Patch::Change(true),
             ..Default::default()
@@ -1113,32 +1113,32 @@ fn requests_roundtrip() {
         Param::Bytes(Bytes::from(*b"valid utf-8")),
         Param::Array(vec![Param::Bytes(Bytes::from([0xc1, 0xff]))]),
     ];
-    let statement = sqlite::Statement {
+    let statement = Statement {
         sql: "SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7".into(),
         params,
     };
-    roundtrip(&sqlite::exec::Args {
+    roundtrip(&Sqlite::exec::Args {
         statement: statement.clone(),
     });
-    roundtrip(&sqlite::query::Args {
+    roundtrip(&Sqlite::query::Args {
         statement: statement.clone(),
     });
-    roundtrip(&sqlite::tx::Args {
+    roundtrip(&Sqlite::tx::Args {
         statements: vec![statement],
     });
-    let bare: sqlite::query::Args = decode(&encode(&json!({"sql": "SELECT 1"})));
+    let bare: Sqlite::query::Args = decode(&encode(&json!({"sql": "SELECT 1"})));
     assert!(bare.statement.params.is_empty());
-    let bare: sqlite::exec::Args = decode(&encode(&json!({"sql": "DELETE FROM t"})));
+    let bare: Sqlite::exec::Args = decode(&encode(&json!({"sql": "DELETE FROM t"})));
     assert_eq!(bare.statement.sql, "DELETE FROM t");
 
-    let alias = chats::Selector::Alias {
+    let alias = Selector::Alias {
         surface: "x".into(),
         external_id: "ext-1".into(),
     };
-    roundtrip(&chats::get::Args {
+    roundtrip(&Chats::get::Args {
         chat: alias.clone(),
     });
-    roundtrip(&chats::get::Args {
+    roundtrip(&Chats::get::Args {
         chat: ChatId(3).into(),
     });
 
@@ -1146,21 +1146,21 @@ fn requests_roundtrip() {
         surface: "x".into(),
         name: "work".into(),
     };
-    roundtrip(&chats::r#move::Args {
+    roundtrip(&Chats::r#move::Args {
         chat: ChatId(1),
         folder: name,
         confirm: true,
     });
-    roundtrip(&chats::r#move::Args {
+    roundtrip(&Chats::r#move::Args {
         chat: ChatId(1),
         folder: FolderId(2).into(),
         confirm: false,
     });
 
-    roundtrip(&Generic::<chats::get::Err>::Spec(
+    roundtrip(&Generic::<Chats::get::Err>::Spec(
         errors::chats::NotFound { chat: alias }.into(),
     ));
-    roundtrip(&Generic::<folders::update::Err>::Spec(
+    roundtrip(&Generic::<Folders::update::Err>::Spec(
         errors::folders::NotFound {
             folder: FolderId(2),
         }
@@ -1179,7 +1179,7 @@ fn blobs_put_params_are_bare_meta() {
         "size": 3,
         "hash": null,
     });
-    let meta: blobs::put::Meta = decode(&encode(&wire));
+    let meta: Blobs::put::Meta = decode(&encode(&wire));
     assert_eq!(decode::<Value>(&encode(&meta)), wire);
 }
 
@@ -1194,7 +1194,7 @@ fn timestamps_survive() {
         kind: blob::Kind::Image,
         expires_at: at(),
     };
-    roundtrip::<blobs::stat::Ok>(&meta.clone().into());
+    roundtrip::<Blobs::stat::Ok>(&meta.clone().into());
     assert!(
         serde_json::to_value(&meta)
             .expect("json")
@@ -1399,21 +1399,21 @@ fn malformed_variant_map_fails() {
 /// BLOB — `bin` и назад `Blob`, даже если его байты — валидный UTF-8.
 #[test]
 fn sqlite_cells_keep_their_storage_class() {
-    let ok = sqlite::query::Ok {
+    let ok = Sqlite::query::Ok {
         columns: vec!["n".into(), "i".into(), "r".into(), "t".into(), "b".into()],
         rows: vec![vec![
-            sqlite::Cell::Null,
-            sqlite::Cell::Integer(-7),
-            sqlite::Cell::Real(1.5),
-            sqlite::Cell::Text("abc".into()),
-            sqlite::Cell::Blob(Bytes::from(*b"abc")),
+            Cell::Null,
+            Cell::Integer(-7),
+            Cell::Real(1.5),
+            Cell::Text("abc".into()),
+            Cell::Blob(Bytes::from(*b"abc")),
         ]],
     };
     roundtrip(&ok);
 
-    let blob = encode(&sqlite::Cell::Blob(Bytes::from(*b"abc")));
+    let blob = encode(&Cell::Blob(Bytes::from(*b"abc")));
     assert_eq!(blob, [0xc4, 3, b'a', b'b', b'c']);
-    assert!(rmp_serde::from_slice::<sqlite::Cell>(&encode(&u64::MAX)).is_err());
+    assert!(rmp_serde::from_slice::<Cell>(&encode(&u64::MAX)).is_err());
 }
 
 /// Произвольные строки, байты, числа и время: форма провода не зависит от
@@ -1631,7 +1631,7 @@ mod props {
 
         #[test]
         fn params_roundtrip(raw in raw(), s in text(), i in any::<i64>(), u in any::<u64>()) {
-            let statement = sqlite::Statement {
+            let statement = Statement {
                 sql: s.clone(),
                 params: vec![
                     Param::Bytes(raw.clone()),
@@ -1641,8 +1641,8 @@ mod props {
                     Param::Map(vec![(Param::String(s), Param::Array(vec![Param::Bytes(raw)]))]),
                 ],
             };
-            let args = sqlite::exec::Args { statement };
-            prop_assert_eq!(decode::<sqlite::exec::Args>(&encode(&args)), args);
+            let args = Sqlite::exec::Args { statement };
+            prop_assert_eq!(decode::<Sqlite::exec::Args>(&encode(&args)), args);
         }
     }
 }

@@ -2,7 +2,10 @@
 //! Noise; новое соединение ядра вытесняет прежнее, `run` переживает потерю ядра.
 
 use std::{
-    sync::{Arc, atomic::AtomicUsize, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -13,7 +16,7 @@ use eva::time::HumanDuration;
 
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::surfaces::create,
+    requests::Surfaces::create,
     types::module::ServiceAddress,
     wire::{ErrorCode, RpcError, Welcome, tools::ToolItem},
 };

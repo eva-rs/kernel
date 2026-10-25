@@ -8,6 +8,8 @@
 
 mod common;
 
+use eva::handling::CallStep as _;
+
 use std::{
     fmt::Debug,
     future::pending,
@@ -36,10 +38,9 @@ use eva_kernel::{
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
-        ByteStream, Patch, Response, agents, blobs, chats, cron, folders, fs, hands_grants,
-        inference, kv, memory, models, modules, notes, persons, sleep,
-        sqlite::{self, Statement},
-        stats, surfaces,
+        Agents, Blobs, ByteStream, Cell, Chats, Cron, Entry, Folders, Fs, HandsGrants, Inference,
+        Kv, Memory, Models, Modules, Notes, Patch, Persons, Response, Selector, Sleep, Sqlite,
+        Statement, Stats, Surfaces,
     },
     types::{
         ChatId, CronJobId, HandsGrantId, MemoryId, ModelId, ModuleId, PersonId, RunId, SurfaceId,
@@ -229,7 +230,7 @@ async fn contract<M: SessionMaker>(
 }
 
 async fn surfaces_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, local: &SurfaceId) {
-    let create = |id: &SurfaceId, name: &str| surfaces::create::Args {
+    let create = |id: &SurfaceId, name: &str| Surfaces::create::Args {
         id: id.clone(),
         name: name.to_owned(),
         rules: None,
@@ -237,7 +238,7 @@ async fn surfaces_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, loc
 
     let res = call!(r.c.surfaces.create(create(local, "Local")));
     r.check("surfaces.create local by client", &res, Outcome::Forbidden);
-    let res = call!(r.s.surfaces.create(surfaces::create::Args {
+    let res = call!(r.s.surfaces.create(Surfaces::create::Args {
         rules: Some(String::from("Answer briefly.")),
         ..create(svc, "Service")
     }));
@@ -259,7 +260,7 @@ async fn surfaces_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, loc
     );
     r.check("surfaces.create system", &res, Outcome::Forbidden);
 
-    let get = |surface: &SurfaceId| surfaces::get::Args {
+    let get = |surface: &SurfaceId| Surfaces::get::Args {
         surface: surface.clone(),
     };
     let res = call!(r.s.surfaces.get(get(svc)));
@@ -269,9 +270,9 @@ async fn surfaces_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, loc
     let res = call!(r.c.surfaces.get(get(&SurfaceId::from("nowhere"))));
     r.check("surfaces.get missing", &res, Outcome::Spec);
 
-    let res = call!(r.c.surfaces.list(surfaces::list::Args::default()));
+    let res = call!(r.c.surfaces.list(Surfaces::list::Args::default()));
     r.ok("surfaces.list by client", res);
-    let res = call!(r.s.surfaces.list(surfaces::list::Args::default()));
+    let res = call!(r.s.surfaces.list(Surfaces::list::Args::default()));
     let found = r.ok("surfaces.list by service", res).found;
     assert!(
         found
@@ -279,21 +280,21 @@ async fn surfaces_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, loc
             .all(|s| s.module.as_ref().map(ModuleId::as_str) == Some(SVC))
     );
 
-    let update = |update| surfaces::update::Args {
+    let update = |update| Surfaces::update::Args {
         surface: svc.clone(),
         update,
     };
-    let res = call!(r.s.surfaces.update(update(surfaces::update::Update {
+    let res = call!(r.s.surfaces.update(update(Surfaces::update::Update {
         name: Patch::Change(String::from("Svc")),
         ..Default::default()
     })));
     r.ok("surfaces.update name", res);
-    let res = call!(r.s.surfaces.update(update(surfaces::update::Update {
+    let res = call!(r.s.surfaces.update(update(Surfaces::update::Update {
         trusted: Patch::Change(Some(true)),
         ..Default::default()
     })));
     r.check("surfaces.update trust by service", &res, Outcome::Forbidden);
-    let res = call!(r.c.surfaces.update(update(surfaces::update::Update {
+    let res = call!(r.c.surfaces.update(update(Surfaces::update::Update {
         trusted: Patch::Change(Some(false)),
         ..Default::default()
     })));
@@ -304,7 +305,7 @@ async fn folders_part<M: SessionMaker>(
     r: &mut Run<'_, M>,
     local: &SurfaceId,
 ) -> eva_protocol::types::FolderId {
-    let create = || folders::create::Args {
+    let create = || Folders::create::Args {
         surface: local.clone(),
         name: String::from("Work"),
     };
@@ -312,15 +313,15 @@ async fn folders_part<M: SessionMaker>(
     let work = r.ok("folders.create", res).folder.id;
     let res = call!(r.c.folders.create(create()));
     r.check("folders.create taken", &res, Outcome::Spec);
-    let res = call!(r.c.folders.update(folders::update::Args {
+    let res = call!(r.c.folders.update(Folders::update::Args {
         folder: work,
-        update: folders::update::Update {
+        update: Folders::update::Update {
             name: Patch::Change(String::from("Projects")),
             ..Default::default()
         },
     }));
     r.ok("folders.update", res);
-    let list = |surface: Option<SurfaceId>| folders::list::Args {
+    let list = |surface: Option<SurfaceId>| Folders::list::Args {
         surface,
         limit: Default::default(),
         after: None,
@@ -332,8 +333,8 @@ async fn folders_part<M: SessionMaker>(
     work
 }
 
-fn new_chat(surface: &SurfaceId) -> chats::create::Args {
-    chats::create::Args {
+fn new_chat(surface: &SurfaceId) -> Chats::create::Args {
+    Chats::create::Args {
         surface: surface.clone(),
         folder: None,
         external_id: None,
@@ -352,14 +353,14 @@ async fn chats_part<M: SessionMaker>(
     local: &SurfaceId,
     work: eva_protocol::types::FolderId,
 ) -> (ChatId, ChatId) {
-    let res = call!(r.c.chats.create(chats::create::Args {
+    let res = call!(r.c.chats.create(Chats::create::Args {
         folder: Some(work),
         kind: Some(chat::Kind::Persistent),
         title: Some(String::from("Tea")),
         ..new_chat(local)
     }));
     let tea = r.ok("chats.create local", res).chat.id;
-    let res = call!(r.s.chats.create(chats::create::Args {
+    let res = call!(r.s.chats.create(Chats::create::Args {
         external_id: Some(String::from("ext-1")),
         title: Some(String::from("Bridge")),
         ..new_chat(svc)
@@ -368,42 +369,42 @@ async fn chats_part<M: SessionMaker>(
     let res = call!(r.s.chats.create(new_chat(local)));
     r.check("chats.create local by service", &res, Outcome::Forbidden);
 
-    let res = call!(r.c.chats.get(chats::get::Args { chat: tea.into() }));
+    let res = call!(r.c.chats.get(Chats::get::Args { chat: tea.into() }));
     r.ok("chats.get", res);
-    let res = call!(r.s.chats.get(chats::get::Args {
-        chat: chats::Selector::Alias {
+    let res = call!(r.s.chats.get(Chats::get::Args {
+        chat: Selector::Alias {
             surface: svc.clone(),
             external_id: String::from("ext-1"),
         },
     }));
     r.ok("chats.get by alias", res);
-    let res = call!(r.s.chats.get(chats::get::Args { chat: tea.into() }));
+    let res = call!(r.s.chats.get(Chats::get::Args { chat: tea.into() }));
     r.check("chats.get foreign", &res, Outcome::Forbidden);
 
-    let res = call!(r.c.chats.list(chats::list::Args::default()));
+    let res = call!(r.c.chats.list(Chats::list::Args::default()));
     r.ok("chats.list by client", res);
-    let res = call!(r.s.chats.list(chats::list::Args::default()));
+    let res = call!(r.s.chats.list(Chats::list::Args::default()));
     let found = r.ok("chats.list by service", res).found;
     assert!(found.iter().all(|c| c.surface_id == *svc));
 
-    let res = call!(r.c.chats.update(chats::update::Args {
+    let res = call!(r.c.chats.update(Chats::update::Args {
         chat: tea,
-        update: chats::update::Update {
+        update: Chats::update::Update {
             title: Patch::Change(Some(String::from("Tea time"))),
             pinned: Patch::Change(true),
             ..Default::default()
         },
     }));
     r.ok("chats.update", res);
-    let res = call!(r.s.chats.update(chats::update::Args {
+    let res = call!(r.s.chats.update(Chats::update::Args {
         chat: bridge,
-        update: chats::update::Update {
+        update: Chats::update::Update {
             trusted: Patch::Change(Some(true)),
             ..Default::default()
         },
     }));
     r.check("chats.update trust by service", &res, Outcome::Forbidden);
-    let res = call!(r.c.chats.r#move(chats::r#move::Args {
+    let res = call!(r.c.chats.r#move(Chats::r#move::Args {
         chat: tea,
         folder: folder::Selector::Name {
             surface: local.clone(),
@@ -413,7 +414,7 @@ async fn chats_part<M: SessionMaker>(
     }));
     r.ok("chats.move", res);
 
-    let history = |chat| chats::history_read::Args {
+    let history = |chat| Chats::history_read::Args {
         before: None,
         chat,
         from_seq: 0,
@@ -425,24 +426,24 @@ async fn chats_part<M: SessionMaker>(
     let res = call!(r.s.chats.history_read(history(bridge)));
     r.ok("chats.history_read own", res);
 
-    let res = call!(r.c.chats.delete(chats::delete::Args {
+    let res = call!(r.c.chats.delete(Chats::delete::Args {
         chat: tea,
         purge: false
     }));
     r.ok("chats.delete", res);
-    let res = call!(r.c.chats.list(chats::list::Args {
+    let res = call!(r.c.chats.list(Chats::list::Args {
         deleted: true,
         ..Default::default()
     }));
     r.ok("chats.list deleted", res);
-    let res = call!(r.c.chats.restore(chats::restore::Args { chat: tea }));
+    let res = call!(r.c.chats.restore(Chats::restore::Args { chat: tea }));
     r.ok("chats.restore", res);
-    let res = call!(r.c.chats.delete(chats::delete::Args {
+    let res = call!(r.c.chats.delete(Chats::delete::Args {
         chat: ChatId(999),
         purge: true,
     }));
     r.check("chats.delete missing", &res, Outcome::Spec);
-    let res = call!(r.c.chats.search(chats::search::Args {
+    let res = call!(r.c.chats.search(Chats::search::Args {
         query: String::from("tea"),
         limit: Default::default(),
         since: None,
@@ -452,14 +453,14 @@ async fn chats_part<M: SessionMaker>(
         view: None,
     }));
     r.ok("chats.search", res);
-    let res = call!(r.c.folders.delete(folders::delete::Args { folder: work }));
+    let res = call!(r.c.folders.delete(Folders::delete::Args { folder: work }));
     r.ok("folders.delete", res);
     (tea, bridge)
 }
 
 async fn persons_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, local: &SurfaceId) {
     let resolve =
-        |surface: &SurfaceId, external_id: &str, name: Option<&str>| persons::resolve::Args {
+        |surface: &SurfaceId, external_id: &str, name: Option<&str>| Persons::resolve::Args {
             surface: surface.clone(),
             external_id: external_id.to_owned(),
             handle: Some(format!("@{external_id}")),
@@ -472,26 +473,26 @@ async fn persons_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, loca
     let res = call!(r.c.persons.resolve(resolve(local, "u3", Some("Tres"))));
     let tres = r.ok("persons.resolve by client", res).person.id;
 
-    let res = call!(r.c.persons.list(persons::list::Args::default()));
+    let res = call!(r.c.persons.list(Persons::list::Args::default()));
     r.ok("persons.list", res);
-    let res = call!(r.s.persons.list(persons::list::Args::default()));
+    let res = call!(r.s.persons.list(Persons::list::Args::default()));
     r.check("persons.list by service", &res, Outcome::Forbidden);
-    let res = call!(r.c.persons.rename(persons::rename::Args {
+    let res = call!(r.c.persons.rename(Persons::rename::Args {
         person: uno.clone(),
         name: String::from("Uno Dos"),
     }));
     r.ok("persons.rename", res);
-    let res = call!(r.c.persons.rename(persons::rename::Args {
+    let res = call!(r.c.persons.rename(Persons::rename::Args {
         person: PersonId::system(),
         name: String::from("Nobody"),
     }));
     r.check("persons.rename system", &res, Outcome::Spec);
-    let res = call!(r.c.persons.whitelist(persons::whitelist::Args {
+    let res = call!(r.c.persons.whitelist(Persons::whitelist::Args {
         person: uno.clone(),
         on: true,
     }));
     r.ok("persons.whitelist", res);
-    let res = call!(r.c.persons.merge(persons::merge::Args {
+    let res = call!(r.c.persons.merge(Persons::merge::Args {
         from: tres,
         into: uno,
         confirm: false,
@@ -501,58 +502,58 @@ async fn persons_part<M: SessionMaker>(r: &mut Run<'_, M>, svc: &SurfaceId, loca
 
 async fn reads_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, day: Date) {
     let fact = MemoryId(1);
-    let res = call!(r.c.memory.list(memory::list::Args::default()));
+    let res = call!(r.c.memory.list(Memory::list::Args::default()));
     r.ok("memory.list", res);
-    let res = call!(r.s.memory.list(memory::list::Args::default()));
+    let res = call!(r.s.memory.list(Memory::list::Args::default()));
     r.check("memory.list by service", &res, Outcome::Forbidden);
-    let res = call!(r.c.memory.get(memory::get::Args {
+    let res = call!(r.c.memory.get(Memory::get::Args {
         id: fact,
         view: None
     }));
     r.ok("memory.get", res);
-    let res = call!(r.c.memory.get(memory::get::Args {
+    let res = call!(r.c.memory.get(Memory::get::Args {
         id: MemoryId(999),
         view: None,
     }));
     r.check("memory.get missing", &res, Outcome::Spec);
-    let res = call!(r.c.memory.history(memory::history::Args {
+    let res = call!(r.c.memory.history(Memory::history::Args {
         id: fact,
         view: None
     }));
     r.ok("memory.history", res);
-    let res = call!(r.c.memory.restore(memory::restore::Args { id: fact }));
+    let res = call!(r.c.memory.restore(Memory::restore::Args { id: fact }));
     r.record("memory.restore live record", &res);
 
-    let res = call!(r.c.notes.list(notes::list::Args { chat: ChatId(101) }));
+    let res = call!(r.c.notes.list(Notes::list::Args { chat: ChatId(101) }));
     r.ok("notes.list", res);
-    let res = call!(r.s.notes.list(notes::list::Args { chat: bridge }));
+    let res = call!(r.s.notes.list(Notes::list::Args { chat: bridge }));
     r.check("notes.list by service", &res, Outcome::Forbidden);
 
-    let res = call!(r.c.models.list(models::list::Args {}));
+    let res = call!(r.c.models.list(Models::list::Args {}));
     r.ok("models.list", res);
-    let res = call!(r.s.models.list(models::list::Args {}));
+    let res = call!(r.s.models.list(Models::list::Args {}));
     r.check("models.list by service", &res, Outcome::Forbidden);
 
-    let res = call!(r.c.cron.list(cron::list::Args {}));
+    let res = call!(r.c.cron.list(Cron::list::Args {}));
     r.ok("cron.list", res);
-    let res = call!(r.c.cron.runs(cron::runs::Args {
+    let res = call!(r.c.cron.runs(Cron::runs::Args {
         job: Some(CronJobId::from("job-a")),
         limit: Default::default(),
         after: None,
     }));
     r.ok("cron.runs", res);
-    let res = call!(r.c.sleep.runs(sleep::runs::Args::default()));
+    let res = call!(r.c.sleep.runs(Sleep::runs::Args::default()));
     r.ok("sleep.runs", res);
-    let res = call!(r.c.sleep.phase_runs(sleep::phase_runs::Args {
+    let res = call!(r.c.sleep.phase_runs(Sleep::phase_runs::Args {
         run: RunId::from("n1"),
     }));
     r.ok("sleep.phase_runs", res);
-    let res = call!(r.c.agents.list(agents::list::Args {
+    let res = call!(r.c.agents.list(Agents::list::Args {
         chat: Some(ChatId(101)),
     }));
     r.ok("agents.list", res);
 
-    let res = call!(r.c.stats.tools_usage(stats::tools_usage::Args {
+    let res = call!(r.c.stats.tools_usage(Stats::tools_usage::Args {
         scope: Scope::Global,
         target: None,
         from: day,
@@ -561,7 +562,7 @@ async fn reads_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, day: Da
         view: None,
     }));
     r.ok("stats.tools_usage", res);
-    let spend = || stats::spend::Args {
+    let spend = || Stats::spend::Args {
         scope: Scope::Global,
         target: None,
         from: day,
@@ -573,7 +574,7 @@ async fn reads_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, day: Da
     r.ok("stats.spend", res);
     let res = call!(r.s.stats.spend(spend()));
     r.check("stats.spend by service", &res, Outcome::Forbidden);
-    let res = call!(r.c.stats.spend_series(stats::spend_series::Args {
+    let res = call!(r.c.stats.spend_series(Stats::spend_series::Args {
         scope: Scope::Global,
         target: None,
         from: day,
@@ -583,16 +584,16 @@ async fn reads_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, day: Da
     r.ok("stats.spend_series", res);
     let res = call!(
         r.s.stats
-            .chat_spend(stats::chat_spend::Args { chat: bridge })
+            .chat_spend(Stats::chat_spend::Args { chat: bridge })
     );
     r.ok("stats.chat_spend own", res);
     let res = call!(
         r.s.stats
-            .chat_spend(stats::chat_spend::Args { chat: ChatId(101) })
+            .chat_spend(Stats::chat_spend::Args { chat: ChatId(101) })
     );
     r.check("stats.chat_spend foreign", &res, Outcome::Forbidden);
     // Размер файла базы и счётчики сессий модулей — свойства транспорта, не контракта.
-    let res = call!(r.c.stats.health(stats::health::Args { from: day, to: day })).map(|mut ok| {
+    let res = call!(r.c.stats.health(Stats::health::Args { from: day, to: day })).map(|mut ok| {
         ok.gauges.db_bytes = 0;
         ok.counters.retain(|c| !c.metric.starts_with("modules."));
         for module in &mut ok.gauges.modules {
@@ -602,21 +603,21 @@ async fn reads_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, day: Da
     });
     r.check("stats.health", &res, Outcome::Ok);
 
-    let res = call!(r.c.hands_grants.list(hands_grants::list::Args {
+    let res = call!(r.c.hands_grants.list(HandsGrants::list::Args {
         endpoint: None,
         surface: None,
         chat: None,
     }));
     r.ok("hands_grants.list", res);
-    let res = call!(r.c.hands_grants.revoke(hands_grants::revoke::Args {
+    let res = call!(r.c.hands_grants.revoke(HandsGrants::revoke::Args {
         id: HandsGrantId(1),
     }));
     r.ok("hands_grants.revoke", res);
-    let res = call!(r.c.hands_grants.revoke(hands_grants::revoke::Args {
+    let res = call!(r.c.hands_grants.revoke(HandsGrants::revoke::Args {
         id: HandsGrantId(999),
     }));
     r.check("hands_grants.revoke missing", &res, Outcome::Spec);
-    let res = call!(r.s.hands_grants.list(hands_grants::list::Args {
+    let res = call!(r.s.hands_grants.list(HandsGrants::list::Args {
         endpoint: None,
         surface: None,
         chat: None,
@@ -636,16 +637,16 @@ fn untransported(dial: &mut Option<Dial>) {
 }
 
 async fn modules_part<M: SessionMaker>(r: &mut Run<'_, M>) {
-    let res = call!(r.c.modules.list(modules::list::Args {})).map(|mut ok| {
+    let res = call!(r.c.modules.list(Modules::list::Args {})).map(|mut ok| {
         for module in &mut ok.modules {
             untransported(&mut module.dial);
         }
         ok
     });
     r.check("modules.list", &res, Outcome::Ok);
-    let res = call!(r.s.modules.list(modules::list::Args {}));
+    let res = call!(r.s.modules.list(Modules::list::Args {}));
     r.check("modules.list by service", &res, Outcome::Forbidden);
-    let relay = || modules::add::Args {
+    let relay = || Modules::add::Args {
         module: ModuleId::from("relay"),
         address: ServiceAddress::Uds("/run/eva-relay/module.sock".into()),
         key: Some(ServiceKey::from("relay-key-0123456789abcdef0123456789")),
@@ -654,43 +655,43 @@ async fn modules_part<M: SessionMaker>(r: &mut Run<'_, M>) {
     r.ok("modules.add", res);
     let res = call!(r.c.modules.add(relay()));
     r.check("modules.add taken", &res, Outcome::Spec);
-    let res = call!(r.s.modules.add(modules::add::Args {
+    let res = call!(r.s.modules.add(Modules::add::Args {
         module: ModuleId::from("probe"),
         ..relay()
     }));
     r.check("modules.add by service", &res, Outcome::Forbidden);
-    let res = call!(r.c.modules.remove(modules::remove::Args {
+    let res = call!(r.c.modules.remove(Modules::remove::Args {
         module: ModuleId::from("relay"),
     }));
     r.ok("modules.remove", res);
-    let res = call!(r.c.modules.remove(modules::remove::Args {
+    let res = call!(r.c.modules.remove(Modules::remove::Args {
         module: ModuleId::from("relay"),
     }));
     r.check("modules.remove missing", &res, Outcome::Spec);
-    let res = call!(r.c.modules.remove(modules::remove::Args {
+    let res = call!(r.c.modules.remove(Modules::remove::Args {
         module: ModuleId::from(SVC),
     }));
     r.check("modules.remove config", &res, Outcome::Conflict);
-    let res = call!(r.c.modules.token_issue(modules::token_issue::Args {
+    let res = call!(r.c.modules.token_issue(Modules::token_issue::Args {
         module: ModuleId::from("bridge"),
         issued_by: None,
     }));
     r.ok("modules.token_issue", res);
-    let res = call!(r.c.modules.token_issue(modules::token_issue::Args {
+    let res = call!(r.c.modules.token_issue(Modules::token_issue::Args {
         module: ModuleId::from("kernel"),
         issued_by: None,
     }));
     r.check("modules.token_issue reserved", &res, Outcome::Invalid);
-    let res = call!(r.c.modules.token_issue(modules::token_issue::Args {
+    let res = call!(r.c.modules.token_issue(Modules::token_issue::Args {
         module: ModuleId::from(SVC),
         issued_by: None,
     }));
     r.check("modules.token_issue service", &res, Outcome::Conflict);
-    let res = call!(r.c.modules.token_revoke(modules::token_revoke::Args {
+    let res = call!(r.c.modules.token_revoke(Modules::token_revoke::Args {
         module: ModuleId::from("bridge"),
     }));
     r.ok("modules.token_revoke", res);
-    let res = call!(r.c.modules.token_revoke(modules::token_revoke::Args {
+    let res = call!(r.c.modules.token_revoke(Modules::token_revoke::Args {
         module: ModuleId::from("nobody"),
     }));
     r.check("modules.token_revoke missing", &res, Outcome::Spec);
@@ -698,7 +699,7 @@ async fn modules_part<M: SessionMaker>(r: &mut Run<'_, M>) {
 
 async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: ChatId) {
     const NOTE: &[u8] = b"a note from the bridge";
-    let put = |chat, size| blobs::put::Meta {
+    let put = |chat, size| Blobs::put::Meta {
         chat,
         name: String::from("note.txt"),
         media_type: String::from("text/plain"),
@@ -723,9 +724,9 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
     let res = r.c().await.blobs().put(put(tea, 3), body(NOTE)).await;
     r.check("blobs.put size mismatch", &res, Outcome::Spec);
 
-    let res = call!(r.s.blobs.stat(blobs::stat::Args { id: own.clone() }));
+    let res = call!(r.s.blobs.stat(Blobs::stat::Args { id: own.clone() }));
     r.ok("blobs.stat own", res);
-    let res = call!(r.s.blobs.stat(blobs::stat::Args { id: foreign }));
+    let res = call!(r.s.blobs.stat(Blobs::stat::Args { id: foreign }));
     r.check("blobs.stat foreign", &res, Outcome::Forbidden);
 
     let res = r.s().await.blobs().get(own, 2).await.map(|ok| ok.0);
@@ -737,7 +738,7 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
 }
 
 async fn inference_part<M: SessionMaker>(r: &mut Run<'_, M>) {
-    let complete = |model: Option<&str>| inference::complete::Args {
+    let complete = |model: Option<&str>| Inference::complete::Args {
         model: model.map(ModelId::from),
         system: String::from("Answer in one word."),
         input: vec![Block::text("hello there")],
@@ -752,17 +753,17 @@ async fn inference_part<M: SessionMaker>(r: &mut Run<'_, M>) {
 }
 
 async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
-    let res = call!(r.s.fs.write(fs::write::Args {
+    let res = call!(r.s.fs.write(Fs::write::Args {
         path: String::from("notes/a.txt"),
         data: b"hello".to_vec().into(),
         create_dirs: true,
     }));
     r.ok("fs.write", res);
-    let res = call!(r.s.fs.read(fs::read::Args {
+    let res = call!(r.s.fs.read(Fs::read::Args {
         path: String::from("notes/a.txt"),
     }));
     r.ok("fs.read", res);
-    let res = call!(r.s.fs.list(fs::list::Args {
+    let res = call!(r.s.fs.list(Fs::list::Args {
         path: String::from("notes"),
     }));
     let res = res.map(|mut ok| {
@@ -770,7 +771,7 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
         ok
     });
     r.ok("fs.list", res);
-    let res = call!(r.s.fs.stat(fs::stat::Args {
+    let res = call!(r.s.fs.stat(Fs::stat::Args {
         path: String::from("notes/a.txt"),
     }));
     let res = res.map(|mut ok| {
@@ -778,11 +779,11 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
         ok
     });
     r.ok("fs.stat", res);
-    let res = call!(r.s.fs.read(fs::read::Args {
+    let res = call!(r.s.fs.read(Fs::read::Args {
         path: String::from("../escape"),
     }));
     r.check("fs.read outside", &res, Outcome::Forbidden);
-    let res = call!(r.s.fs.remove(fs::remove::Args {
+    let res = call!(r.s.fs.remove(Fs::remove::Args {
         path: String::from("notes"),
         recursive: true,
     }));
@@ -790,14 +791,14 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
 
     // Валидный UTF-8 в `bin`: строкой назад он читаться не должен.
     let tea_raw = eva_protocol::types::Bytes::from(*b"tea leaves");
-    let res = call!(r.s.sqlite.exec(sqlite::exec::Args {
+    let res = call!(r.s.sqlite.exec(Sqlite::exec::Args {
         statement: statement(
             "CREATE TABLE seen (id INTEGER PRIMARY KEY, what TEXT, raw BLOB)",
             vec![]
         ),
     }));
     r.ok("sqlite.exec", res);
-    let res = call!(r.s.sqlite.tx(sqlite::tx::Args {
+    let res = call!(r.s.sqlite.tx(Sqlite::tx::Args {
         statements: vec![
             statement(
                 "INSERT INTO seen (what, raw) VALUES (?1, ?2)",
@@ -807,16 +808,16 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
         ],
     }));
     r.ok("sqlite.tx", res);
-    let res = call!(r.s.sqlite.query(sqlite::query::Args {
+    let res = call!(r.s.sqlite.query(Sqlite::query::Args {
         statement: statement("SELECT id, what, raw FROM seen ORDER BY id", vec![]),
     }));
     let seen = r.ok("sqlite.query", res);
     assert_eq!(
         seen.rows[0][2],
-        sqlite::Cell::Blob(tea_raw),
+        Cell::Blob(tea_raw),
         "a blob param stays a blob"
     );
-    let res = call!(r.s.sqlite.exec(sqlite::exec::Args {
+    let res = call!(r.s.sqlite.exec(Sqlite::exec::Args {
         statement: statement("ATTACH DATABASE 'x.db' AS x", vec![]),
     }));
     r.check("sqlite.exec attach", &res, Outcome::Forbidden);
@@ -825,27 +826,27 @@ async fn state_part<M: SessionMaker>(r: &mut Run<'_, M>) {
         ("n".into(), Value::Integer(42)),
         ("raw".into(), Value::Bytes(vec![0, 0xc1, 0xff].into())),
     ]);
-    let res = call!(r.s.kv.set(kv::set::Args {
+    let res = call!(r.s.kv.set(Kv::set::Args {
         key: String::from("offset"),
         value: offset.clone(),
     }));
     r.ok("kv.set", res);
-    let res = call!(r.s.kv.get(kv::get::Args {
+    let res = call!(r.s.kv.get(Kv::get::Args {
         key: String::from("offset"),
     }));
     let got = r.ok("kv.get", res);
     assert_eq!(got.value, Some(offset), "bytes survive kv");
-    let res = call!(r.s.kv.list(kv::list::Args::default()));
+    let res = call!(r.s.kv.list(Kv::list::Args::default()));
     r.ok("kv.list", res);
-    let res = call!(r.s.kv.del(kv::del::Args {
+    let res = call!(r.s.kv.del(Kv::del::Args {
         key: String::from("offset"),
     }));
     r.ok("kv.del", res);
-    let res = call!(r.s.kv.get(kv::get::Args {
+    let res = call!(r.s.kv.get(Kv::get::Args {
         key: String::from("offset"),
     }));
     r.record("kv.get after del", &res);
-    let res = call!(r.c.kv.list(kv::list::Args::default()));
+    let res = call!(r.c.kv.list(Kv::list::Args::default()));
     r.ok("kv.list of another module", res);
 }
 
@@ -1063,7 +1064,7 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
                 .chats()
                 .inner_mut()
                 .create()
-                .call(chats::create::Args {
+                .call(Chats::create::Args {
                     title: Some(format!("{surface} #{n}")),
                     external_id: Some(alias.clone()),
                     folder: (n % 2 == 0).then_some(folder),
@@ -1076,7 +1077,7 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
             let blob = owner
                 .blobs()
                 .put(
-                    blobs::put::Meta {
+                    Blobs::put::Meta {
                         chat,
                         name: String::from("a.txt"),
                         media_type: String::from("text/plain"),
@@ -1183,7 +1184,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     .chats()
                     .update(
                         chat,
-                        chats::update::Update {
+                        Chats::update::Update {
                             title: Patch::Change(Some(format!("renamed {round}"))),
                             ..Default::default()
                         },
@@ -1212,7 +1213,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     .surfaces()
                     .update(
                         surface.clone(),
-                        surfaces::update::Update {
+                        Surfaces::update::Update {
                             name: Patch::Change(format!("name {round}")),
                             ..Default::default()
                         },
@@ -1251,7 +1252,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     let blob = k
                         .blobs()
                         .put(
-                            blobs::put::Meta {
+                            Blobs::put::Meta {
                                 chat: ok.chat.id,
                                 name: String::from("b.txt"),
                                 media_type: String::from("text/plain"),
@@ -1278,7 +1279,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     .chats()
                     .inner_mut()
                     .list()
-                    .call(chats::list::Args {
+                    .call(Chats::list::Args {
                         surface: Some(surface.clone()),
                         deleted: rng.random(),
                         ..Default::default()
@@ -1294,7 +1295,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     .chats()
                     .inner_mut()
                     .list()
-                    .call(chats::list::Args {
+                    .call(Chats::list::Args {
                         folder: Some(folder),
                         ..Default::default()
                     })
@@ -1309,7 +1310,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     .chats()
                     .inner_mut()
                     .list()
-                    .call(chats::list::Args {
+                    .call(Chats::list::Args {
                         after: Some(chat),
                         ..Default::default()
                     })
@@ -1329,7 +1330,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                 let exists = alias.as_ref() == Some(&external_id);
                 let res = k
                     .chats()
-                    .get(chats::Selector::Alias {
+                    .get(Selector::Alias {
                         surface: surface.clone(),
                         external_id,
                     })
@@ -1357,7 +1358,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                     .surfaces()
                     .inner_mut()
                     .list()
-                    .call(surfaces::list::Args::default())
+                    .call(Surfaces::list::Args::default())
                     .await;
                 let found = res.expect("surfaces.list").found;
                 assert!(
@@ -1687,7 +1688,7 @@ async fn the_owner_adds_and_removes_an_sdk_service_at_runtime() {
     let phone = connect(&url, CLIENT).await;
     let mut svc_kernel = dialed(&svc, SVC).await;
 
-    let modules::add::Ok { key } = phone
+    let Modules::add::Ok { key } = phone
         .kernel()
         .modules()
         .add(
@@ -1718,7 +1719,7 @@ async fn the_owner_adds_and_removes_an_sdk_service_at_runtime() {
         .surfaces()
         .inner_mut()
         .list()
-        .call(surfaces::list::Args::default())
+        .call(Surfaces::list::Args::default())
         .await;
     assert!(res.is_ok(), "the config session stays: {res:?}");
 
@@ -1887,6 +1888,6 @@ async fn an_sdk_client_is_whoever_its_token_names() {
 }
 
 /// Время изменения файла ставит файловая система хоста, не мир ядра.
-fn untimed(entry: &mut fs::Entry) {
+fn untimed(entry: &mut Entry) {
     entry.modified = eva::time::Timestamp::TEST_ORIGIN;
 }
