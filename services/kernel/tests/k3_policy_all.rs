@@ -15,10 +15,8 @@ use eva_kernel::db::{Db as _, DbError, Queries as _, hands_grants::NewGrant};
 use eva_protocol::{
     errors::Aux,
     requests::{
-        ByteStream, Patch, agents, blobs, chats, cron, folders, fs, hands_grants, inference, kv,
-        memory, models, modules, notes, persons, sleep,
-        sqlite::{self, Statement},
-        stats, surfaces, tools, turns,
+        ByteStream, Patch, agents, blobs, chats, cron, folders, fs, hands_grants, kv, memory,
+        models, modules, persons, sleep, sqlite::Statement, surfaces, tools,
     },
     types::{
         BlobId, ChatId, EventId, FolderId, HandsGrantId, MemoryId, ModuleId, PendingId, PersonId,
@@ -203,6 +201,7 @@ impl Ctx<'_> {
         self.owner()
             .await
             .chats()
+            .inner_mut()
             .create()
             .call(args)
             .await
@@ -219,11 +218,7 @@ impl Ctx<'_> {
         self.owner()
             .await
             .folders()
-            .create()
-            .call(folders::create::Args {
-                surface: self.target.clone(),
-                name: format!("folder {}", self.n),
-            })
+            .create(self.target.clone(), format!("folder {}", self.n))
             .await
             .expect("target folder")
             .folder
@@ -235,11 +230,7 @@ impl Ctx<'_> {
         self.owner()
             .await
             .blobs()
-            .put()
-            .call(blobs::put::Args {
-                meta: put_args(chat),
-                body: body(b"abc"),
-            })
+            .put(put_args(chat), body(b"abc"))
             .await
             .expect("target blob")
             .id
@@ -249,13 +240,12 @@ impl Ctx<'_> {
         self.owner()
             .await
             .persons()
-            .resolve()
-            .call(persons::resolve::Args {
-                surface: self.target.clone(),
-                external_id: format!("person {}", unique()),
-                handle: None,
-                name: None,
-            })
+            .resolve(
+                self.target.clone(),
+                format!("person {}", unique()),
+                None,
+                None,
+            )
             .await
             .expect("target person")
             .person
@@ -361,20 +351,22 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 name: format!("surface {n}"),
                 rules: None,
             };
-            outcome(&ctx.s().await.surfaces().create().call(args).await)
+            outcome(
+                &ctx.s()
+                    .await
+                    .surfaces()
+                    .inner_mut()
+                    .create()
+                    .call(args)
+                    .await,
+            )
         }
-        "surfaces.get" => outcome(
-            &ctx.s()
-                .await
-                .surfaces()
-                .get()
-                .call(surfaces::get::Args { surface: target })
-                .await,
-        ),
+        "surfaces.get" => outcome(&ctx.s().await.surfaces().get(target).await),
         "surfaces.list" => outcome(
             &ctx.s()
                 .await
                 .surfaces()
+                .inner_mut()
                 .list()
                 .call(surfaces::list::Args::default())
                 .await,
@@ -383,14 +375,13 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .surfaces()
-                .update()
-                .call(surfaces::update::Args {
-                    surface: target,
-                    update: surfaces::update::Update {
+                .update(
+                    target,
+                    surfaces::update::Update {
                         name: Patch::Change(format!("renamed {n}")),
                         ..Default::default()
                     },
-                })
+                )
                 .await,
         ),
 
@@ -398,11 +389,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .folders()
-                .create()
-                .call(folders::create::Args {
-                    surface: target,
-                    name: format!("folder {n}"),
-                })
+                .create(target, format!("folder {n}"))
                 .await,
         ),
         "folders.update" => {
@@ -411,32 +398,25 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .folders()
-                    .update()
-                    .call(folders::update::Args {
+                    .update(
                         folder,
-                        update: folders::update::Update {
+                        folders::update::Update {
                             name: Patch::Change(format!("renamed {n}")),
                             ..Default::default()
                         },
-                    })
+                    )
                     .await,
             )
         }
         "folders.delete" => {
             let folder = ctx.folder().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .folders()
-                    .delete()
-                    .call(folders::delete::Args { folder })
-                    .await,
-            )
+            outcome(&ctx.s().await.folders().delete(folder).await)
         }
         "folders.list" => outcome(
             &ctx.s()
                 .await
                 .folders()
+                .inner_mut()
                 .list()
                 .call(folders::list::Args {
                     surface: Some(target),
@@ -449,35 +429,35 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .chats()
-                .ingest()
-                .call(chats::ingest::Args {
-                    surface: target,
-                    external_chat: chats::ingest::ExternalChat {
+                .ingest(
+                    target,
+                    chats::ingest::ExternalChat {
                         id: format!("ext {n}"),
                         kind: ExternalKind::Direct,
                         title: None,
                     },
-                    sender: None,
-                    content: vec![Block::text("hi")],
-                    external_id: None,
-                    reply_to_external_id: None,
-                    anchor: None,
-                    r#override: None,
-                    silent: false,
-                })
+                    None,
+                    vec![Block::text("hi")],
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                )
                 .await,
         ),
-        "chats.create" => outcome(&ctx.s().await.chats().create().call(ctx.new_chat()).await),
+        "chats.create" => outcome(
+            &ctx.s()
+                .await
+                .chats()
+                .inner_mut()
+                .create()
+                .call(ctx.new_chat())
+                .await,
+        ),
         "chats.get" => {
             let chat = ctx.chat().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .chats()
-                    .get()
-                    .call(chats::get::Args { chat: chat.into() })
-                    .await,
-            )
+            outcome(&ctx.s().await.chats().get(chat.into()).await)
         }
         "chats.get#alias" => {
             let external_id = format!("alias {n}");
@@ -490,12 +470,9 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .chats()
-                    .get()
-                    .call(chats::get::Args {
-                        chat: chats::Selector::Alias {
-                            surface: target,
-                            external_id,
-                        },
+                    .get(chats::Selector::Alias {
+                        surface: target,
+                        external_id,
                     })
                     .await,
             )
@@ -506,6 +483,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .chats()
+                    .inner_mut()
                     .list()
                     .call(chats::list::Args::default())
                     .await,
@@ -515,6 +493,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .chats()
+                .inner_mut()
                 .list()
                 .call(chats::list::Args {
                     surface: Some(target),
@@ -528,6 +507,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .chats()
+                    .inner_mut()
                     .list()
                     .call(chats::list::Args {
                         folder: Some(folder),
@@ -542,6 +522,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .chats()
+                    .inner_mut()
                     .list()
                     .call(chats::list::Args {
                         after: Some(chat),
@@ -563,14 +544,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                     ..Default::default()
                 }
             };
-            outcome(
-                &ctx.s()
-                    .await
-                    .chats()
-                    .update()
-                    .call(chats::update::Args { chat, update })
-                    .await,
-            )
+            outcome(&ctx.s().await.chats().update(chat, update).await)
         }
         "chats.move" => {
             let chat = ctx.chat().await;
@@ -578,61 +552,44 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .chats()
-                    .r#move()
-                    .call(chats::r#move::Args {
+                    .r#move(
                         chat,
-                        folder: folder::Selector::Name {
+                        folder::Selector::Name {
                             surface: target,
                             name: String::from("agents"),
                         },
-                        confirm: true,
-                    })
+                        true,
+                    )
                     .await,
             )
         }
         "chats.delete" => {
             let chat = ctx.chat().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .chats()
-                    .delete()
-                    .call(chats::delete::Args { chat, purge: false })
-                    .await,
-            )
+            outcome(&ctx.s().await.chats().delete(chat, false).await)
         }
         "chats.restore" => {
             let chat = ctx.chat().await;
             ctx.owner()
                 .await
                 .chats()
-                .delete()
-                .call(chats::delete::Args { chat, purge: false })
+                .delete(chat, false)
                 .await
                 .expect("deleted target");
-            outcome(
-                &ctx.s()
-                    .await
-                    .chats()
-                    .restore()
-                    .call(chats::restore::Args { chat })
-                    .await,
-            )
+            outcome(&ctx.s().await.chats().restore(chat).await)
         }
         "chats.search" => outcome(
             &ctx.s()
                 .await
                 .chats()
-                .search()
-                .call(chats::search::Args {
-                    query: String::from("tea"),
-                    limit: Default::default(),
-                    since: None,
-                    surface: None,
-                    folder: None,
-                    include_deleted: false,
-                    view: None,
-                })
+                .search(
+                    String::from("tea"),
+                    Default::default(),
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
                 .await,
         ),
         "chats.history_read" => {
@@ -641,6 +598,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .chats()
+                    .inner_mut()
                     .history_read()
                     .call(history(chat))
                     .await,
@@ -648,25 +606,13 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
         }
         "chats.compact" => {
             let chat = ctx.chat().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .chats()
-                    .compact()
-                    .call(chats::compact::Args { chat })
-                    .await,
-            )
+            outcome(&ctx.s().await.chats().compact(chat).await)
         }
         "chats.notify" => outcome(
             &ctx.s()
                 .await
                 .chats()
-                .notify()
-                .call(chats::notify::Args {
-                    subject: String::from("hi"),
-                    body: String::from("body"),
-                    source_chat: None,
-                })
+                .notify(String::from("hi"), String::from("body"), None)
                 .await,
         ),
 
@@ -676,19 +622,18 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .turns()
-                    .start()
-                    .call(turns::start::Args {
+                    .start(
                         chat,
-                        actor: None,
-                        content: vec![Block::text("hi")],
-                        external_id: None,
-                        reply_to_external_id: None,
-                        anchor: None,
-                        model: None,
-                        effort: None,
-                        thinking: None,
-                        extra_tools: Vec::new(),
-                    })
+                        None,
+                        vec![Block::text("hi")],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Vec::new(),
+                    )
                     .await,
             )
         }
@@ -698,12 +643,9 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .s()
                 .await
                 .turns()
-                .attach()
-                .call(turns::attach::Args {
-                    chat,
-                    since_seq: None,
-                })
+                .attach(chat, None)
                 .await
+                .map(|ok| ok.0)
                 .map(drop);
             outcome(&res)
         }
@@ -713,13 +655,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .turns()
-                    .append_silent()
-                    .call(turns::append_silent::Args {
-                        chat,
-                        actor: None,
-                        content: vec![Block::text("hi")],
-                        external_id: None,
-                    })
+                    .append_silent(chat, None, vec![Block::text("hi")], None)
                     .await,
             )
         }
@@ -729,25 +665,13 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .turns()
-                    .delivered()
-                    .call(turns::delivered::Args {
-                        chat,
-                        message_id: EventId(1),
-                        external_id: format!("out {n}"),
-                    })
+                    .delivered(chat, EventId(1), format!("out {n}"))
                     .await,
             )
         }
         "turns.cancel" => {
             let chat = ctx.chat().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .turns()
-                    .cancel()
-                    .call(turns::cancel::Args { chat })
-                    .await,
-            )
+            outcome(&ctx.s().await.turns().cancel(chat).await)
         }
         "turns.respond" => {
             let chat = ctx.chat().await;
@@ -776,14 +700,13 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .turns()
-                    .respond()
-                    .call(turns::respond::Args {
-                        pending: id,
-                        answer: Answer::Text {
+                    .respond(
+                        id,
+                        Answer::Text {
                             text: String::from("yes"),
                         },
-                        actor: None,
-                    })
+                        None,
+                    )
                     .await,
             )
         }
@@ -792,19 +715,14 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .persons()
-                .resolve()
-                .call(persons::resolve::Args {
-                    surface: target,
-                    external_id: format!("resolved {n}"),
-                    handle: None,
-                    name: None,
-                })
+                .resolve(target, format!("resolved {n}"), None, None)
                 .await,
         ),
         "persons.list" => outcome(
             &ctx.s()
                 .await
                 .persons()
+                .inner_mut()
                 .list()
                 .call(persons::list::Args::default())
                 .await,
@@ -815,98 +733,50 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .persons()
-                    .rename()
-                    .call(persons::rename::Args {
-                        person,
-                        name: format!("name {n}"),
-                    })
+                    .rename(person, format!("name {n}"))
                     .await,
             )
         }
         "persons.merge" => {
             let (from, into) = (ctx.person().await, ctx.person().await);
-            outcome(
-                &ctx.s()
-                    .await
-                    .persons()
-                    .merge()
-                    .call(persons::merge::Args {
-                        from,
-                        into,
-                        confirm: false,
-                    })
-                    .await,
-            )
+            outcome(&ctx.s().await.persons().merge(from, into, false).await)
         }
         "persons.whitelist" => {
             let person = ctx.person().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .persons()
-                    .whitelist()
-                    .call(persons::whitelist::Args { person, on: true })
-                    .await,
-            )
+            outcome(&ctx.s().await.persons().whitelist(person, true).await)
         }
 
         "memory.list" => outcome(
             &ctx.s()
                 .await
                 .memory()
+                .inner_mut()
                 .list()
                 .call(memory::list::Args::default())
                 .await,
         ),
         "memory.get" => {
             let id = ctx.memory(false).await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .memory()
-                    .get()
-                    .call(memory::get::Args { id, view: None })
-                    .await,
-            )
+            outcome(&ctx.s().await.memory().get(id, None).await)
         }
         "memory.history" => {
             let id = ctx.memory(false).await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .memory()
-                    .history()
-                    .call(memory::history::Args { id, view: None })
-                    .await,
-            )
+            outcome(&ctx.s().await.memory().history(id, None).await)
         }
         "memory.restore" => {
             let id = ctx.memory(true).await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .memory()
-                    .restore()
-                    .call(memory::restore::Args { id })
-                    .await,
-            )
+            outcome(&ctx.s().await.memory().restore(id).await)
         }
 
         "notes.list" => {
             let chat = ctx.chat().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .notes()
-                    .list()
-                    .call(notes::list::Args { chat })
-                    .await,
-            )
+            outcome(&ctx.s().await.notes().list(chat).await)
         }
         "tools.catalog" => outcome(
             &ctx.s()
                 .await
                 .tools()
+                .inner_mut()
                 .catalog()
                 .call(tools::catalog::Args::default())
                 .await,
@@ -915,6 +785,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .models()
+                .inner_mut()
                 .list()
                 .call(models::list::Args::default())
                 .await,
@@ -923,6 +794,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .cron()
+                .inner_mut()
                 .list()
                 .call(cron::list::Args::default())
                 .await,
@@ -931,6 +803,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .cron()
+                .inner_mut()
                 .runs()
                 .call(cron::runs::Args::default())
                 .await,
@@ -939,24 +812,17 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .sleep()
+                .inner_mut()
                 .runs()
                 .call(sleep::runs::Args::default())
                 .await,
         ),
-        "sleep.phase_runs" => outcome(
-            &ctx.s()
-                .await
-                .sleep()
-                .phase_runs()
-                .call(sleep::phase_runs::Args {
-                    run: RunId::from(NIGHT),
-                })
-                .await,
-        ),
+        "sleep.phase_runs" => outcome(&ctx.s().await.sleep().phase_runs(RunId::from(NIGHT)).await),
         "agents.list" => outcome(
             &ctx.s()
                 .await
                 .agents()
+                .inner_mut()
                 .list()
                 .call(agents::list::Args::default())
                 .await,
@@ -966,70 +832,34 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .stats()
-                .tools_usage()
-                .call(stats::tools_usage::Args {
-                    scope: Scope::Global,
-                    target: None,
-                    from: day,
-                    to: day,
-                    top: Default::default(),
-                    view: None,
-                })
+                .tools_usage(Scope::Global, None, day, day, Default::default(), None)
                 .await,
         ),
         "stats.spend" => outcome(
             &ctx.s()
                 .await
                 .stats()
-                .spend()
-                .call(stats::spend::Args {
-                    scope: Scope::Global,
-                    target: None,
-                    from: day,
-                    to: day,
-                    group_by: Default::default(),
-                    view: None,
-                })
+                .spend(Scope::Global, None, day, day, Default::default(), None)
                 .await,
         ),
         "stats.spend_series" => outcome(
             &ctx.s()
                 .await
                 .stats()
-                .spend_series()
-                .call(stats::spend_series::Args {
-                    scope: Scope::Global,
-                    target: None,
-                    from: day,
-                    to: day,
-                    group_by: Default::default(),
-                })
+                .spend_series(Scope::Global, None, day, day, Default::default())
                 .await,
         ),
         "stats.chat_spend" => {
             let chat = ctx.chat().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .stats()
-                    .chat_spend()
-                    .call(stats::chat_spend::Args { chat })
-                    .await,
-            )
+            outcome(&ctx.s().await.stats().chat_spend(chat).await)
         }
-        "stats.health" => outcome(
-            &ctx.s()
-                .await
-                .stats()
-                .health()
-                .call(stats::health::Args { from: day, to: day })
-                .await,
-        ),
+        "stats.health" => outcome(&ctx.s().await.stats().health(day, day).await),
 
         "modules.list" => outcome(
             &ctx.s()
                 .await
                 .modules()
+                .inner_mut()
                 .list()
                 .call(modules::list::Args::default())
                 .await,
@@ -1038,6 +868,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .modules()
+                .inner_mut()
                 .add()
                 .call(service_args(&format!("added{n}")))
                 .await,
@@ -1048,31 +879,21 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .client_session()
                 .await
                 .modules()
+                .inner_mut()
                 .add()
                 .call(service_args(&module))
                 .await
                 .expect("service to remove");
-            outcome(
-                &ctx.s()
-                    .await
-                    .modules()
-                    .remove()
-                    .call(modules::remove::Args {
-                        module: ModuleId::from(module),
-                    })
-                    .await,
-            )
+            outcome(&ctx.s().await.modules().remove(ModuleId::from(module)).await)
         }
         "modules.token_issue" => outcome(
             &ctx.s()
                 .await
                 .modules()
-                .token_issue()
-                .call(modules::token_issue::Args {
-                    module: ModuleId::from(format!("issued{n}")),
-                    // Личность выдавшего называет только ядро: у него нет своего модуля.
-                    issued_by: ctx.caller.is_kernel().then(PersonId::system),
-                })
+                .token_issue(
+                    ModuleId::from(format!("issued{n}")),
+                    ctx.caller.is_kernel().then(PersonId::system),
+                )
                 .await,
         ),
         "modules.token_revoke" => {
@@ -1081,40 +902,23 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .client_session()
                 .await
                 .modules()
-                .token_issue()
-                .call(modules::token_issue::Args {
-                    module: module.clone(),
-                    issued_by: None,
-                })
+                .token_issue(module.clone(), None)
                 .await
                 .expect("token to revoke");
-            outcome(
-                &ctx.s()
-                    .await
-                    .modules()
-                    .token_revoke()
-                    .call(modules::token_revoke::Args { module })
-                    .await,
-            )
+            outcome(&ctx.s().await.modules().token_revoke(module).await)
         }
         "hands_grants.list" => outcome(
             &ctx.s()
                 .await
                 .hands_grants()
+                .inner_mut()
                 .list()
                 .call(hands_grants::list::Args::default())
                 .await,
         ),
         "hands_grants.revoke" => {
             let id = ctx.grant().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .hands_grants()
-                    .revoke()
-                    .call(hands_grants::revoke::Args { id })
-                    .await,
-            )
+            outcome(&ctx.s().await.hands_grants().revoke(id).await)
         }
 
         "blobs.put" => {
@@ -1123,11 +927,7 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 &ctx.s()
                     .await
                     .blobs()
-                    .put()
-                    .call(blobs::put::Args {
-                        meta: put_args(chat),
-                        body: body(b"abc"),
-                    })
+                    .put(put_args(chat), body(b"abc"))
                     .await,
             )
         }
@@ -1137,36 +937,28 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
                 .s()
                 .await
                 .blobs()
-                .get()
-                .call(blobs::get::Args { id, offset: 0 })
+                .get(id, 0)
                 .await
+                .map(|ok| ok.0)
                 .map(drop);
             outcome(&res)
         }
         "blobs.stat" => {
             let id = ctx.blob().await;
-            outcome(
-                &ctx.s()
-                    .await
-                    .blobs()
-                    .stat()
-                    .call(blobs::stat::Args { id })
-                    .await,
-            )
+            outcome(&ctx.s().await.blobs().stat(id).await.map(|ok| ok.0))
         }
         "inference.complete" => outcome(
             &ctx.s()
                 .await
                 .inference()
-                .complete()
-                .call(inference::complete::Args {
-                    model: None,
-                    system: String::from("Answer in one word."),
-                    input: vec![Block::text("hello")],
-                    schema: None,
-                    max_tokens: None,
-                    effort: None,
-                })
+                .complete(
+                    None,
+                    String::from("Answer in one word."),
+                    vec![Block::text("hello")],
+                    None,
+                    None,
+                    None,
+                )
                 .await,
         ),
 
@@ -1175,32 +967,20 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             let path = format!("f{n}.txt");
             let written = s
                 .fs()
-                .write()
-                .call(fs::write::Args {
-                    path: path.clone(),
-                    data: b"abc".to_vec().into(),
-                    create_dirs: false,
-                })
+                .write(path.clone(), b"abc".to_vec().into(), false)
                 .await;
             match key {
                 "fs.write" => outcome(&written),
-                "fs.read" => outcome(&s.fs().read().call(fs::read::Args { path }).await),
-                "fs.stat" => outcome(&s.fs().stat().call(fs::stat::Args { path }).await),
-                _ => outcome(
-                    &s.fs()
-                        .remove()
-                        .call(fs::remove::Args {
-                            path,
-                            recursive: false,
-                        })
-                        .await,
-                ),
+                "fs.read" => outcome(&s.fs().read(path).await),
+                "fs.stat" => outcome(&s.fs().stat(path).await),
+                _ => outcome(&s.fs().remove(path, false).await),
             }
         }
         "fs.list" => outcome(
             &ctx.s()
                 .await
                 .fs()
+                .inner_mut()
                 .list()
                 .call(fs::list::Args::default())
                 .await,
@@ -1209,35 +989,20 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             &ctx.s()
                 .await
                 .sqlite()
-                .exec()
-                .call(sqlite::exec::Args {
-                    statement: statement(
-                        "CREATE TABLE IF NOT EXISTS seen (id INTEGER PRIMARY KEY)",
-                    ),
-                })
+                .exec(statement(
+                    "CREATE TABLE IF NOT EXISTS seen (id INTEGER PRIMARY KEY)",
+                ))
                 .await,
         ),
-        "sqlite.query" => outcome(
-            &ctx.s()
-                .await
-                .sqlite()
-                .query()
-                .call(sqlite::query::Args {
-                    statement: statement("SELECT 1"),
-                })
-                .await,
-        ),
+        "sqlite.query" => outcome(&ctx.s().await.sqlite().query(statement("SELECT 1")).await),
         "sqlite.tx" => outcome(
             &ctx.s()
                 .await
                 .sqlite()
-                .tx()
-                .call(sqlite::tx::Args {
-                    statements: vec![
-                        statement("CREATE TABLE IF NOT EXISTS seen (id INTEGER PRIMARY KEY)"),
-                        statement("INSERT INTO seen DEFAULT VALUES"),
-                    ],
-                })
+                .tx(vec![
+                    statement("CREATE TABLE IF NOT EXISTS seen (id INTEGER PRIMARY KEY)"),
+                    statement("INSERT INTO seen DEFAULT VALUES"),
+                ])
                 .await,
         ),
         "kv.set" | "kv.get" | "kv.del" => {
@@ -1245,22 +1010,19 @@ async fn run(ctx: &Ctx<'_>, key: &str) -> Option<Outcome> {
             let key_name = format!("k{n}");
             let set = s
                 .kv()
-                .set()
-                .call(kv::set::Args {
-                    key: key_name.clone(),
-                    value: serde_json::json!(n).into(),
-                })
+                .set(key_name.clone(), serde_json::json!(n).into())
                 .await;
             match key {
                 "kv.set" => outcome(&set),
-                "kv.get" => outcome(&s.kv().get().call(kv::get::Args { key: key_name }).await),
-                _ => outcome(&s.kv().del().call(kv::del::Args { key: key_name }).await),
+                "kv.get" => outcome(&s.kv().get(key_name).await),
+                _ => outcome(&s.kv().del(key_name).await),
             }
         }
         "kv.list" => outcome(
             &ctx.s()
                 .await
                 .kv()
+                .inner_mut()
                 .list()
                 .call(kv::list::Args::default())
                 .await,

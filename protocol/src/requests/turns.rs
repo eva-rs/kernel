@@ -1,6 +1,8 @@
 //! Туры: старт, лента, доставка, отмена, ответы на pending.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
+
 use serde_json::Value;
 
 use crate::{
@@ -14,158 +16,95 @@ use crate::{
     },
 };
 
-pub mod start {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub chat: ChatId,
+#[service(export, result = Response)]
+pub trait Turns {
+    #[flags(mutating)]
+    #[errors(errors::chats::NotFound)]
+    fn start(
+        chat: ChatId,
         /// `None` — неизвестный актор.
-        pub actor: Option<ActorRef>,
-        pub content: Vec<Block>,
-        pub external_id: Option<String>,
-        pub reply_to_external_id: Option<String>,
-        pub anchor: Option<Value>,
-        pub model: Option<ModelId>,
-        pub effort: Option<Effort>,
-        pub thinking: Option<Thinking>,
+        actor: Option<ActorRef>,
+        content: Vec<Block>,
+        external_id: Option<String>,
+        reply_to_external_id: Option<String>,
+        anchor: Option<Value>,
+        model: Option<ModelId>,
+        effort: Option<Effort>,
+        thinking: Option<Thinking>,
         /// Тулы на один тур, исполняются модулем-вызывателем; в реестр не попадают.
         #[serde(default)]
-        pub extra_tools: Vec<ToolDecl>,
+        extra_tools: Vec<ToolDecl>,
+    ) -> ok! {
+        message_id: MessageId,
+        turn: TurnState,
+    };
+    embed! {
+        code!(Err => [NotFound]);
     }
 
-    #[data]
-    pub struct Ok {
-        pub message_id: MessageId,
-        pub turn: TurnState,
-    }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::chats::NotFound),
-    }
-
-    code!(Err => [NotFound]);
-}
-
-pub mod attach {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub chat: ChatId,
+    #[flags(stream)]
+    #[errors(errors::chats::NotFound)]
+    fn attach(
+        chat: ChatId,
         /// История — события с `events.id` больше этого; `None` — без истории,
         /// только текущее состояние и живое.
-        pub since_seq: Option<EventId>,
+        since_seq: Option<EventId>,
+    ) -> ok!(
+        #[data(not(Debug, serde, schemars, Clone, PartialEq))]
+        Items<this![Item], this![Err]>
+    );
+    embed! {
+        pub type Item = TurnItem;
+
+        code!(Err => [NotFound]);
     }
 
-    pub type Item = TurnItem;
-
-    pub type Ok = Items<Item, Err>;
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::chats::NotFound),
+    #[flags(mutating)]
+    #[errors(errors::chats::NotFound)]
+    fn append_silent(
+        chat: ChatId,
+        actor: Option<ActorRef>,
+        content: Vec<Block>,
+        external_id: Option<String>,
+    ) -> ok! {
+        message_id: MessageId,
+    };
+    embed! {
+        code!(Err => [NotFound]);
     }
 
-    code!(Err => [NotFound]);
-}
-
-pub mod append_silent {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub chat: ChatId,
-        pub actor: Option<ActorRef>,
-        pub content: Vec<Block>,
-        pub external_id: Option<String>,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub message_id: MessageId,
-    }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::chats::NotFound),
-    }
-
-    code!(Err => [NotFound]);
-}
-
-pub mod delivered {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub chat: ChatId,
-        pub message_id: MessageId,
+    #[flags(mutating)]
+    #[errors(
+        errors::chats::NotFound,
+        errors::chats::MessageNotFound,
+        errors::chats::AlreadyDelivered
+    )]
+    fn delivered(
+        chat: ChatId,
+        message_id: MessageId,
         /// Id реплики Евы у поверхности: цель будущих `↩your#<N>`.
-        pub external_id: String,
+        external_id: String,
+    ) -> ok! {};
+    embed! {
+        code!(Err => [NotFound, MessageNotFound, AlreadyDelivered]);
     }
 
-    #[data]
-    pub struct Ok {}
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::chats::NotFound),
-        #[display("{_0}")]
-        MessageNotFound(#[from] errors::chats::MessageNotFound),
-        #[display("{_0}")]
-        AlreadyDelivered(#[from] errors::chats::AlreadyDelivered),
+    #[flags(mutating)]
+    #[errors(errors::chats::NotFound)]
+    fn cancel(chat: ChatId) -> ok! {};
+    embed! {
+        code!(Err => [NotFound]);
     }
 
-    code!(Err => [NotFound, MessageNotFound, AlreadyDelivered]);
-}
-
-pub mod cancel {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub chat: ChatId,
-    }
-
-    #[data]
-    pub struct Ok {}
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::chats::NotFound),
-    }
-
-    code!(Err => [NotFound]);
-}
-
-pub mod respond {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub pending: PendingId,
-        pub answer: Answer,
+    #[flags(mutating)]
+    #[errors(errors::turns::PendingNotFound, errors::turns::AlreadyResolved)]
+    fn respond(
+        pending: PendingId,
+        answer: Answer,
         /// Резолвится по surface чата pending, не по полям ссылки.
-        pub actor: Option<ActorRef>,
+        actor: Option<ActorRef>,
+    ) -> ok! {};
+    embed! {
+        code!(Err => [PendingNotFound, AlreadyResolved]);
     }
-
-    #[data]
-    pub struct Ok {}
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        PendingNotFound(#[from] errors::turns::PendingNotFound),
-        #[display("{_0}")]
-        AlreadyResolved(#[from] errors::turns::AlreadyResolved),
-    }
-
-    code!(Err => [PendingNotFound, AlreadyResolved]);
 }

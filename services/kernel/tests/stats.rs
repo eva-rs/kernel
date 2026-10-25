@@ -11,7 +11,7 @@ use eva::{
     time::{Clock as _, Date},
     utils::SecretString,
 };
-use eva_core::{CallStep as _, service::stats::Stats as _};
+use eva_core::{CallStep as _, service::Stats::Trait as _};
 use eva_kernel::{
     config::modules::TokenEntry,
     db::{
@@ -316,6 +316,7 @@ async fn usage(h: &Harness, args: tools_usage::Args) -> (Vec<(i64, Option<String
         .client_session()
         .await
         .stats()
+        .inner_mut()
         .tools_usage()
         .call(args)
         .await
@@ -402,6 +403,7 @@ async fn tools_usage_rows_carry_every_counter() {
         .client_session()
         .await
         .stats()
+        .inner_mut()
         .tools_usage()
         .call(usage_args(Scope::Chat, Some(Target::Chat(ChatId(1)))))
         .await
@@ -474,7 +476,7 @@ async fn bad_scope_and_period_are_invalid() {
     ];
     for args in cases {
         let dbg = format!("{args:?}");
-        let res = session.stats().tools_usage().call(args).await;
+        let res = session.stats().inner_mut().tools_usage().call(args).await;
         assert!(
             matches!(res, Err(Generic::Aux(Aux::Invalid(_)))),
             "{dbg}: {res:?}"
@@ -497,6 +499,7 @@ async fn spend(h: &Harness, args: spend::Args) -> spend::Ok {
     h.client_session()
         .await
         .stats()
+        .inner_mut()
         .spend()
         .call(args)
         .await
@@ -604,14 +607,13 @@ async fn spend_series_by_day() {
         .client_session()
         .await
         .stats()
-        .spend_series()
-        .call(spend_series::Args {
-            scope: Scope::Chat,
-            target: Some(Target::Chat(ChatId(1))),
-            from: date(D1),
-            to: date(D2),
-            group_by: GroupBy::Model,
-        })
+        .spend_series(
+            Scope::Chat,
+            Some(Target::Chat(ChatId(1))),
+            date(D1),
+            date(D2),
+            GroupBy::Model,
+        )
         .await
         .expect("series");
 
@@ -635,8 +637,7 @@ async fn chat_spend(h: &Harness, chat: i64) -> chat_spend::Ok {
     h.client_session()
         .await
         .stats()
-        .chat_spend()
-        .call(chat_spend::Args { chat: ChatId(chat) })
+        .chat_spend(ChatId(chat))
         .await
         .expect("chat_spend")
 }
@@ -684,8 +685,7 @@ async fn chat_spend_of_a_quiet_chat_and_errors() {
         .client_session()
         .await
         .stats()
-        .chat_spend()
-        .call(chat_spend::Args { chat: ChatId(999) })
+        .chat_spend(ChatId(999))
         .await;
     assert!(
         matches!(res, Err(Generic::Spec(chat_spend::Err::NotFound(ref e))) if e.chat == ChatId(999).into()),
@@ -732,11 +732,7 @@ async fn health_counters_and_gauges() {
         .client_session()
         .await
         .stats()
-        .health()
-        .call(health::Args {
-            from: date(D1),
-            to: date(D2),
-        })
+        .health(date(D1), date(D2))
         .await
         .expect("health");
 
@@ -814,11 +810,7 @@ async fn configured_registrations_name_the_kind() {
         .kernel_session()
         .await
         .stats()
-        .health()
-        .call(health::Args {
-            from: date(D1),
-            to: date(D1),
-        })
+        .health(date(D1), date(D1))
         .await
         .expect("health");
     let modules: Vec<_> = gauges
@@ -858,7 +850,8 @@ async fn stats_matrix() {
     for (case, expected) in cases {
         for ((who, caller), want) in common::matrix_callers().into_iter().zip(expected) {
             let mut s = h.session(caller).await;
-            let mut stats = s.stats();
+            let mut stats_client = s.stats();
+            let stats = stats_client.inner_mut();
             let chat_spend = |chat| chat_spend::Args { chat: ChatId(chat) };
             let got = match case {
                 "tools_usage" => outcome(
@@ -1071,11 +1064,7 @@ async fn spend_writes_a_row_per_chunk_and_the_cache_counters() {
         .client_session()
         .await
         .stats()
-        .health()
-        .call(health::Args {
-            from: today,
-            to: today,
-        })
+        .health(today, today)
         .await
         .expect("health");
     let got: Vec<_> = rate_limits
@@ -1239,11 +1228,7 @@ async fn live_gauges(h: &Harness) -> eva_protocol::types::stats::Gauges {
         .client_session()
         .await
         .stats()
-        .health()
-        .call(health::Args {
-            from: today,
-            to: today,
-        })
+        .health(today, today)
         .await
         .expect("health");
     gauges

@@ -504,8 +504,6 @@ async fn wait_wakes_when_subagent_requests_permission() {
 
 #[tokio::test]
 async fn deleting_lead_stops_team_without_waking_or_resurrecting_it() {
-    use eva_core::{CallStep as _, service::chats::Chats as _};
-    use eva_protocol::requests::chats::delete;
     for purge in [false, true] {
         let h = strict().await;
         let parent = chat(&h).await;
@@ -528,11 +526,7 @@ async fn deleting_lead_stops_team_without_waking_or_resurrecting_it() {
         h.client_session()
             .await
             .chats()
-            .delete()
-            .call(delete::Args {
-                chat: parent,
-                purge,
-            })
+            .delete(parent, purge)
             .await
             .unwrap();
         assert!(h.kernel.shared().turns().live(parent).is_none());
@@ -578,8 +572,6 @@ async fn deleting_lead_stops_team_without_waking_or_resurrecting_it() {
 
 #[tokio::test]
 async fn deletion_finishes_if_the_caller_disappears_while_waiting_for_a_child() {
-    use eva_core::{CallStep as _, service::chats::Chats as _};
-    use eva_protocol::requests::chats::delete;
     let h = strict().await;
     let parent = chat(&h).await;
     let (script, provider_gate) = Script::reply("unfinished").gate();
@@ -610,16 +602,7 @@ async fn deletion_finishes_if_the_caller_disappears_while_waiting_for_a_child() 
         .lock_owned()
         .await;
     let mut session = h.client_session().await;
-    let deleting = tokio::spawn(async move {
-        session
-            .chats()
-            .delete()
-            .call(delete::Args {
-                chat: parent,
-                purge: true,
-            })
-            .await
-    });
+    let deleting = tokio::spawn(async move { session.chats().delete(parent, true).await });
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let row = h

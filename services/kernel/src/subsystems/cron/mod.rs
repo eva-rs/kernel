@@ -12,9 +12,8 @@ use std::{
 use eva::{data, supervisor::SlaveRx, time::Timestamp};
 use tokio::{sync::Mutex, task::JoinSet, time::MissedTickBehavior};
 
-use eva_core::{CallStep as _, SessionMaker as _, service::chats::Chats as _};
+use eva_core::SessionMaker as _;
 use eva_protocol::{
-    requests::chats::notify,
     types::{ChatId, CronJobId, Effort, ModelId, RunId, ToolId},
     wire::events::{CronFired, Event},
 };
@@ -272,12 +271,7 @@ pub async fn notify<C: Components>(
     let sent = match kernel.make_session(kernel_caller()).await {
         Ok(mut session) => session
             .chats()
-            .notify()
-            .call(notify::Args {
-                subject: subject.clone(),
-                body,
-                source_chat,
-            })
+            .notify(subject.clone(), body, source_chat)
             .await
             .map(drop)
             .map_err(|e| e.to_string()),

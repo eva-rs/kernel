@@ -5,10 +5,7 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{Outcome, SVC, TestSession, outcome};
-use eva_core::{
-    CallStep as _,
-    service::{chats::Chats as _, folders::Folders as _},
-};
+use eva_core::{CallStep as _, service::Folders::Trait as _};
 use eva_protocol::{
     errors::{Generic, folders::NameTaken},
     requests::{
@@ -21,11 +18,7 @@ use eva_protocol::{
 async fn create(session: &mut TestSession, surface: &str, name: &str) -> Folder {
     session
         .folders()
-        .create()
-        .call(create::Args {
-            surface: SurfaceId::from(surface),
-            name: String::from(name),
-        })
+        .create(SurfaceId::from(surface), String::from(name))
         .await
         .expect("create folder")
         .folder
@@ -34,6 +27,7 @@ async fn create(session: &mut TestSession, surface: &str, name: &str) -> Folder 
 async fn list_names(session: &mut TestSession, surface: &str) -> Vec<String> {
     let list::Ok { found } = session
         .folders()
+        .inner_mut()
         .list()
         .call(list::Args {
             surface: Some(SurfaceId::from(surface)),
@@ -67,6 +61,7 @@ async fn create_update_and_list() {
 
     let update::Ok { folder } = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(
             work.id,
@@ -95,6 +90,7 @@ async fn create_update_and_list() {
     let keep: update::Update = serde_json::from_str("{}").expect("keep");
     let update::Ok { folder: kept } = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(work.id, keep))
         .await
@@ -105,6 +101,7 @@ async fn create_update_and_list() {
         serde_json::from_str(r#"{"trusted": {"change": null}, "model": null}"#).expect("clear");
     let update::Ok { folder: cleared } = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(work.id, clear))
         .await
@@ -119,6 +116,7 @@ async fn builtin_folders_keep_their_names() {
     let mut client = h.client_session().await;
     let list::Ok { found } = client
         .folders()
+        .inner_mut()
         .list()
         .call(list::Args {
             surface: Some(SurfaceId::from("system")),
@@ -134,6 +132,7 @@ async fn builtin_folders_keep_their_names() {
 
     let res = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(
             unsorted.id,
@@ -151,6 +150,7 @@ async fn builtin_folders_keep_their_names() {
     // Trust и модель builtin-папки правятся; тот же name — не переименование.
     let update::Ok { folder } = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(
             unsorted.id,
@@ -164,13 +164,7 @@ async fn builtin_folders_keep_their_names() {
         .expect("builtin trust");
     assert_eq!(folder.trusted, Some(false));
 
-    let res = client
-        .folders()
-        .delete()
-        .call(delete::Args {
-            folder: unsorted.id,
-        })
-        .await;
+    let res = client.folders().delete(unsorted.id).await;
     assert!(
         matches!(&res, Err(Generic::Spec(delete::Err::Builtin(e))) if e.folder == unsorted.id),
         "{res:?}"
@@ -188,11 +182,7 @@ async fn names_are_unique_per_surface() {
 
     let res = client
         .folders()
-        .create()
-        .call(create::Args {
-            surface: SurfaceId::from("local"),
-            name: String::from("work"),
-        })
+        .create(SurfaceId::from("local"), String::from("work"))
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(create::Err::NameTaken(NameTaken { surface, name })))
@@ -202,6 +192,7 @@ async fn names_are_unique_per_surface() {
 
     let res = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(
             work.id,
@@ -226,27 +217,20 @@ async fn invalid_arguments_and_missing_objects() {
     for name in ["", "  ", "two\nlines"] {
         let res = client
             .folders()
-            .create()
-            .call(create::Args {
-                surface: SurfaceId::from("local"),
-                name: String::from(name),
-            })
+            .create(SurfaceId::from("local"), String::from(name))
             .await;
         assert_eq!(outcome(&res), Outcome::Invalid, "{name:?}: {res:?}");
     }
 
     let res = client
         .folders()
-        .create()
-        .call(create::Args {
-            surface: SurfaceId::from("nowhere"),
-            name: String::from("x"),
-        })
+        .create(SurfaceId::from("nowhere"), String::from("x"))
         .await;
     assert_eq!(outcome(&res), Outcome::NotFound, "{res:?}");
 
     let res = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(
             work.id,
@@ -261,6 +245,7 @@ async fn invalid_arguments_and_missing_objects() {
     let ghost = FolderId(9_999);
     let res = client
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(ghost, update::Update::default()))
         .await;
@@ -268,11 +253,7 @@ async fn invalid_arguments_and_missing_objects() {
         matches!(&res, Err(Generic::Spec(update::Err::NotFound(e))) if e.folder == ghost),
         "{res:?}"
     );
-    let res = client
-        .folders()
-        .delete()
-        .call(delete::Args { folder: ghost })
-        .await;
+    let res = client.folders().delete(ghost).await;
     assert!(
         matches!(&res, Err(Generic::Spec(delete::Err::NotFound(e))) if e.folder == ghost),
         "{res:?}"
@@ -289,18 +270,17 @@ async fn delete_moves_chats_to_unsorted() {
     for _ in 0..3 {
         let chats::create::Ok { chat } = client
             .chats()
-            .create()
-            .call(chats::create::Args {
-                surface: SurfaceId::from("local"),
-                folder: Some(work.id),
-                external_id: None,
-                external_kind: None,
-                kind: None,
-                title: None,
-                project: None,
-                workdir: None,
-                workdir_on: None,
-            })
+            .create(
+                SurfaceId::from("local"),
+                Some(work.id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .expect("chat in work");
         ids.push(chat.id);
@@ -308,20 +288,11 @@ async fn delete_moves_chats_to_unsorted() {
     // Удалённый чат папки тоже переезжает: иначе FK держал бы папку.
     client
         .chats()
-        .delete()
-        .call(chats::delete::Args {
-            chat: ids[0],
-            purge: false,
-        })
+        .delete(ids[0], false)
         .await
         .expect("soft delete");
 
-    let delete::Ok { moved } = client
-        .folders()
-        .delete()
-        .call(delete::Args { folder: work.id })
-        .await
-        .expect("delete");
+    let delete::Ok { moved } = client.folders().delete(work.id).await.expect("delete");
     assert_eq!(moved, 3);
     assert!(
         !list_names(&mut client, "local")
@@ -330,12 +301,7 @@ async fn delete_moves_chats_to_unsorted() {
     );
 
     for id in ids {
-        let chats::get::Ok { chat } = client
-            .chats()
-            .get()
-            .call(chats::get::Args { chat: id.into() })
-            .await
-            .expect("get");
+        let chats::get::Ok { chat } = client.chats().get(id.into()).await.expect("get");
         let folder: String = h
             .query(move |c| {
                 Ok(c.query_row(
@@ -364,12 +330,7 @@ async fn list_pages_by_id() {
     loop {
         let list::Ok { found } = client
             .folders()
-            .list()
-            .call(list::Args {
-                surface: Some(SurfaceId::from(SVC)),
-                limit,
-                after,
-            })
+            .list(Some(SurfaceId::from(SVC)), limit, after)
             .await
             .expect("page");
         assert!(found.windows(2).all(|w| w[0].id > w[1].id), "id DESC");
@@ -388,18 +349,14 @@ async fn list_pages_by_id() {
 
     let list::Ok { found } = client
         .folders()
-        .list()
-        .call(list::Args {
-            surface: Some(SurfaceId::from(SVC)),
-            limit,
-            after: seen.last().copied(),
-        })
+        .list(Some(SurfaceId::from(SVC)), limit, seen.last().copied())
         .await
         .expect("past the end");
     assert!(found.is_empty());
 
     let list::Ok { found } = client
         .folders()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await
@@ -412,15 +369,16 @@ async fn database_failure_is_aux_db() {
     let h = common::start().await;
     let mut client = h.client_session().await;
     h.db_fail.store(true, Ordering::Relaxed);
-    let res = client.folders().list().call(list::Args::default()).await;
+    let res = client
+        .folders()
+        .inner_mut()
+        .list()
+        .call(list::Args::default())
+        .await;
     assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
     let res = client
         .folders()
-        .create()
-        .call(create::Args {
-            surface: SurfaceId::from("local"),
-            name: String::from("x"),
-        })
+        .create(SurfaceId::from("local"), String::from("x"))
         .await;
     assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
 }
@@ -428,18 +386,17 @@ async fn database_failure_is_aux_db() {
 async fn chat_in(session: &mut TestSession, folder: FolderId, trusted: Option<bool>) -> ChatId {
     let chat = session
         .chats()
-        .create()
-        .call(chats::create::Args {
-            surface: SurfaceId::from("local"),
-            folder: Some(folder),
-            external_id: None,
-            external_kind: None,
-            kind: None,
-            title: None,
-            project: None,
-            workdir: None,
-            workdir_on: None,
-        })
+        .create(
+            SurfaceId::from("local"),
+            Some(folder),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("chat in folder")
         .chat
@@ -447,14 +404,13 @@ async fn chat_in(session: &mut TestSession, folder: FolderId, trusted: Option<bo
     if trusted.is_some() {
         session
             .chats()
-            .update()
-            .call(chats::update::Args {
+            .update(
                 chat,
-                update: chats::update::Update {
+                chats::update::Update {
                     trusted: Patch::Change(trusted),
                     ..Default::default()
                 },
-            })
+            )
             .await
             .expect("explicit chat trust");
     }
@@ -464,6 +420,7 @@ async fn chat_in(session: &mut TestSession, folder: FolderId, trusted: Option<bo
 async fn set_trust(session: &mut TestSession, folder: FolderId, trusted: Option<bool>) -> Folder {
     session
         .folders()
+        .inner_mut()
         .update()
         .call(update_args(
             folder,
@@ -492,12 +449,7 @@ async fn delete_across_a_trust_boundary_resets_the_segment() {
     h.open_segment(inherited).await;
     h.open_segment(explicit).await;
 
-    let delete::Ok { moved } = client
-        .folders()
-        .delete()
-        .call(delete::Args { folder: public })
-        .await
-        .expect("delete");
+    let delete::Ok { moved } = client.folders().delete(public).await.expect("delete");
     assert_eq!(moved, 3);
     assert!(
         h.reset_pending(inherited).await,

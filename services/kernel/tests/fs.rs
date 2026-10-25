@@ -10,7 +10,7 @@ use common::{
     Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, with_modules,
 };
 use eva::bytesize::ByteSize;
-use eva_core::{CallStep as _, service::fs::Fs as _};
+use eva_core::{CallStep as _, service::Fs::Trait as _};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::fs::{EntryKind, list, read, remove, stat, write},
@@ -34,6 +34,7 @@ fn put(path: &str, data: &[u8]) -> write::Args {
 async fn write_ok(session: &mut TestSession, path: &str, data: &[u8], create_dirs: bool) {
     session
         .fs()
+        .inner_mut()
         .write()
         .call(write::Args {
             create_dirs,
@@ -46,10 +47,7 @@ async fn write_ok(session: &mut TestSession, path: &str, data: &[u8], create_dir
 async fn read(session: &mut TestSession, path: &str) -> Result<Vec<u8>, Generic<read::Err>> {
     session
         .fs()
-        .read()
-        .call(read::Args {
-            path: path.to_owned(),
-        })
+        .read(path.to_owned())
         .await
         .map(|ok| ok.data.into_vec())
 }
@@ -57,10 +55,7 @@ async fn read(session: &mut TestSession, path: &str) -> Result<Vec<u8>, Generic<
 async fn names(session: &mut TestSession, path: &str) -> Vec<(String, EntryKind, u64)> {
     session
         .fs()
-        .list()
-        .call(list::Args {
-            path: path.to_owned(),
-        })
+        .list(path.to_owned())
         .await
         .expect("fs.list")
         .entries
@@ -76,6 +71,7 @@ async fn write_read_list_stat_remove() {
 
     let write::Ok { size } = svc
         .fs()
+        .inner_mut()
         .write()
         .call(put("notes.txt", b"hello"))
         .await
@@ -106,49 +102,24 @@ async fn write_read_list_stat_remove() {
 
     let stat::Ok { entry } = svc
         .fs()
-        .stat()
-        .call(stat::Args {
-            path: String::from("a/b/c.bin"),
-        })
+        .stat(String::from("a/b/c.bin"))
         .await
         .expect("stat");
     assert_eq!(
         (entry.name.as_str(), entry.kind, entry.size),
         ("c.bin", EntryKind::File, 3)
     );
-    let stat::Ok { entry } = svc
-        .fs()
-        .stat()
-        .call(stat::Args {
-            path: String::new(),
-        })
-        .await
-        .expect("stat root");
+    let stat::Ok { entry } = svc.fs().stat(String::new()).await.expect("stat root");
     assert_eq!(entry.kind, EntryKind::Dir);
 
     svc.fs()
-        .remove()
-        .call(remove::Args {
-            path: String::from("notes.txt"),
-            recursive: false,
-        })
+        .remove(String::from("notes.txt"), false)
         .await
         .expect("remove file");
-    let res = svc
-        .fs()
-        .remove()
-        .call(remove::Args {
-            path: String::from("a"),
-            recursive: false,
-        })
-        .await;
+    let res = svc.fs().remove(String::from("a"), false).await;
     assert_eq!(outcome(&res), Outcome::Invalid, "non-empty dir: {res:?}");
     svc.fs()
-        .remove()
-        .call(remove::Args {
-            path: String::from("a"),
-            recursive: true,
-        })
+        .remove(String::from("a"), true)
         .await
         .expect("remove dir");
     assert!(names(&mut svc, "").await.is_empty());
@@ -176,78 +147,56 @@ async fn spec_errors() {
         "{res:?}"
     );
 
-    let res = svc.fs().write().call(put("new/file", b"x")).await;
+    let res = svc
+        .fs()
+        .inner_mut()
+        .write()
+        .call(put("new/file", b"x"))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Spec(write::Err::NotFound(e))) if e.path == "new/file"),
         "missing parent without create_dirs: {res:?}"
     );
-    let res = svc.fs().write().call(put("dir", b"x")).await;
+    let res = svc.fs().inner_mut().write().call(put("dir", b"x")).await;
     assert!(
         matches!(&res, Err(Generic::Spec(write::Err::IsDir(_)))),
         "{res:?}"
     );
-    let res = svc.fs().write().call(put("", b"x")).await;
+    let res = svc.fs().inner_mut().write().call(put("", b"x")).await;
     assert!(
         matches!(&res, Err(Generic::Spec(write::Err::IsDir(_)))),
         "root: {res:?}"
     );
-    let res = svc.fs().write().call(put("dir/file/x", b"x")).await;
-    assert_eq!(outcome(&res), Outcome::Invalid, "parent is a file: {res:?}");
-
     let res = svc
         .fs()
-        .list()
-        .call(list::Args {
-            path: String::from("nope"),
-        })
+        .inner_mut()
+        .write()
+        .call(put("dir/file/x", b"x"))
         .await;
+    assert_eq!(outcome(&res), Outcome::Invalid, "parent is a file: {res:?}");
+
+    let res = svc.fs().list(String::from("nope")).await;
     assert!(
         matches!(&res, Err(Generic::Spec(list::Err::NotFound(_)))),
         "{res:?}"
     );
-    let res = svc
-        .fs()
-        .list()
-        .call(list::Args {
-            path: String::from("dir/file"),
-        })
-        .await;
+    let res = svc.fs().list(String::from("dir/file")).await;
     assert!(
         matches!(&res, Err(Generic::Spec(list::Err::NotDir(e))) if e.path == "dir/file"),
         "{res:?}"
     );
 
-    let res = svc
-        .fs()
-        .stat()
-        .call(stat::Args {
-            path: String::from("nope"),
-        })
-        .await;
+    let res = svc.fs().stat(String::from("nope")).await;
     assert!(
         matches!(&res, Err(Generic::Spec(stat::Err::NotFound(_)))),
         "{res:?}"
     );
-    let res = svc
-        .fs()
-        .remove()
-        .call(remove::Args {
-            path: String::from("nope"),
-            recursive: true,
-        })
-        .await;
+    let res = svc.fs().remove(String::from("nope"), true).await;
     assert!(
         matches!(&res, Err(Generic::Spec(remove::Err::NotFound(_)))),
         "{res:?}"
     );
-    let res = svc
-        .fs()
-        .remove()
-        .call(remove::Args {
-            path: String::from("."),
-            recursive: true,
-        })
-        .await;
+    let res = svc.fs().remove(String::from("."), true).await;
     assert_eq!(outcome(&res), Outcome::Invalid, "the root stays: {res:?}");
 }
 
@@ -267,32 +216,13 @@ async fn escapes_are_forbidden() {
     ] {
         let res = read(&mut svc, path).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "read {path}: {res:?}");
-        let res = svc.fs().write().call(put(path, b"pwn")).await;
+        let res = svc.fs().inner_mut().write().call(put(path, b"pwn")).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "write {path}: {res:?}");
-        let res = svc
-            .fs()
-            .list()
-            .call(list::Args {
-                path: path.to_owned(),
-            })
-            .await;
+        let res = svc.fs().list(path.to_owned()).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "list {path}: {res:?}");
-        let res = svc
-            .fs()
-            .stat()
-            .call(stat::Args {
-                path: path.to_owned(),
-            })
-            .await;
+        let res = svc.fs().stat(path.to_owned()).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "stat {path}: {res:?}");
-        let res = svc
-            .fs()
-            .remove()
-            .call(remove::Args {
-                path: path.to_owned(),
-                recursive: true,
-            })
-            .await;
+        let res = svc.fs().remove(path.to_owned(), true).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "remove {path}: {res:?}");
     }
     assert_eq!(
@@ -318,11 +248,12 @@ async fn symlinks_outside_are_forbidden() {
     for path in ["out/secret", "out_file"] {
         let res = read(&mut svc, path).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "read {path}: {res:?}");
-        let res = svc.fs().write().call(put(path, b"pwn")).await;
+        let res = svc.fs().inner_mut().write().call(put(path, b"pwn")).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "write {path}: {res:?}");
     }
     let res = svc
         .fs()
+        .inner_mut()
         .write()
         .call(write::Args {
             create_dirs: true,
@@ -330,13 +261,7 @@ async fn symlinks_outside_are_forbidden() {
         })
         .await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "{res:?}");
-    let res = svc
-        .fs()
-        .list()
-        .call(list::Args {
-            path: String::from("out"),
-        })
-        .await;
+    let res = svc.fs().list(String::from("out")).await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "{res:?}");
 
     assert_eq!(
@@ -347,11 +272,7 @@ async fn symlinks_outside_are_forbidden() {
     assert_eq!(listed, ["alias", "real"], "links outside are not listed");
 
     svc.fs()
-        .remove()
-        .call(remove::Args {
-            path: String::from("out"),
-            recursive: true,
-        })
+        .remove(String::from("out"), true)
         .await
         .expect("removing the link itself");
     assert_eq!(
@@ -367,11 +288,11 @@ async fn quota_counts_the_whole_directory() {
     let mut svc = h.session(service(SVC)).await;
 
     write_ok(&mut svc, "a", &[0; 60], false).await;
-    let res = svc.fs().write().call(put("b", &[0; 60])).await;
+    let res = svc.fs().inner_mut().write().call(put("b", &[0; 60])).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
     write_ok(&mut svc, "a", &[0; 90], false).await;
     write_ok(&mut svc, "b", &[0; 10], false).await;
-    let res = svc.fs().write().call(put("c", &[0; 1])).await;
+    let res = svc.fs().inner_mut().write().call(put("c", &[0; 1])).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
 }
 
@@ -402,28 +323,20 @@ async fn policy_matrix() {
             Outcome::Ok
         };
         let mut session = h.session(caller).await;
-        let res = session.fs().write().call(put("f", b"x")).await;
+        let res = session.fs().inner_mut().write().call(put("f", b"x")).await;
         assert_eq!(outcome(&res), expect, "{who} write");
         let res = read(&mut session, "f").await;
         assert_eq!(outcome(&res), expect, "{who} read");
-        let res = session
-            .fs()
-            .stat()
-            .call(stat::Args {
-                path: String::from("f"),
-            })
-            .await;
+        let res = session.fs().stat(String::from("f")).await;
         assert_eq!(outcome(&res), expect, "{who} stat");
-        let res = session.fs().list().call(list::Args::default()).await;
-        assert_eq!(outcome(&res), expect, "{who} list");
         let res = session
             .fs()
-            .remove()
-            .call(remove::Args {
-                path: String::from("f"),
-                recursive: false,
-            })
+            .inner_mut()
+            .list()
+            .call(list::Args::default())
             .await;
+        assert_eq!(outcome(&res), expect, "{who} list");
+        let res = session.fs().remove(String::from("f"), false).await;
         assert_eq!(outcome(&res), expect, "{who} remove");
     }
 }
@@ -438,10 +351,16 @@ async fn dangling_symlinks_are_forbidden() {
     std::os::unix::fs::symlink(outside.join("new"), root(&h, SVC).join("dangling"))
         .expect("dangling link");
 
-    let res = svc.fs().write().call(put("dangling", b"pwn")).await;
+    let res = svc
+        .fs()
+        .inner_mut()
+        .write()
+        .call(put("dangling", b"pwn"))
+        .await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "write: {res:?}");
     let res = svc
         .fs()
+        .inner_mut()
         .write()
         .call(write::Args {
             create_dirs: true,
@@ -451,13 +370,7 @@ async fn dangling_symlinks_are_forbidden() {
     assert_eq!(outcome(&res), Outcome::Forbidden, "write under: {res:?}");
     let res = read(&mut svc, "dangling").await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "read: {res:?}");
-    let res = svc
-        .fs()
-        .stat()
-        .call(stat::Args {
-            path: String::from("dangling"),
-        })
-        .await;
+    let res = svc.fs().stat(String::from("dangling")).await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "stat: {res:?}");
     assert!(!outside.join("new").exists(), "nothing was created outside");
 }
@@ -476,6 +389,7 @@ async fn concurrent_writes_share_one_quota() {
         .map(|(i, session)| async move {
             session
                 .fs()
+                .inner_mut()
                 .write()
                 .call(put(&format!("f{i}"), &[0; 60]))
                 .await
@@ -506,6 +420,7 @@ async fn entry_count_is_capped() {
     write_ok(&mut svc, "b", b"", false).await;
     let res = svc
         .fs()
+        .inner_mut()
         .write()
         .call(write::Args {
             create_dirs: true,
@@ -517,7 +432,7 @@ async fn entry_count_is_capped() {
         "two dirs and a file do not fit: {res:?}"
     );
     write_ok(&mut svc, "c", b"", false).await;
-    let res = svc.fs().write().call(put("d", b"")).await;
+    let res = svc.fs().inner_mut().write().call(put("d", b"")).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
     write_ok(&mut svc, "a", b"rewrite", false).await;
 }
@@ -539,23 +454,14 @@ async fn read_leaves_room_for_the_frame() {
     let (client, _) = common::dialed(&listener, Capabilities::default(), NoHandler).await;
     let mut remote = client.session();
 
-    let res = remote
-        .fs()
-        .read()
-        .call(read::Args {
-            path: String::from("near"),
-        })
-        .await;
+    let res = remote.fs().read(String::from("near")).await;
     assert!(
         matches!(res, Err(Generic::Aux(Aux::Quota(_)))),
         "a file just under max_frame is quota, not a broken frame: {res:?}"
     );
     let ok = remote
         .fs()
-        .read()
-        .call(read::Args {
-            path: String::from("fits"),
-        })
+        .read(String::from("fits"))
         .await
         .expect("the largest readable file fits a frame");
     assert_eq!(ok.data.len(), max);

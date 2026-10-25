@@ -4,13 +4,10 @@
 mod common;
 
 use common::{CLIENT, Harness, SVC, with_modules};
-use eva_core::{
-    CallStep as _,
-    service::{chats::Chats as _, inference::Inference as _, persons::Persons as _},
-};
+use eva_core::{CallStep as _, service::Inference::Trait as _};
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
-    requests::{chats, inference, persons},
+    requests::inference,
     types::{
         ModelId, SurfaceId,
         content::Block,
@@ -90,13 +87,7 @@ async fn persons_and_trust_moves_are_counted() {
     for external_id in ["alice", "alice", "bob"] {
         client
             .persons()
-            .resolve()
-            .call(persons::resolve::Args {
-                surface: SurfaceId::from("local"),
-                external_id: external_id.to_owned(),
-                handle: None,
-                name: None,
-            })
+            .resolve(SurfaceId::from("local"), external_id.to_owned(), None, None)
             .await
             .expect("resolve");
     }
@@ -115,18 +106,17 @@ async fn persons_and_trust_moves_are_counted() {
         .expect("folder");
     let chat = client
         .chats()
-        .create()
-        .call(chats::create::Args {
-            surface: SurfaceId::from("local"),
-            folder: None,
-            external_id: None,
-            external_kind: None,
-            kind: None,
-            title: None,
-            project: None,
-            workdir: None,
-            workdir_on: None,
-        })
+        .create(
+            SurfaceId::from("local"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("chat")
         .chat;
@@ -143,12 +133,7 @@ async fn persons_and_trust_moves_are_counted() {
     ] {
         client
             .chats()
-            .r#move()
-            .call(chats::r#move::Args {
-                chat: chat.id,
-                folder,
-                confirm: true,
-            })
+            .r#move(chat.id, folder, true)
             .await
             .expect("move");
     }
@@ -187,6 +172,7 @@ async fn inference_errors_and_unpriced_spend_are_counted() {
     );
     client
         .inference()
+        .inner_mut()
         .complete()
         .call(ask())
         .await
@@ -200,6 +186,7 @@ async fn inference_errors_and_unpriced_spend_are_counted() {
     }));
     client
         .inference()
+        .inner_mut()
         .complete()
         .call(ask())
         .await

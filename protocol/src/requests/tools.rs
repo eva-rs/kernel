@@ -1,6 +1,7 @@
 //! Реестр тулов глазами клиента хозяина.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::{
     errors,
@@ -17,30 +18,20 @@ impl Default for Depth {
     }
 }
 
-pub mod catalog {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {
+#[service(export, result = Response)]
+pub trait Tools {
+    #[args(derive(Default))]
+    #[errors(errors::tools::PathNotFound)]
+    fn catalog(
         /// Поддерево; `None` — корень.
-        pub path: Option<String>,
-        #[serde(default)]
-        pub depth: Depth,
+        path: Option<String>,
+        #[serde(default)] depth: Depth,
         /// Посчитать `exposure` по контексту последнего шага чата.
-        pub chat: Option<ChatId>,
+        chat: Option<ChatId>,
+    ) -> ok! {
+        entries: Vec<CatalogEntry>,
+    };
+    embed! {
+        code!(Err => [PathNotFound]);
     }
-
-    #[data]
-    pub struct Ok {
-        pub entries: Vec<CatalogEntry>,
-    }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        PathNotFound(#[from] errors::tools::PathNotFound),
-    }
-
-    code!(Err => [PathNotFound]);
 }

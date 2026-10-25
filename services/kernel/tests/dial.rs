@@ -7,10 +7,10 @@ mod common;
 use std::time::Duration;
 
 use common::{Harness, bind_keyed, dialed};
-use eva_core::{CallStep as _, service::modules::Modules as _};
+
 use eva_kernel::subsystems::modules::dial::{Backoff, Pacing};
 use eva_protocol::{
-    requests::modules::{add, list, remove},
+    requests::modules::add,
     types::{
         ModuleId,
         module::{ModuleKind, ServiceAddress, ServiceKey, State},
@@ -35,12 +35,7 @@ async fn add(h: &Harness, module: &str, address: ServiceAddress, key: Option<&st
     h.client_session()
         .await
         .modules()
-        .add()
-        .call(add::Args {
-            module: ModuleId::from(module),
-            address,
-            key: key.map(ServiceKey::from),
-        })
+        .add(ModuleId::from(module), address, key.map(ServiceKey::from))
         .await
         .expect("modules.add")
 }
@@ -49,10 +44,7 @@ async fn remove(h: &Harness, module: &str) {
     h.client_session()
         .await
         .modules()
-        .remove()
-        .call(remove::Args {
-            module: ModuleId::from(module),
-        })
+        .remove(ModuleId::from(module))
         .await
         .expect("modules.remove");
 }
@@ -62,7 +54,6 @@ async fn state(h: &Harness, module: &str) -> Option<State> {
         .await
         .modules()
         .list()
-        .call(list::Args {})
         .await
         .expect("modules.list")
         .modules
@@ -241,12 +232,7 @@ async fn an_address_already_dialed_is_a_conflict() {
         .client_session()
         .await
         .modules()
-        .add()
-        .call(add::Args {
-            module: ModuleId::from("mirror"),
-            address: taken,
-            key: None,
-        })
+        .add(ModuleId::from("mirror"), taken, None)
         .await
         .expect_err("the config dials this address");
     assert!(
@@ -261,12 +247,7 @@ async fn an_address_already_dialed_is_a_conflict() {
         .client_session()
         .await
         .modules()
-        .add()
-        .call(add::Args {
-            module: ModuleId::from("mirror"),
-            address,
-            key: None,
-        })
+        .add(ModuleId::from("mirror"), address, None)
         .await
         .expect_err("modules.add dials this address");
     assert!(error.to_string().contains("bridge"), "{error}");

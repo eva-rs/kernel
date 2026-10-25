@@ -1,50 +1,31 @@
 //! Постоянные разрешения рук.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::{
     errors,
     types::{ChatId, HandsGrantId, SurfaceId, hands::Grant},
 };
 
-pub mod list {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {
-        pub endpoint: Option<String>,
-        pub surface: Option<SurfaceId>,
-        pub chat: Option<ChatId>,
+#[service(export, result = Response)]
+pub trait HandsGrants {
+    #[args(derive(Default))]
+    fn list(
+        endpoint: Option<String>,
+        surface: Option<SurfaceId>,
+        chat: Option<ChatId>,
+    ) -> ok! {
+        grants: Vec<Grant>,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data]
-    pub struct Ok {
-        pub grants: Vec<Grant>,
+    #[flags(mutating)]
+    #[errors(errors::hands_grants::NotFound)]
+    fn revoke(id: HandsGrantId) -> ok! {};
+    embed! {
+        code!(Err => [NotFound]);
     }
-
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod revoke {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub id: HandsGrantId,
-    }
-
-    #[data]
-    pub struct Ok {}
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::hands_grants::NotFound),
-    }
-
-    code!(Err => [NotFound]);
 }

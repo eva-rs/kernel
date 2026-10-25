@@ -1,6 +1,8 @@
 //! Blob-store: байты вложений ходят потоками, не в `Args`.
 
+use crate::requests::Response;
 use eva::data;
+use eva::service;
 
 use crate::{
     errors,
@@ -11,96 +13,70 @@ use crate::{
     },
 };
 
-pub mod put {
-    use super::*;
+#[service(export, result = Response)]
+pub trait Blobs {
+    #[flags(upload)]
+    #[args(
+        doc = " По проводу — `Meta`, тело — поток чанков транспорта.",
+        data(not(Debug, serde, schemars, Clone, PartialEq))
+    )]
+    #[errors(
+        errors::blobs::BadName,
+        errors::blobs::SizeMismatch,
+        errors::blobs::HashMismatch
+    )]
+    fn put(
+        meta: this![Meta],
+        body: ByteStream,
+    ) -> ok! {
+        id: BlobId,
+        size: u64,
+        hash: String,
+    };
+    embed! {
+        #[data]
+        pub struct Meta {
+            pub chat: ChatId,
+            pub name: String,
+            pub media_type: String,
+            pub kind: Kind,
+            pub size: u64,
+            /// blake3 hex; сверяется по ходу приёма.
+            pub hash: Option<String>,
+        }
 
-    /// По проводу — `Meta`, тело — поток чанков транспорта.
-    #[data(not(Debug, serde, schemars, Clone, PartialEq))]
-    pub struct Args {
-        pub meta: Meta,
-        pub body: ByteStream,
+        code!(Err => [BadName, SizeMismatch, HashMismatch]);
     }
 
-    #[data]
-    pub struct Meta {
-        pub chat: ChatId,
-        pub name: String,
-        pub media_type: String,
-        pub kind: Kind,
-        pub size: u64,
-        /// blake3 hex; сверяется по ходу приёма.
-        pub hash: Option<String>,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub id: BlobId,
-        pub size: u64,
-        pub hash: String,
-    }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        BadName(#[from] errors::blobs::BadName),
-        #[display("{_0}")]
-        SizeMismatch(#[from] errors::blobs::SizeMismatch),
-        #[display("{_0}")]
-        HashMismatch(#[from] errors::blobs::HashMismatch),
-    }
-
-    code!(Err => [BadName, SizeMismatch, HashMismatch]);
-}
-
-pub mod get {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub id: BlobId,
+    #[flags(stream)]
+    #[errors(errors::blobs::NotFound)]
+    fn get(
+        id: BlobId,
         /// Докачка с байта.
         #[serde(default)]
-        pub offset: u64,
+        offset: u64,
+    ) -> ok!(
+        #[data(not(Debug, serde, schemars, Clone, PartialEq))]
+        Items<this![Item], this![Err]>
+    );
+    embed! {
+        /// Сначала один `Meta`, затем чанки.
+        #[data]
+        pub enum Item {
+            Meta {
+                name: String,
+                media_type: String,
+                size: u64,
+            },
+            Chunk(Bytes),
+        }
+
+        code!(Err => [NotFound]);
     }
 
-    /// Сначала один `Meta`, затем чанки.
-    #[data]
-    pub enum Item {
-        Meta {
-            name: String,
-            media_type: String,
-            size: u64,
-        },
-        Chunk(Bytes),
+    #[errors(errors::blobs::NotFound)]
+    fn stat(id: BlobId) -> ok!(Meta);
+    embed! {
+        code!(Err => [NotFound]);
     }
-
-    pub type Ok = Items<Item, Err>;
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::blobs::NotFound),
-    }
-
-    code!(Err => [NotFound]);
-}
-
-pub mod stat {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub id: BlobId,
-    }
-
-    /// Не `#[serde(flatten)]`: плоская карта идёт через буфер serde, где `Timestamp` из msgpack не разбирается.
-    pub type Ok = Meta;
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::blobs::NotFound),
-    }
-
-    code!(Err => [NotFound]);
 }

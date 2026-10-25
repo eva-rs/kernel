@@ -6,7 +6,6 @@ description = "Eva core: the library API — Session, namespaces, Caller, Provid
 
 [dependencies]
 eva-protocol.workspace = true
-eva-kernel-macros.workspace = true
 eva.workspace = true
 futures-sink.workspace = true
 

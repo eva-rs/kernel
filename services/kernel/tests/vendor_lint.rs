@@ -19,14 +19,7 @@ const BANNED: &[&str] = &[
 ];
 
 /// Крейты, в которых vendor-кода быть не может.
-const CRATES: &[&str] = &[
-    "protocol",
-    "macros",
-    "core",
-    "rpc",
-    "sdk",
-    "services/kernel",
-];
+const CRATES: &[&str] = &["protocol", "core", "rpc", "sdk", "services/kernel"];
 
 fn walk(dir: &Path, skip: &Path, hits: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {

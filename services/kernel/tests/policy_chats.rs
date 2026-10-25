@@ -4,10 +4,7 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{
-    CallStep as _,
-    service::{chats::Chats as _, folders::Folders as _},
-};
+use eva_core::{CallStep as _, service::Chats::Trait as _};
 use eva_protocol::{
     requests::{
         Patch,
@@ -15,7 +12,6 @@ use eva_protocol::{
             Selector, compact, create, delete, get, history_read, list, r#move, notify, restore,
             search, update,
         },
-        folders,
     },
     types::{ChatId, FolderId, SurfaceId, folder},
 };
@@ -88,6 +84,7 @@ async fn targets(owner: &mut TestSession) -> Targets {
     let mut chat = async |surface: &str| {
         owner
             .chats()
+            .inner_mut()
             .create()
             .call(create_args(surface))
             .await
@@ -103,11 +100,7 @@ async fn targets(owner: &mut TestSession) -> Targets {
     );
     owner
         .chats()
-        .delete()
-        .call(delete::Args {
-            chat: deleted_a,
-            purge: false,
-        })
+        .delete(deleted_a, false)
         .await
         .expect("deleted target");
     Targets {
@@ -139,7 +132,8 @@ fn history(chat: ChatId) -> history_read::Args {
 }
 
 async fn run(session: &mut TestSession, case: Case, t: &Targets) -> Outcome {
-    let mut chats = session.chats();
+    let mut chats_client = session.chats();
+    let chats = chats_client.inner_mut();
     match case {
         Case::CreateA => outcome(&chats.create().call(create_args(SVC)).await),
         Case::CreateLocal => outcome(&chats.create().call(create_args("local")).await),
@@ -256,6 +250,7 @@ async fn service_lists_only_own_chats() {
     for (session, own) in [(&mut svc, SVC), (&mut other, OTHER)] {
         session
             .chats()
+            .inner_mut()
             .create()
             .call(create_args(own))
             .await
@@ -266,6 +261,7 @@ async fn service_lists_only_own_chats() {
         for deleted in [false, true] {
             let list::Ok { found } = session
                 .chats()
+                .inner_mut()
                 .list()
                 .call(list::Args {
                     deleted,
@@ -289,6 +285,7 @@ async fn service_lists_only_own_chats() {
 async fn aliased(session: &mut TestSession, surface: &str, external_id: &str) -> ChatId {
     session
         .chats()
+        .inner_mut()
         .create()
         .call(create::Args {
             external_id: Some(String::from(external_id)),
@@ -310,33 +307,27 @@ async fn service_list_filter_must_be_own() {
     let mut owner = h.client_session().await;
     let foreign_folder = owner
         .folders()
-        .create()
-        .call(folders::create::Args {
-            surface: SurfaceId::from(OTHER),
-            name: String::from("work"),
-        })
+        .create(SurfaceId::from(OTHER), String::from("work"))
         .await
         .expect("foreign folder")
         .folder
         .id;
     let own_folder = owner
         .folders()
-        .create()
-        .call(folders::create::Args {
-            surface: SurfaceId::from(SVC),
-            name: String::from("work"),
-        })
+        .create(SurfaceId::from(SVC), String::from("work"))
         .await
         .expect("own folder")
         .folder
         .id;
     other
         .chats()
+        .inner_mut()
         .create()
         .call(create_args(OTHER))
         .await
         .expect("foreign chat");
     svc.chats()
+        .inner_mut()
         .create()
         .call(create::Args {
             folder: Some(own_folder),
@@ -364,7 +355,7 @@ async fn service_list_filter_must_be_own() {
         ("unknown folder", by_folder(FolderId(9_999)), F),
     ];
     for (what, args, want) in cases {
-        let res = svc.chats().list().call(args).await;
+        let res = svc.chats().inner_mut().list().call(args).await;
         assert_eq!(outcome(&res), want, "{what}: {res:?}");
         if let Ok(ok) = res {
             assert!(!ok.found.is_empty(), "{what}");
@@ -375,9 +366,19 @@ async fn service_list_filter_must_be_own() {
         }
     }
 
-    let res = owner.chats().list().call(by_surface("nowhere")).await;
+    let res = owner
+        .chats()
+        .inner_mut()
+        .list()
+        .call(by_surface("nowhere"))
+        .await;
     assert_eq!(outcome(&res), Outcome::NotFound, "owner: {res:?}");
-    let res = owner.chats().list().call(by_surface(OTHER)).await;
+    let res = owner
+        .chats()
+        .inner_mut()
+        .list()
+        .call(by_surface(OTHER))
+        .await;
     assert_eq!(outcome(&res), K, "owner sees every surface: {res:?}");
 }
 
@@ -392,6 +393,7 @@ async fn service_page_anchor_must_be_visible() {
     for _ in 0..3 {
         own.push(
             svc.chats()
+                .inner_mut()
                 .create()
                 .call(create_args(SVC))
                 .await
@@ -402,6 +404,7 @@ async fn service_page_anchor_must_be_visible() {
     }
     let foreign = other
         .chats()
+        .inner_mut()
         .create()
         .call(create_args(OTHER))
         .await
@@ -415,6 +418,7 @@ async fn service_page_anchor_must_be_visible() {
     };
     let page = svc
         .chats()
+        .inner_mut()
         .list()
         .call(after(own[2]))
         .await
@@ -424,8 +428,13 @@ async fn service_page_anchor_must_be_visible() {
         [own[1], own[0]]
     );
 
-    let foreign_res = svc.chats().list().call(after(foreign)).await;
-    let missing_res = svc.chats().list().call(after(ChatId(9_999))).await;
+    let foreign_res = svc.chats().inner_mut().list().call(after(foreign)).await;
+    let missing_res = svc
+        .chats()
+        .inner_mut()
+        .list()
+        .call(after(ChatId(9_999)))
+        .await;
     assert_eq!(outcome(&foreign_res), Outcome::Conflict, "{foreign_res:?}");
     assert_eq!(outcome(&missing_res), Outcome::Conflict, "{missing_res:?}");
 
@@ -433,6 +442,7 @@ async fn service_page_anchor_must_be_visible() {
         .client_session()
         .await
         .chats()
+        .inner_mut()
         .list()
         .call(after(foreign))
         .await
@@ -460,12 +470,13 @@ async fn service_cannot_probe_aliases() {
     };
     let ok = svc
         .chats()
+        .inner_mut()
         .get()
         .call(alias(SVC, "u1"))
         .await
         .expect("own alias");
     assert_eq!(ok.chat.id, mine);
-    let res = svc.chats().get().call(alias(SVC, "u2")).await;
+    let res = svc.chats().inner_mut().get().call(alias(SVC, "u2")).await;
     assert_eq!(
         outcome(&res),
         Outcome::Spec,
@@ -480,7 +491,12 @@ async fn service_cannot_probe_aliases() {
         ("local", "u2"),
         ("nowhere", "u1"),
     ] {
-        let res = svc.chats().get().call(alias(surface, external_id)).await;
+        let res = svc
+            .chats()
+            .inner_mut()
+            .get()
+            .call(alias(surface, external_id))
+            .await;
         assert_eq!(
             outcome(&res),
             F,
@@ -492,7 +508,12 @@ async fn service_cannot_probe_aliases() {
     assert_eq!(refusals.len(), 1, "one refusal text: {refusals:?}");
 
     for surface in [OTHER, "nowhere"] {
-        let res = owner.chats().get().call(alias(surface, "u2")).await;
+        let res = owner
+            .chats()
+            .inner_mut()
+            .get()
+            .call(alias(surface, "u2"))
+            .await;
         assert_eq!(outcome(&res), Outcome::Spec, "owner, {surface}: {res:?}");
     }
 }
@@ -504,13 +525,19 @@ async fn service_cannot_probe_surfaces_by_create() {
     let mut svc = h.service_with_surface(SVC).await;
     h.service_with_surface(OTHER).await;
     for surface in [OTHER, "nowhere"] {
-        let res = svc.chats().create().call(create_args(surface)).await;
+        let res = svc
+            .chats()
+            .inner_mut()
+            .create()
+            .call(create_args(surface))
+            .await;
         assert_eq!(outcome(&res), F, "{surface}: {res:?}");
     }
     let res = h
         .client_session()
         .await
         .chats()
+        .inner_mut()
         .create()
         .call(create_args("nowhere"))
         .await;

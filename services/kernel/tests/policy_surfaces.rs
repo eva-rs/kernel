@@ -6,7 +6,7 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::surfaces::Surfaces as _};
+use eva_core::{CallStep as _, service::Surfaces::Trait as _};
 use eva_protocol::{
     requests::{
         Patch,
@@ -64,7 +64,8 @@ fn rename(id: SurfaceId) -> update::Args {
 }
 
 async fn run(session: &mut TestSession, case: Case, who: &str) -> Outcome {
-    let mut surfaces = session.surfaces();
+    let mut surfaces_client = session.surfaces();
+    let surfaces = surfaces_client.inner_mut();
     match case {
         Case::GetA => outcome(&surfaces.get().call(get::Args { surface: a() }).await),
         Case::GetLocal => outcome(
@@ -187,6 +188,7 @@ async fn service_lists_only_own_surfaces() {
     for (session, own) in [(&mut svc, SVC), (&mut other, OTHER)] {
         let list::Ok { found } = session
             .surfaces()
+            .inner_mut()
             .list()
             .call(list::Args::default())
             .await

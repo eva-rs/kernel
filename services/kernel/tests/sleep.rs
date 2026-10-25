@@ -10,7 +10,7 @@ use std::{
 
 use common::{Harness, Outcome, outcome};
 use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::sleep::Sleep as _};
+use eva_core::{CallStep as _, service::Sleep::Trait as _};
 use eva_kernel::{
     db::{Db as _, DbResult},
     subsystems::{
@@ -105,11 +105,10 @@ async fn page(
         .client_session()
         .await
         .sleep()
-        .runs()
-        .call(runs::Args {
-            limit: RunsLimit::new(limit).expect("limit in range"),
-            after: after.map(RunId::from),
-        })
+        .runs(
+            RunsLimit::new(limit).expect("limit in range"),
+            after.map(RunId::from),
+        )
         .await?;
     Ok(found.into_iter().map(|r| r.run_id.0).collect())
 }
@@ -151,6 +150,7 @@ async fn runs_carry_flags() {
         .client_session()
         .await
         .sleep()
+        .inner_mut()
         .runs()
         .call(runs::Args::default())
         .await
@@ -179,10 +179,7 @@ async fn phase_runs_in_phase_order_with_ops() {
 
     let phase_runs::Ok { phases } = session
         .sleep()
-        .phase_runs()
-        .call(phase_runs::Args {
-            run: RunId::from("n4"),
-        })
+        .phase_runs(RunId::from("n4"))
         .await
         .expect("phases");
     let order: Vec<_> = phases.iter().map(|p| p.phase).collect();
@@ -198,21 +195,12 @@ async fn phase_runs_in_phase_order_with_ops() {
 
     let phase_runs::Ok { phases } = session
         .sleep()
-        .phase_runs()
-        .call(phase_runs::Args {
-            run: RunId::from("n1"),
-        })
+        .phase_runs(RunId::from("n1"))
         .await
         .expect("night without phases");
     assert!(phases.is_empty());
 
-    let res = session
-        .sleep()
-        .phase_runs()
-        .call(phase_runs::Args {
-            run: RunId::from("nope"),
-        })
-        .await;
+    let res = session.sleep().phase_runs(RunId::from("nope")).await;
     assert!(
         matches!(res, Err(Generic::Spec(phase_runs::Err::RunNotFound(ref e))) if e.run.as_str() == "nope"),
         "{res:?}"
@@ -232,10 +220,7 @@ async fn corrupt_ops_json_is_a_db_error() {
         .client_session()
         .await
         .sleep()
-        .phase_runs()
-        .call(phase_runs::Args {
-            run: RunId::from("n4"),
-        })
+        .phase_runs(RunId::from("n4"))
         .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
 }
@@ -252,15 +237,14 @@ async fn sleep_matrix() {
     let mut failures = Vec::new();
     for ((who, caller), want) in common::matrix_callers().into_iter().zip([K, K, F, F]) {
         let mut s = h.session(caller).await;
-        let runs = outcome(&s.sleep().runs().call(runs::Args::default()).await);
-        let phases = outcome(
+        let runs = outcome(
             &s.sleep()
-                .phase_runs()
-                .call(phase_runs::Args {
-                    run: RunId::from("n4"),
-                })
+                .inner_mut()
+                .runs()
+                .call(runs::Args::default())
                 .await,
         );
+        let phases = outcome(&s.sleep().phase_runs(RunId::from("n4")).await);
         for (op, got) in [("runs", runs), ("phase_runs", phases)] {
             if got != want {
                 failures.push(format!("sleep.{op} as {who}: want {want:?}, got {got:?}"));
@@ -733,8 +717,7 @@ async fn a_night_runs_three_phases_and_logs_them() {
         .client_session()
         .await
         .sleep()
-        .phase_runs()
-        .call(phase_runs::Args { run: run.clone() })
+        .phase_runs(run.clone())
         .await
         .expect("phases");
     let reports: Vec<_> = phases

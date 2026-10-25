@@ -1,7 +1,7 @@
 //! Blob-store глазами тура (`07 §6`): байты и метаданные для рендера,
 //! картинки тулов и модели — в `blobs` до записи события.
 
-use eva_core::{CallStep as _, service::blobs::Blobs as _};
+use eva_core::{CallStep as _, service::Blobs::Trait as _};
 use std::collections::BTreeMap;
 
 use eva_protocol::{
@@ -137,6 +137,7 @@ pub async fn store<C: Components>(
     };
     let id = session
         .blobs()
+        .inner_mut()
         .put()
         .call(args)
         .await

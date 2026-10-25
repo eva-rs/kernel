@@ -27,8 +27,8 @@ fn raw_identifiers_are_plain_in_namespaces() {
 fn prelude_reaches_namespaces<S: eva_core::IsSession>(session: &mut eva_core::Session<S>) {
     use eva_core::prelude::*;
 
-    let _ = session.surfaces().get();
-    let _ = session.kv().list();
-    let _ = session.turns().attach();
-    let _ = session.blobs().put();
+    let _ = session.surfaces().inner_mut().get();
+    let _ = session.kv().inner_mut().list();
+    let _ = session.turns().inner_mut().attach();
+    let _ = session.blobs().inner_mut().put();
 }

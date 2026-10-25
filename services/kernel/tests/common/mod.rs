@@ -23,13 +23,11 @@ use eva::{
     url::Url,
     utils::SecretString,
 };
-use eva_core::{
-    CallStep as _, Caller, SessionMaker as _, service, service::surfaces::Surfaces as _,
-};
+use eva_core::{Caller, SessionMaker as _, service};
 use eva_hands::{Entry, Error, Greeting, Hands, Limits, Output};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{Response, surfaces},
+    requests::Response,
     types::{
         ChatId, ModelId, ModuleId, SessionId, SurfaceId,
         model::{ModelCaps, ModelDecl, ProviderDecl},
@@ -596,12 +594,7 @@ impl Harness {
         let mut session = self.session(service(name)).await;
         session
             .surfaces()
-            .create()
-            .call(surfaces::create::Args {
-                id: SurfaceId::from(name),
-                name: format!("{name} surface"),
-                rules: None,
-            })
+            .create(SurfaceId::from(name), format!("{name} surface"), None)
             .await
             .expect("service creates its surface");
         session

@@ -4,13 +4,10 @@ mod common;
 
 use std::{sync::atomic::Ordering, time::Duration};
 
-use eva_core::{
-    CallStep as _,
-    service::{chats::Chats as _, tools::Tools as _, turns::Turns as _},
-};
+use eva_core::{CallStep as _, service::Tools::Trait as _};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{chats, tools, turns},
+    requests::tools,
     types::{ChatId, ModelId, TurnId},
 };
 
@@ -63,21 +60,10 @@ async fn turn_operations_validate_objects_and_catalog_is_registered() {
     let h = common::start().await;
     let mut client = h.client_session().await;
 
-    let res = client
-        .turns()
-        .cancel()
-        .call(turns::cancel::Args { chat: ChatId(1) })
-        .await;
+    let res = client.turns().cancel(ChatId(1)).await;
     assert!(matches!(&res, Err(Generic::Spec(_))), "{res:?}");
 
-    let res = client
-        .turns()
-        .attach()
-        .call(turns::attach::Args {
-            chat: ChatId(1),
-            since_seq: None,
-        })
-        .await;
+    let res = client.turns().attach(ChatId(1), None).await.map(|ok| ok.0);
     assert!(
         matches!(&res, Err(Generic::Spec(_))),
         "missing chat is rejected before creating a stream"
@@ -85,6 +71,7 @@ async fn turn_operations_validate_objects_and_catalog_is_registered() {
 
     let res = client
         .tools()
+        .inner_mut()
         .catalog()
         .call(tools::catalog::Args::default())
         .await
@@ -94,12 +81,7 @@ async fn turn_operations_validate_objects_and_catalog_is_registered() {
     let mut svc = h.session(common::service(common::SVC)).await;
     let res = svc
         .chats()
-        .notify()
-        .call(chats::notify::Args {
-            subject: String::from("hi"),
-            body: String::from("body"),
-            source_chat: None,
-        })
+        .notify(String::from("hi"), String::from("body"), None)
         .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Forbidden(_)))),

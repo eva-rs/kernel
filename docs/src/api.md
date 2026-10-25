@@ -11,30 +11,29 @@ use eva_protocol::requests::surfaces;
 let mut session = kernel.make_session(Caller::Kernel).await?;
 let surfaces::get::Ok { surface } = session
     .surfaces()
-    .get()
-    .call(surfaces::get::Args { surface: "local".into() })
+    .get("local".into())
     .await?;
 ```
 
 - `SessionMaker::make_session(caller)` выдаёт `Session<S>`: у ядра это `Kernel`, у модуля — `Listening::kernel()` или `Connected::kernel()` (caller фиксирует соединение). Отказ `make_session` — только `Aux`.
-- `session.<ns>()` — трейт неймспейса, `.<op>()` — шаг операции. Без `use eva_core::prelude::*` (или `eva_sdk::prelude::*`) методы неймспейсов не резолвятся.
-- Операция `chats.move` в Rust — `session.chats().r#move()`.
+- `session.<ns>()` возвращает `Client<&mut S>`, `.<op>(arguments).await` вызывает операцию. Импорт трейта для такого вызова не нужен. Если `Args` уже собран, используется `.inner_mut().<op>().call(args)` и импорт `CallStep`.
+- Операция `chats.move` в Rust — `session.chats().r#move(chat, surface)`.
 
 Каждая операция — модуль `eva_protocol::requests::<ns>::<op>` с тремя типами:
 
 | Тип | Что это |
 |---|---|
 | `Args` | Аргументы; на проводе — msgpack-карта с именами полей. У загрузки — `{ meta: Meta, body: ByteStream }`: по проводу идёт `Meta`, у `Args` serde-формы нет |
-| `Ok` | Успешный ответ; у потока — `Items<Item, Err>`, `Item` — тип элемента |
+| `Ok` | Успешный ответ; у потока — `Ok(pub Items<Item, Err>)`, `Item` — тип элемента |
 | `Err` | Собственные ошибки операции; пустой enum, если своих нет |
 
-Шаг любой операции — `CallStep<Args, Output = Response<Ok, Err>>`, вызов — `.call(args)`. Вид операции — флаг в списке операций (`macros/src/lib.rs`):
+Шаг любой операции — `CallStep<Args, Output = Response<Ok, Err>>`, вызов — `.call(args)`. Вид операции — атрибут `#[flags(...)]` у метода `#[service]` в `protocol/src/requests/<ns>.rs`:
 
 | Вид | Флаг | Итог |
 |---|---|---|
 | read | — | `Response<Ok, Err>` |
 | mut | `mutating` | `Response<Ok, Err>`; повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ |
-| stream | `stream` | `Response<Items<Item, Err>, Err>`; отказ до первого элемента — `Err` самого вызова, `Err` внутри потока — последний элемент, drop `Items` — отмена |
+| stream | `stream` | `Response<Ok, Err>`, где `Ok` оборачивает `Items<Item, Err>`; отказ до первого элемента — `Err` самого вызова, `Err` внутри потока — последний элемент, drop `Items` — отмена |
 | upload | `upload` | `Response<Ok, Err>`; `body: ByteStream` — поток чанков `Result<Bytes, Aux>`, обрыв источника — `Aux` |
 
 `Items` и `ByteStream` — типы `eva_protocol::requests`.
@@ -43,7 +42,7 @@ let surfaces::get::Ok { surface } = session
 use futures::StreamExt as _;
 use eva_protocol::requests::blobs;
 
-let mut items = session.blobs().get().call(blobs::get::Args { id, offset: 0 }).await?;
+let mut items = session.blobs().get(id, 0).await?.0;
 while let Some(item) = items.next().await {
     match item? {
         blobs::get::Item::Meta { size, .. } => log::info!(size; "blob"),
@@ -52,14 +51,14 @@ while let Some(item) = items.next().await {
 }
 ```
 
-Загрузка — тот же `call`, тело едет в `Args`:
+При загрузке тело передаётся отдельным аргументом:
 
 ```rust
 use eva_protocol::{requests::{ByteStream, blobs::put}, types::blob::Kind};
 
 let body: ByteStream = Box::pin(futures::stream::iter(chunks.into_iter().map(Ok)));
-let put::Ok { id, .. } = session.blobs().put().call(put::Args {
-    meta: put::Meta {
+let put::Ok { id, .. } = session.blobs().put(
+    put::Meta {
         chat,
         name: "photo.jpg".into(),
         media_type: "image/jpeg".into(),
@@ -68,7 +67,7 @@ let put::Ok { id, .. } = session.blobs().put().call(put::Args {
         hash: None,
     },
     body,
-}).await?;
+).await?;
 ```
 
 ## Ошибки
@@ -98,7 +97,7 @@ pub enum Generic<S> {
 `Spec` — атомарные ошибки домена (`eva_protocol::errors::<ns>`), каждая со своим кодом. Примеры: `surfaces::Taken` (`conflict`), `surfaces::BadRules` (`invalid_params`), `chats::NotFound` (`not_found`), `chats::TrustChange` (`conflict`, повторить с `confirm: true`).
 
 ```rust
-match session.chats().r#move().call(args).await {
+match session.chats().inner_mut().r#move().call(args).await {
     Ok(chats::r#move::Ok { chat }) => { /* … */ }
     Err(Generic::Spec(chats::r#move::Err::TrustChange(e))) => { /* спросить хозяина */ }
     Err(Generic::Aux(Aux::Forbidden(why))) => { /* … */ }
@@ -149,6 +148,7 @@ let mut after = None;
 loop {
     let chats::list::Ok { found } = session
         .chats()
+        .inner_mut()
         .list()
         .call(chats::list::Args { limit, after, ..Default::default() })
         .await?;
@@ -181,14 +181,14 @@ loop {
 | `{"change": null}` у `Patch<Option<T>>` | `Patch::Change(None)` | очистить (вернуть наследование) |
 
 ```rust
-session.chats().update().call(chats::update::Args {
+session.chats().update(
     chat,
-    update: chats::update::Update {
+    chats::update::Update {
         title: Patch::Change(Some("Отпуск".into())),
         trusted: Patch::Change(None),
         ..Default::default()
     },
-}).await?;
+).await?;
 ```
 
 `trusted`, `model`, `effort`, `thinking`, `compact_at` на surface, папке и чате — `Option`: `None` — наследовать от уровня выше. Менять их может только хозяин (ядро или клиент).

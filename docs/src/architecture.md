@@ -32,7 +32,6 @@ flowchart LR
 | Путь | Крейт | Содержит |
 |---|---|---|
 | `protocol/` | `eva-protocol` | Типы данных, операции `requests/<ns>.rs` (`Args`/`Ok`/`Err`), коды ошибок, wire-кадры; без I/O |
-| `macros/` | `eva-kernel-macros` | Список операций `endpoints!` на `eva-api-builder` фреймворка: трейты неймспейсов и X-макро `for_each_op!` |
 | `core/` | `eva-core` | `Session`, трейты неймспейсов и `for_each_op!` из списка операций, `Caller`, трейт `Provider` |
 | `rpc/` | `eva-rpc` | Кадры msgpack, транспорты клиентов uds/ws/wss и HTTP-мост JSON-RPC, сервисы uds/tcp под Noise, симметричный пир, серверный диспетчер, `RpcSession`, `ModuleProvider` |
 | `sdk/` | `eva-sdk` | `Module` → `Listening` (сервис слушает ядро) / `Connected` (клиент звонит сам), `Kernel = Session<LiveSession>` (переживает смену соединения) |
@@ -45,8 +44,8 @@ flowchart LR
 ```mermaid
 flowchart BT
   core --> protocol
-  core --> macros
-  macros --> builder["eva-api-builder"]
+  protocol --> eva["eva: service / export"]
+  core --> eva
   rpc --> core
   openai["providers/openai"] --> core
   mock["providers/mock"] --> core
@@ -69,16 +68,15 @@ flowchart BT
 let mut session = kernel.make_session(Caller::Kernel).await?;
 let surfaces::get::Ok { surface } = session
     .surfaces()
-    .get()
-    .call(surfaces::get::Args { surface: "local".into() })
+    .get("local".into())
     .await?;
 ```
 
 - `Session<S>` — неймспейс на домен, метод на операцию. 20 неймспейсов: `surfaces`, `folders`, `chats`, `turns`, `persons`, `memory`, `notes`, `tools`, `models`, `cron`, `sleep`, `agents`, `stats`, `modules`, `hands_grants`, `blobs`, `inference`, `fs`, `sqlite`, `kv`.
-- Операции перечислены один раз — `endpoints!` в `macros/src/lib.rs`. Из списка получаются трейты неймспейсов, методы `Session` и X-макро `for_each_op!`, по которому собраны RPC-диспетчер, RPC-клиент и SDK. Шаг любой операции — `CallStep` фреймворка `eva`, вызов — `.call(args)`.
-- Вид операции — флаг в списке: без флага — чтение; `mutating` — повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ; `stream` — `Ok` есть поток `Items`; `upload` — `Args` несёт тело `ByteStream`.
+- Операции объявлены один раз — в `#[service]` в `protocol/src/requests/<ns>.rs`. Макрос создаёт модуль с `Trait`, `Client<S>` и типами методов. `#[export]` в `core/src/service.rs` объединяет сервисы и X-макро `for_each_op!`, по которому собраны RPC-диспетчер, RPC-клиент и SDK. Клиент принимает аргументы напрямую; низкоуровневый `CallStep` доступен через `.inner_mut().<op>().call(args)`.
+- Вид операции задаётся через `#[flags(...)]`: без флага — чтение; `mutating` — повтор того же запроса в окне идемпотентности отдаёт сохранённый ответ; `stream` — `Ok` оборачивает поток `Items`; `upload` — `Args` несёт тело `ByteStream`.
 - RPC-метод — `<namespace>.<op>`; msgpack-RPC и будущие инструменты модели — обёртки над той же операцией, а не отдельные реализации. Контрактный тест проверяет, что вызов в процессе и через UDS даёт побайтно равные ответы.
-- Внутри `eva-kernel` код разложен по слоям: `handling/` — хендлер на операцию, `impls/` — namespace-трейты над хендлерами (строка `project!` на операцию), `state/policy/` — авторизация, `db/` — весь SQL, `convert/` — строки БД в типы протокола, `subsystems/` — компоненты `Supervisor`.
+- Внутри `eva-kernel` код разложен по слоям: `handling/` — хендлер на операцию, `impls/` — namespace-трейты над хендлерами (общий `for_each_op!(project)`), `state/policy/` — авторизация, `db/` — весь SQL, `convert/` — строки БД в типы протокола, `subsystems/` — компоненты `Supervisor`.
 
 Каталог операций — в главе [Библиотечное API](api.md), wire-формат — в [Протоколе модулей](protocol.md).
 

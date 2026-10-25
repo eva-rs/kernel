@@ -1,6 +1,7 @@
 //! Блокнот чата: только чтение, режим не пересчитывается.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::{
     errors,
@@ -10,30 +11,21 @@ use crate::{
     },
 };
 
-pub mod list {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub chat: ChatId,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub notes: Vec<Note>,
-        pub mode: Mode,
+#[service(export, result = Response)]
+pub trait Notes {
+    #[errors(errors::chats::NotFound)]
+    fn list(
+        chat: ChatId,
+    ) -> ok! {
+        notes: Vec<Note>,
+        mode: Mode,
         /// Master-туров в `squeeze`; вне `squeeze` = 0.
-        pub squeeze_turns: u32,
+        squeeze_turns: u32,
         /// Токены inline-рендера секции: `fill` меряется по нему в любом режиме.
-        pub tokens: u32,
-        pub budget: u32,
+        tokens: u32,
+        budget: u32,
+    };
+    embed! {
+        code!(Err => [NotFound]);
     }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::chats::NotFound),
-    }
-
-    code!(Err => [NotFound]);
 }

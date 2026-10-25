@@ -10,10 +10,7 @@ use std::{
 
 use common::{Harness, Outcome, outcome};
 use eva::time::Clock as _;
-use eva_core::{
-    CallStep as _,
-    service::{cron::Cron as _, stats::Stats as _},
-};
+use eva_core::{CallStep as _, service::Cron::Trait as _};
 use eva_kernel::{
     db::{Db as _, DbResult},
     subsystems::{
@@ -89,7 +86,6 @@ async fn list_shows_jobs_with_current_tool_names() {
         .await
         .cron()
         .list()
-        .call(list::Args {})
         .await
         .expect("cron.list");
     let names: Vec<_> = jobs.iter().map(|j| j.name.as_str()).collect();
@@ -136,13 +132,7 @@ async fn list_shows_jobs_with_current_tool_names() {
 async fn corrupt_whitelist_is_a_db_error() {
     let h = common::start().await;
     seed_jobs(&h, "not json").await;
-    let res = h
-        .client_session()
-        .await
-        .cron()
-        .list()
-        .call(list::Args {})
-        .await;
+    let res = h.client_session().await.cron().list().await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
 }
 
@@ -177,12 +167,11 @@ async fn page(
         .client_session()
         .await
         .cron()
-        .runs()
-        .call(runs::Args {
-            job: job.map(CronJobId::from),
-            limit: RunsLimit::new(limit).expect("limit in range"),
-            after: after.map(RunId::from),
-        })
+        .runs(
+            job.map(CronJobId::from),
+            RunsLimit::new(limit).expect("limit in range"),
+            after.map(RunId::from),
+        )
         .await?;
     Ok(found.into_iter().map(|r| r.run_id.0).collect())
 }
@@ -235,6 +224,7 @@ async fn runs_row_fields_and_unknown_cursor() {
         .client_session()
         .await
         .cron()
+        .inner_mut()
         .runs()
         .call(runs::Args {
             job: Some(CronJobId::from("job-b")),
@@ -269,8 +259,14 @@ async fn cron_matrix() {
     let mut failures = Vec::new();
     for ((who, caller), want) in common::matrix_callers().into_iter().zip([K, K, F, F]) {
         let mut s = h.session(caller).await;
-        let listed = outcome(&s.cron().list().call(list::Args {}).await);
-        let runs = outcome(&s.cron().runs().call(runs::Args::default()).await);
+        let listed = outcome(&s.cron().list().await);
+        let runs = outcome(
+            &s.cron()
+                .inner_mut()
+                .runs()
+                .call(runs::Args::default())
+                .await,
+        );
         for (op, got) in [("list", listed), ("runs", runs)] {
             if got != want {
                 failures.push(format!("cron.{op} as {who}: want {want:?}, got {got:?}"));
@@ -643,11 +639,7 @@ async fn the_lag_gauge_reads_the_last_planned_run() {
         .client_session()
         .await
         .stats()
-        .health()
-        .call(health::Args {
-            from: today,
-            to: today,
-        })
+        .health(today, today)
         .await
         .expect("health");
     assert_eq!(gauges.cron_fire_lag.len(), 1);

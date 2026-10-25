@@ -4,7 +4,7 @@ mod turns_support;
 use common::Harness;
 use eva_core::{
     CallStep as _,
-    service::{chats::Chats as _, turns::Turns as _},
+    service::{Chats::Trait as _, Turns::Trait as _},
 };
 use eva_kernel::{
     config::chats::MasterIdentity,
@@ -50,6 +50,7 @@ async fn delivery_conflict_returns_the_saved_surface_id() {
     h.provider.push(Script::reply("answer"));
     session
         .turns()
+        .inner_mut()
         .start()
         .call(request(chat, "user-1"))
         .await
@@ -69,22 +70,12 @@ async fn delivery_conflict_returns_the_saved_surface_id() {
         .expect("assistant message");
     session
         .turns()
-        .delivered()
-        .call(turns::delivered::Args {
-            chat,
-            message_id,
-            external_id: "surface-first".into(),
-        })
+        .delivered(chat, message_id, "surface-first".into())
         .await
         .unwrap();
     let conflict = session
         .turns()
-        .delivered()
-        .call(turns::delivered::Args {
-            chat,
-            message_id,
-            external_id: "surface-retry".into(),
-        })
+        .delivered(chat, message_id, "surface-retry".into())
         .await;
     assert!(
         matches!(conflict, Err(Generic::Spec(turns::delivered::Err::AlreadyDelivered(e)))
@@ -97,13 +88,7 @@ async fn compaction_rejects_a_chat_paused_for_deletion() {
     let h = configured().await;
     let chat = chat(&h).await;
     let pause = h.kernel.shared().turns().slot(chat).pause_ingest().await;
-    let response = h
-        .client_session()
-        .await
-        .chats()
-        .compact()
-        .call(chats::compact::Args { chat })
-        .await;
+    let response = h.client_session().await.chats().compact(chat).await;
     assert!(
         matches!(response, Err(Generic::Aux(Aux::Unavailable(message))) if message == "chat is being deleted")
     );
@@ -181,6 +166,7 @@ async fn start_is_idempotent_and_replay_contains_external_id_and_completion() {
     h.provider.push(Script::reply("answer"));
     let a = session
         .turns()
+        .inner_mut()
         .start()
         .call(request(chat, "external-1"))
         .await
@@ -189,6 +175,7 @@ async fn start_is_idempotent_and_replay_contains_external_id_and_completion() {
     assert_eq!(done(&mut rx).await.0, TurnOutcome::Completed);
     let b = session
         .turns()
+        .inner_mut()
         .start()
         .call(request(chat, "external-1"))
         .await
@@ -198,12 +185,9 @@ async fn start_is_idempotent_and_replay_contains_external_id_and_completion() {
     assert_eq!(h.provider.requests().len(), 1);
     let mut replay = session
         .turns()
-        .attach()
-        .call(turns::attach::Args {
-            chat,
-            since_seq: Some(EventId(0)),
-        })
+        .attach(chat, Some(EventId(0)))
         .await
+        .map(|ok| ok.0)
         .expect("attach");
     let mut echo = false;
     loop {
@@ -238,6 +222,7 @@ async fn unknown_actor_and_silent_leave_messages_without_inference() {
     args.actor = None;
     let result = session
         .turns()
+        .inner_mut()
         .start()
         .call(args)
         .await
@@ -245,13 +230,12 @@ async fn unknown_actor_and_silent_leave_messages_without_inference() {
     assert!(matches!(result.turn, TurnState::None));
     session
         .turns()
-        .append_silent()
-        .call(turns::append_silent::Args {
+        .append_silent(
             chat,
-            actor: request(chat, "a").actor,
-            content: vec![Block::text("silent")],
-            external_id: None,
-        })
+            request(chat, "a").actor,
+            vec![Block::text("silent")],
+            None,
+        )
         .await
         .expect("silent");
     assert!(h.provider.requests().is_empty());
@@ -276,6 +260,7 @@ async fn silent_and_unknown_during_live_turn_do_not_join_or_trigger_drain() {
     h.provider.push(script);
     session
         .turns()
+        .inner_mut()
         .start()
         .call(request(chat, "initial"))
         .await
@@ -283,18 +268,23 @@ async fn silent_and_unknown_during_live_turn_do_not_join_or_trigger_drain() {
     seen(&h, 1).await;
     let quiet = session
         .turns()
-        .append_silent()
-        .call(turns::append_silent::Args {
+        .append_silent(
             chat,
-            actor: request(chat, "a").actor,
-            content: vec![Block::text("silent")],
-            external_id: None,
-        })
+            request(chat, "a").actor,
+            vec![Block::text("silent")],
+            None,
+        )
         .await
         .expect("silent");
     let mut args = request(chat, "unknown-live");
     args.actor = None;
-    let unknown = session.turns().start().call(args).await.expect("unknown");
+    let unknown = session
+        .turns()
+        .inner_mut()
+        .start()
+        .call(args)
+        .await
+        .expect("unknown");
     assert!(matches!(unknown.turn, TurnState::None));
     for event in events(&h, chat).await {
         if event.id == quiet.message_id || event.id == unknown.message_id {
@@ -335,6 +325,7 @@ async fn history_before_pages_backwards_without_overlap() {
     };
     let page = session
         .chats()
+        .inner_mut()
         .history_read()
         .call(args(u64::MAX))
         .await
@@ -346,6 +337,7 @@ async fn history_before_pages_backwards_without_overlap() {
     assert_eq!(page.next_seq, Some(4));
     let page = session
         .chats()
+        .inner_mut()
         .history_read()
         .call(args(page.next_seq.unwrap()))
         .await
@@ -357,6 +349,7 @@ async fn history_before_pages_backwards_without_overlap() {
     assert_eq!(page.next_seq, Some(2));
     let page = session
         .chats()
+        .inner_mut()
         .history_read()
         .call(args(page.next_seq.unwrap()))
         .await
@@ -371,7 +364,8 @@ async fn subscribe_then_history_delivers_new_message_once() {
     let chat = chat(&h).await;
     let mut stream = items::attach(h.kernel.shared(), chat, Some(EventId(0)))
         .await
-        .expect("attach");
+        .expect("attach")
+        .0;
     let sent = ingest::append(
         h.kernel.shared(),
         Entry::master(chat, master(&h).await),
@@ -402,6 +396,7 @@ async fn live_delete_waits_for_cancel_before_purging_journal() {
     h.provider.push(script);
     session
         .turns()
+        .inner_mut()
         .start()
         .call(request(chat, "purge"))
         .await
@@ -409,10 +404,7 @@ async fn live_delete_waits_for_cancel_before_purging_journal() {
     seen(&h, 1).await;
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        session
-            .chats()
-            .delete()
-            .call(chats::delete::Args { chat, purge: true }),
+        session.chats().delete(chat, true),
     )
     .await
     .expect("cancel finishes")

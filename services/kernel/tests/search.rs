@@ -6,7 +6,7 @@ mod common;
 
 use common::{Harness, Outcome, outcome};
 use eva::time::Clock as _;
-use eva_core::{CallStep as _, Provider as _, service::chats::Chats as _};
+use eva_core::{CallStep as _, Provider as _, service::Chats::Trait as _};
 use eva_kernel::{
     db::{Db as _, DbError, Queries as _},
     subsystems::search,
@@ -152,6 +152,7 @@ async fn search(h: &Harness, args: op::Args) -> Vec<SearchHit> {
     h.client_session()
         .await
         .chats()
+        .inner_mut()
         .search()
         .call(args)
         .await
@@ -457,6 +458,7 @@ async fn search_matrix() {
             &h.session(caller)
                 .await
                 .chats()
+                .inner_mut()
                 .search()
                 .call(args("tea"))
                 .await,
@@ -471,6 +473,7 @@ async fn search_matrix() {
         .client_session()
         .await
         .chats()
+        .inner_mut()
         .search()
         .call(args("tea"))
         .await;

@@ -6,7 +6,7 @@ use futures::{StreamExt as _, stream};
 
 use eva_core::{
     CallStep as _, Caller, SessionMaker as _,
-    service::{blobs::Blobs as _, surfaces::Surfaces as _, turns::Turns as _},
+    service::{Blobs::Trait as _, Surfaces::Trait as _, Turns::Trait as _},
 };
 use eva_protocol::{
     errors::{self, Aux, Generic},
@@ -77,20 +77,14 @@ async fn unary_ok(via: Via) {
 
     let create::Ok { surface } = session
         .surfaces()
+        .inner_mut()
         .create()
         .call(create_args("x"))
         .await
         .unwrap();
     assert_eq!(surface.id.as_str(), "x");
 
-    let get::Ok { surface: got } = session
-        .surfaces()
-        .get()
-        .call(get::Args {
-            surface: "x".into(),
-        })
-        .await
-        .unwrap();
+    let get::Ok { surface: got } = session.surfaces().get("x".into()).await.unwrap();
     assert_eq!(got, surface);
 }
 
@@ -101,10 +95,7 @@ async fn spec_error(via: Via) {
     let err = client
         .session()
         .surfaces()
-        .get()
-        .call(get::Args {
-            surface: "nope".into(),
-        })
+        .get("nope".into())
         .await
         .unwrap_err();
     let expected = errors::surfaces::NotFound {
@@ -120,6 +111,7 @@ async fn aux_error(via: Via) {
     let err = client
         .session()
         .surfaces()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await
@@ -141,9 +133,11 @@ async fn stream_items(via: Via) {
 
     let items: Vec<_> = session
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::FINITE))
         .await
+        .map(|ok| ok.0)
         .unwrap()
         .collect()
         .await;
@@ -156,9 +150,11 @@ async fn stream_items(via: Via) {
     };
     let items: Vec<_> = session
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::BROKEN))
         .await
+        .map(|ok| ok.0)
         .unwrap()
         .collect()
         .await;
@@ -166,9 +162,11 @@ async fn stream_items(via: Via) {
 
     let Err(err) = session
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::MISSING))
         .await
+        .map(|ok| ok.0)
     else {
         panic!("open of a missing chat must fail before the first item");
     };
@@ -187,9 +185,11 @@ async fn cancel_on_drop(via: Via) {
     let mut items = client
         .session()
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::ENDLESS))
         .await
+        .map(|ok| ok.0)
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));
     drop(items);
@@ -230,6 +230,7 @@ async fn upload(via: Via) {
 
     let ok = session
         .blobs()
+        .inner_mut()
         .put()
         .call(args(whole.len() as u64, body(parts.clone())))
         .await
@@ -239,6 +240,7 @@ async fn upload(via: Via) {
 
     let err = session
         .blobs()
+        .inner_mut()
         .put()
         .call(args(1, body(parts)))
         .await
@@ -255,6 +257,7 @@ async fn upload(via: Via) {
     ]));
     let err = session
         .blobs()
+        .inner_mut()
         .put()
         .call(args(4, failing))
         .await
@@ -279,6 +282,7 @@ async fn unknown_method(via: Via) {
     let err = client
         .session()
         .surfaces()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await
@@ -350,6 +354,7 @@ async fn backpressure_per_stream(via: Via) {
 
     session
         .surfaces()
+        .inner_mut()
         .create()
         .call(create_args("x"))
         .await
@@ -358,9 +363,11 @@ async fn backpressure_per_stream(via: Via) {
     // Подписчик не читает: буфер потока переполняется, соединение — нет.
     let mut items = session
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::FLOOD))
         .await
+        .map(|ok| ok.0)
         .unwrap();
     tokio::time::sleep(Duration::from_millis(800)).await;
 
@@ -370,14 +377,7 @@ async fn backpressure_per_stream(via: Via) {
     );
     assert!(!accepted.peer.is_closed());
     let started = tokio::time::Instant::now();
-    session
-        .surfaces()
-        .get()
-        .call(get::Args {
-            surface: "x".into(),
-        })
-        .await
-        .unwrap();
+    session.surfaces().get("x".into()).await.unwrap();
     assert!(started.elapsed() < Duration::from_secs(1));
 
     let mut delivered = 0;
@@ -424,6 +424,7 @@ async fn max_frame_closes(via: Via) {
     let err = client
         .session()
         .surfaces()
+        .inner_mut()
         .create()
         .call(args)
         .await
@@ -455,9 +456,11 @@ async fn supersede_ends_streams(via: Via) {
     let mut items = client
         .session()
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::ENDLESS))
         .await
+        .map(|ok| ok.0)
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));
 
@@ -501,6 +504,7 @@ async fn request_timeout_keeps_mutation(via: Via) {
 
     let err = session
         .surfaces()
+        .inner_mut()
         .create()
         .call(create_args("slow"))
         .await
@@ -509,14 +513,7 @@ async fn request_timeout_keeps_mutation(via: Via) {
 
     // `cancel` не обрывает мутацию: её эффект мог лечь, итог нужен окну.
     tokio::time::sleep(Duration::from_millis(900)).await;
-    let surface = session
-        .surfaces()
-        .get()
-        .call(get::Args {
-            surface: "slow".into(),
-        })
-        .await
-        .unwrap();
+    let surface = session.surfaces().get("slow".into()).await.unwrap();
     assert_eq!(surface.surface.id.as_str(), "slow");
 }
 
@@ -547,6 +544,7 @@ async fn heartbeat_keeps_long_call(via: Via) {
     let created = client
         .session()
         .surfaces()
+        .inner_mut()
         .create()
         .call(create_args("slow"))
         .await
@@ -567,9 +565,8 @@ async fn upload_of_small_pieces(via: Via) {
     let ok = client
         .session()
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: put::Meta {
+        .put(
+            put::Meta {
                 chat: chat_id(1),
                 name: "small.bin".to_owned(),
                 media_type: "application/octet-stream".to_owned(),
@@ -577,8 +574,8 @@ async fn upload_of_small_pieces(via: Via) {
                 size: whole.len() as u64,
                 hash: None,
             },
-            body: body(parts),
-        })
+            body(parts),
+        )
         .await
         .unwrap();
     assert_eq!(ok.size, whole.len() as u64);
@@ -603,9 +600,11 @@ async fn idle_stream_times_out(via: Via) {
     let mut items = client
         .session()
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::ENDLESS))
         .await
+        .map(|ok| ok.0)
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));
     let end = tokio::time::timeout(Duration::from_secs(5), items.next())
@@ -636,9 +635,11 @@ async fn heartbeat_keeps_stream(via: Via) {
     let mut items = client
         .session()
         .turns()
+        .inner_mut()
         .attach()
         .call(attach_args(chat::ENDLESS))
         .await
+        .map(|ok| ok.0)
         .unwrap();
     assert_eq!(items.next().await, Some(Ok(item(0))));
 

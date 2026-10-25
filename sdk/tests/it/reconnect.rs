@@ -272,23 +272,13 @@ impl Outage {
 }
 
 pub async fn get(mut kernel: Kernel) -> Response<get::Ok, get::Err> {
-    kernel
-        .surfaces()
-        .get()
-        .call(get::Args {
-            surface: SurfaceId::from("x"),
-        })
-        .await
+    kernel.surfaces().get(SurfaceId::from("x")).await
 }
 
 pub async fn update(mut kernel: Kernel) -> Response<update::Ok, update::Err> {
     kernel
         .surfaces()
-        .update()
-        .call(update::Args {
-            surface: SurfaceId::from("x"),
-            update: update::Update::default(),
-        })
+        .update(SurfaceId::from("x"), update::Update::default())
         .await
 }
 
@@ -450,7 +440,7 @@ fn blob_args() -> blob_get::Args {
 async fn read_blob(
     mut kernel: Kernel,
 ) -> Response<Vec<Response<blob_get::Item, blob_get::Err>>, blob_get::Err> {
-    let items = kernel.blobs().get().call(blob_args()).await?;
+    let items = kernel.blobs().inner_mut().get().call(blob_args()).await?.0;
     Ok(items.collect().await)
 }
 
@@ -458,9 +448,8 @@ async fn put_blob(mut kernel: Kernel) -> Response<blob_put::Ok, blob_put::Err> {
     let body: ByteStream = Box::pin(stream::iter([Ok(eva::bytes::Bytes::from_static(b"hi"))]));
     kernel
         .blobs()
-        .put()
-        .call(blob_put::Args {
-            meta: blob_put::Meta {
+        .put(
+            blob_put::Meta {
                 chat: ChatId(1),
                 name: "a.txt".to_owned(),
                 media_type: "text/plain".to_owned(),
@@ -469,7 +458,7 @@ async fn put_blob(mut kernel: Kernel) -> Response<blob_put::Ok, blob_put::Err> {
                 hash: None,
             },
             body,
-        })
+        )
         .await
 }
 
@@ -519,9 +508,11 @@ async fn a_stream_cut_after_its_first_item_ends_unavailable() {
     let mut kernel = outage.kernel.clone();
     let mut items = kernel
         .blobs()
+        .inner_mut()
         .get()
         .call(blob_args())
         .await
+        .map(|ok| ok.0)
         .expect("opened");
     assert!(matches!(
         items.next().await,

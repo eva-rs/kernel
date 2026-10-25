@@ -10,7 +10,7 @@ use futures::StreamExt as _;
 use tokio::{io::AsyncReadExt as _, sync::oneshot};
 
 use eva::time::HumanDuration;
-use eva_core::prelude::*;
+
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::surfaces::create,
@@ -122,12 +122,7 @@ async fn the_kernel_dials_the_module() {
         assert!(matches!(kernel.caller(), Caller::Service { .. }));
         let create::Ok { surface } = kernel
             .surfaces()
-            .create()
-            .call(create::Args {
-                id: "x".into(),
-                name: "X".into(),
-                rules: None,
-            })
+            .create("x".into(), "X".into(), None)
             .await
             .unwrap();
         assert_eq!(surface.id.as_str(), "x");

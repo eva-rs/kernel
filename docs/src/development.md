@@ -5,7 +5,6 @@
 | Путь | Крейт | Содержит |
 |---|---|---|
 | `protocol/` | `eva-protocol` | типы данных, операции `requests/<ns>.rs` (`Args`/`Ok`/`Err`), доменные ошибки `errors/<ns>.rs`, wire-кадры и handshake; без I/O |
-| `macros/` | `eva-kernel-macros` | список операций `endpoints!`: трейты неймспейсов и X-макро `for_each_op!` |
 | `core/` | `eva-core` | `Session`, `CallStep`, трейты неймспейсов и `for_each_op!` из списка операций, `Caller`, трейт `Provider`, `prelude` |
 | `rpc/` | `eva-rpc` | кадры msgpack, транспорты uds/ws/wss, HTTP-мост JSON-RPC, симметричный пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
 | `sdk/` | `eva-sdk` | `Module` → `Listening` / `Connected`: SDK для модулей |
@@ -69,7 +68,7 @@ nix develop -c cargo test --workspace
 
 | Что | Где и только там |
 |---|---|
-| Список операций и их вид | `macros/src/lib.rs` |
+| Операции и их вид | `#[service]` в `protocol/src/requests/<ns>.rs` |
 | SQL | `services/kernel/src/db/` |
 | Хендлеры операций (`#[eva::endpoint]` + `#[fastrace::trace]`) | `services/kernel/src/handling/` |
 | Авторизация | `services/kernel/src/state/policy/`; транспорт лишь выводит `Caller` из токена |
@@ -96,28 +95,28 @@ nix develop -c cargo test --workspace
 
 ```mermaid
 flowchart LR
-    A["protocol<br/>requests/ns.rs"] --> B["macros<br/>lib.rs"]
+    A["protocol<br/>#[service]"] --> B["core<br/>#[export]"]
     B -. for_each_op! .-> C["rpc<br/>tests/it/errors.rs"]
     B --> D["kernel<br/>db · convert · policy · handling · impls"]
     D --> E["tests/contract.rs<br/>tests/k3_policy_all.rs"]
 ```
 
-1. **protocol.** В `protocol/src/requests/<ns>.rs` — модуль операции с `Args`, `Ok`, `Err` (все `#[data]`) и `code!(Err => [...])`, сопоставляющим вариант ошибки коду провода. Новые доменные ошибки — в `protocol/src/errors/<ns>.rs` со своим `code!`.
-2. **macros.** Добавить операцию в `endpoints!` в `macros/src/lib.rs` на её место в неймспейсе, с флагом вида: без флага — чтение, `mutating` — мутация, `stream` — поток (`Ok = Items<Item, Err>`), `upload` — загрузка (`Args { meta, body }`). Отсюда метод трейта неймспейса, строка `NAMESPACES` и строка `for_each_op!`. Флаг не сверяет ни один тест: мутация без `mutating` пройдёт мимо окна идемпотентности, и SDK повторит её после реконнекта.
+1. **protocol.** В `protocol/src/requests/<ns>.rs` добавить метод в трейт с `#[service(export, result = Response)]`; аргументы задаются параметрами, ответ — `-> ok!(T)` для tuple-структуры или `-> ok! { ... }` для record-структуры, варианты ошибок — `#[errors(...)]`. Сразу после метода разместить `embed! { ... }` с его вспомогательными типами и `code!(Err => [...])`, сопоставляющим вариант ошибки коду провода. `this![Type]` обращается к типу в модуле этого метода, `export` реэкспортирует модули методов с видимостью трейта. Между методом и его `embed!` пустой строки нет; между методами есть. Новые доменные ошибки — в `protocol/src/errors/<ns>.rs` со своим `code!`.
+2. **service.** У метода в `#[service]` указать вид через `#[flags(...)]`: без флага — чтение, `mutating` — мутация, `stream` — поток (`Ok(Items<Item, Err>)`), `upload` — загрузка (`Args { meta, body }`). Метод автоматически попадёт в `NAMESPACES` и `for_each_op!`. Новый сервис добавить в `#[export]` в `core/src/service.rs`. Флаг не сверяет ни один тест: мутация без `mutating` пройдёт мимо окна идемпотентности, и SDK повторит её после реконнекта.
 3. **rpc.** Только строка в `rpc/tests/it/errors.rs`: варианты `Err` операции и их коды. Клиентская сессия, таблица диспетчера и тестовое ядро `rpc/tests/it/kernel.rs` — колбэки над `eva_core::for_each_op!`, форму задаёт флаг (`mutating` — окно идемпотентности, `stream` — `Items` кадрами потока, `upload` — `Meta` в `params` и тело чанками). Сверку с `NAMESPACES` держит `rpc/tests/it/methods.rs`. SDK получает метод автоматически.
 4. **kernel:**
    - запросы — в `db/<ns>.rs`;
    - преобразование строк — в `convert/`;
    - правило доступа — в `state/policy/<ns>.rs`;
-   - хендлер `pub async fn Op<C: Components>(state: &mut State<C>, args) -> Response<Ok, Err>` — в `handling/<ns>.rs`; у потока `Ok` — `Items`, у загрузки тело — `args.body`;
-   - строка `fn op() = h::Op;` в блоке `project!` — в `impls/<ns>.rs`; без неё трейт неймспейса не соберётся.
+   - хендлер `pub async fn Op<C: Components>(state: &mut State<C>, args) -> Response<Ok, Err>` — в `handling/<ns>.rs`; у потока `Ok` оборачивает `Items`, у загрузки тело — `args.body`;
+   - общий `for_each_op!(project)` в `impls/mod.rs` находит `handling::<ns>::<Op>` по имени метода; отдельная строка на операцию не нужна. Для middleware — ветка `decorate!(service, method; handler)`.
 5. **Тесты.** Строка в `services/kernel/tests/contract.rs`: операция проходит и в процессе (`Kernel<Test>`), и через `eva-sdk` по настоящим сокетам (клиент звонит на UDS ядра, сервис ядро набирает по uds и tcp под Noise), а ответы сверяются побайтно в msgpack. Строка в матрице `services/kernel/tests/k3_policy_all.rs`: исход операции для каждого вызывающего (ядро, клиент, свой сервис, чужой сервис, сервис против `local`/`system`). Поведение и политика — в доменном файле `services/kernel/tests/<ns>.rs`.
 
 Тестовый харнесс (`services/kernel/tests/common/`) собирает `Kernel<Test>` на временном каталоге: часы двигает тест, провайдер — `mock`, руки — `Hands::local` в песочнице; отказы БД и рук включаются флагом. Набор подменяемых компонентов задаёт трейт `Components` (`Real` — боевой).
 
 ## Vendor lint
 
-`services/kernel/tests/vendor_lint.rs` обходит крейты `protocol`, `macros`, `core`, `rpc`, `sdk`, `services/kernel` — код, тесты, SQL, манифесты, снапшоты — и падает на любом вхождении (без учёта регистра) имён вендоров и поверхностей из списка-запрета: `anthropic`, `openai`, `openrouter`, `claude`, `gemini`, `mistral`, `ollama`, `telegram`, `whatsapp`, `discord`, `slack`. Такие строки допустимы только в `providers/*`. Ядро различает провайдеров и поверхности по данным (`kind`, id), а не по именам в коде.
+`services/kernel/tests/vendor_lint.rs` обходит крейты `protocol`, `core`, `rpc`, `sdk`, `services/kernel` — код, тесты, SQL, манифесты, снапшоты — и падает на любом вхождении (без учёта регистра) имён вендоров и поверхностей из списка-запрета: `anthropic`, `openai`, `openrouter`, `claude`, `gemini`, `mistral`, `ollama`, `telegram`, `whatsapp`, `discord`, `slack`. Такие строки допустимы только в `providers/*`. Ядро различает провайдеров и поверхности по данным (`kind`, id), а не по именам в коде.
 
 ## Снапшот-тесты
 

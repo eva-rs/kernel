@@ -13,9 +13,7 @@ use futures::StreamExt as _;
 use serde_json::json;
 use tokio::sync::{Notify, mpsc};
 
-use eva_core::prelude::*;
 use eva_protocol::{
-    requests::surfaces::create,
     types::{ChatId, SurfaceId, ToolId},
     wire::{
         ErrorCode, RpcError,
@@ -357,12 +355,11 @@ async fn the_module_creates_its_surface_through_the_kernel() {
     let created = connected
         .kernel()
         .surfaces()
-        .create()
-        .call(create::Args {
-            id: SurfaceId::from("x"),
-            name: "Messenger X".to_owned(),
-            rules: Some("be brief".to_owned()),
-        })
+        .create(
+            SurfaceId::from("x"),
+            "Messenger X".to_owned(),
+            Some("be brief".to_owned()),
+        )
         .await
         .expect("surfaces.create");
     assert_eq!(created.surface.name, "Messenger X");

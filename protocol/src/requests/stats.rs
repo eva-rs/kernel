@@ -1,6 +1,8 @@
 //! Статистика: только чтение.
 
-use eva::{data, time::Date};
+use crate::requests::Response;
+use eva::service;
+use eva::time::Date;
 
 use crate::{
     errors,
@@ -24,133 +26,78 @@ impl Default for Top {
     }
 }
 
-pub mod tools_usage {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        #[serde(default)]
-        pub scope: Scope,
+#[service(export, result = Response)]
+pub trait Stats {
+    fn tools_usage(
+        #[serde(default)] scope: Scope,
         /// `None` — только при `Scope::Global`.
-        pub target: Option<Target>,
+        target: Option<Target>,
         /// Календарные сутки в `system.tz`, включительно.
-        pub from: Date,
-        pub to: Date,
-        #[serde(default)]
-        pub top: Top,
-        pub view: Option<TurnView>,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub rows: Vec<ToolUsageRow>,
+        from: Date,
+        to: Date,
+        #[serde(default)] top: Top,
+        view: Option<TurnView>,
+    ) -> ok! {
+        rows: Vec<ToolUsageRow>,
         /// Знаменатель покрытия.
-        pub turns: u64,
+        turns: u64,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod spend {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        #[serde(default)]
-        pub scope: Scope,
-        pub target: Option<Target>,
-        pub from: Date,
-        pub to: Date,
-        #[serde(default)]
-        pub group_by: GroupBy,
-        pub view: Option<TurnView>,
+    fn spend(
+        #[serde(default)] scope: Scope,
+        target: Option<Target>,
+        from: Date,
+        to: Date,
+        #[serde(default)] group_by: GroupBy,
+        view: Option<TurnView>,
+    ) -> ok! {
+        rows: Vec<SpendRow>,
+        cache: CacheStats,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data]
-    pub struct Ok {
-        pub rows: Vec<SpendRow>,
-        pub cache: CacheStats,
+    fn spend_series(
+        #[serde(default)] scope: Scope,
+        target: Option<Target>,
+        from: Date,
+        to: Date,
+        #[serde(default)] group_by: GroupBy,
+    ) -> ok! {
+        series: Vec<SeriesPoint>,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod spend_series {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        #[serde(default)]
-        pub scope: Scope,
-        pub target: Option<Target>,
-        pub from: Date,
-        pub to: Date,
-        #[serde(default)]
-        pub group_by: GroupBy,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub series: Vec<SeriesPoint>,
-    }
-
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod chat_spend {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub chat: ChatId,
-    }
-
-    #[data]
-    pub struct Ok {
+    #[errors(errors::chats::NotFound)]
+    fn chat_spend(
+        chat: ChatId,
+    ) -> ok! {
         /// `None` — ни одной оценённой строки.
-        pub total: Option<Money>,
-        pub by_model: Vec<ModelSpend>,
-        pub last_turn: Option<TurnSpend>,
-        pub hit_ratio: f64,
+        total: Option<Money>,
+        by_model: Vec<ModelSpend>,
+        last_turn: Option<TurnSpend>,
+        hit_ratio: f64,
+    };
+    embed! {
+        code!(Err => [NotFound]);
     }
 
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::chats::NotFound),
-    }
-
-    code!(Err => [NotFound]);
-}
-
-pub mod health {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub from: Date,
-        pub to: Date,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub gauges: Gauges,
+    fn health(
+        from: Date,
+        to: Date,
+    ) -> ok! {
+        gauges: Gauges,
         /// Только ненулевые.
-        pub counters: Vec<Counter>,
-        pub rate_limits: Vec<RateLimit>,
+        counters: Vec<Counter>,
+        rate_limits: Vec<RateLimit>,
+    };
+    embed! {
+        code!(Err => []);
     }
-
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
 }

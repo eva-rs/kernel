@@ -1,10 +1,9 @@
 //! Инструменты управления модулями используют библиотечные операции и их политику.
 
 use eva::data;
-use eva_core::{CallStep as _, service::modules::Modules as _};
+
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::modules::{list, token_issue, token_revoke},
     types::{
         ModuleId, PersonId,
         module::{Module, State},
@@ -69,12 +68,7 @@ pub async fn call<C: Components>(
         match call.canonical {
             "system_modules_list" => {
                 let _: List = parse(call.input)?;
-                let result = session
-                    .modules()
-                    .list()
-                    .call(list::Args {})
-                    .await
-                    .map_err(api_error)?;
+                let result = session.modules().list().await.map_err(api_error)?;
                 Ok(render(result.modules))
             }
             "system_modules_token_issue" => {
@@ -94,11 +88,7 @@ pub async fn call<C: Components>(
                 let module = args.module.clone();
                 let result = session
                     .modules()
-                    .token_issue()
-                    .call(token_issue::Args {
-                        module: args.module,
-                        issued_by: Some(actor.clone()),
-                    })
+                    .token_issue(args.module, Some(actor.clone()))
                     .await
                     .map_err(api_error)?;
                 // Секрет намеренно выдан хозяину; форма не похожа на случайную утечку присваивания.
@@ -111,10 +101,7 @@ pub async fn call<C: Components>(
                 let args: Token = parse(call.input)?;
                 session
                     .modules()
-                    .token_revoke()
-                    .call(token_revoke::Args {
-                        module: args.module,
-                    })
+                    .token_revoke(args.module)
                     .await
                     .map_err(api_error)?;
                 Ok("{}".into())

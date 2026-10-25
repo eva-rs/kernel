@@ -2,7 +2,7 @@ mod common;
 mod turns_support;
 
 use common::Harness;
-use eva_core::{CallStep as _, service::memory::Memory as _};
+
 use eva_kernel::{
     db::{Db as _, DbResult, Queries as _},
     subsystems::{
@@ -17,17 +17,14 @@ use eva_kernel::{
         },
     },
 };
-use eva_protocol::{
-    requests::memory::restore,
-    types::{
-        ChatId, PersonId,
-        content::Block,
-        memory::{
-            Kind, Visibility,
-            tools::{forget, remember},
-        },
-        turn::{Audience, TurnView},
+use eva_protocol::types::{
+    ChatId, PersonId,
+    content::Block,
+    memory::{
+        Kind, Visibility,
+        tools::{forget, remember},
     },
+    turn::{Audience, TurnView},
 };
 
 fn args(text: &str) -> remember::Args {
@@ -130,8 +127,7 @@ async fn core_changes_reach_only_visible_contexts_without_rewriting_snapshots() 
     h.client_session()
         .await
         .memory()
-        .restore()
-        .call(restore::Args { id: saved.id })
+        .restore(saved.id)
         .await
         .unwrap();
     assert_eq!(

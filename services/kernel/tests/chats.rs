@@ -6,10 +6,7 @@ mod common;
 use std::{sync::atomic::Ordering, time::Duration};
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{
-    CallStep as _,
-    service::{chats::Chats as _, folders::Folders as _},
-};
+use eva_core::{CallStep as _, service::Chats::Trait as _};
 use eva_protocol::{
     errors::Generic,
     requests::{
@@ -49,6 +46,7 @@ fn create_args(surface: &str) -> create::Args {
 async fn new_chat(session: &mut TestSession, args: create::Args) -> Chat {
     session
         .chats()
+        .inner_mut()
         .create()
         .call(args)
         .await
@@ -57,23 +55,13 @@ async fn new_chat(session: &mut TestSession, args: create::Args) -> Chat {
 }
 
 async fn get(session: &mut TestSession, chat: ChatId) -> Chat {
-    session
-        .chats()
-        .get()
-        .call(get::Args { chat: chat.into() })
-        .await
-        .expect("get")
-        .chat
+    session.chats().get(chat.into()).await.expect("get").chat
 }
 
 async fn new_folder(session: &mut TestSession, surface: &str, name: &str) -> FolderId {
     session
         .folders()
-        .create()
-        .call(folders::create::Args {
-            surface: SurfaceId::from(surface),
-            name: String::from(name),
-        })
+        .create(SurfaceId::from(surface), String::from(name))
         .await
         .expect("create folder")
         .folder
@@ -83,14 +71,13 @@ async fn new_folder(session: &mut TestSession, surface: &str, name: &str) -> Fol
 async fn set_folder_trust(session: &mut TestSession, folder: FolderId, trusted: Option<bool>) {
     session
         .folders()
-        .update()
-        .call(folders::update::Args {
+        .update(
             folder,
-            update: folders::update::Update {
+            folders::update::Update {
                 trusted: Patch::Change(trusted),
                 ..Default::default()
             },
-        })
+        )
         .await
         .expect("folder trust");
 }
@@ -100,12 +87,7 @@ async fn update(
     chat: ChatId,
     update: update::Update,
 ) -> Result<Chat, Generic<update::Err>> {
-    session
-        .chats()
-        .update()
-        .call(update::Args { chat, update })
-        .await
-        .map(|ok| ok.chat)
+    session.chats().update(chat, update).await.map(|ok| ok.chat)
 }
 
 async fn exec(h: &Harness, sql: &'static str, chat: ChatId) {
@@ -251,12 +233,9 @@ async fn create_with_alias_and_everything() {
 
     let get::Ok { chat: by_alias } = client
         .chats()
-        .get()
-        .call(get::Args {
-            chat: Selector::Alias {
-                surface: SurfaceId::from(SVC),
-                external_id: String::from("-100"),
-            },
+        .get(Selector::Alias {
+            surface: SurfaceId::from(SVC),
+            external_id: String::from("-100"),
         })
         .await
         .expect("get by alias");
@@ -285,6 +264,7 @@ async fn create_with_alias_and_everything() {
 
     let res = client
         .chats()
+        .inner_mut()
         .create()
         .call(create::Args {
             external_id: Some(String::from("-100")),
@@ -353,7 +333,7 @@ async fn create_rejects_bad_arguments() {
         ),
     ];
     for (args, want, why) in cases {
-        let res = client.chats().create().call(args).await;
+        let res = client.chats().inner_mut().create().call(args).await;
         assert_eq!(outcome(&res), want, "{why}: {res:?}");
     }
 }
@@ -381,6 +361,7 @@ async fn service_creates_only_in_folders_trusted_like_unsorted() {
 
     let res = svc
         .chats()
+        .inner_mut()
         .create()
         .call(create::Args {
             folder: Some(trusted),
@@ -404,13 +385,7 @@ async fn service_creates_only_in_folders_trusted_like_unsorted() {
 async fn get_not_found_keeps_the_selector() {
     let h = common::start().await;
     let mut client = h.client_session().await;
-    let res = client
-        .chats()
-        .get()
-        .call(get::Args {
-            chat: ChatId(404).into(),
-        })
-        .await;
+    let res = client.chats().get(ChatId(404).into()).await;
     assert!(
         matches!(&res, Err(Generic::Spec(get::Err::NotFound(e))) if e.chat == Selector::Id(ChatId(404))),
         "{res:?}"
@@ -419,13 +394,7 @@ async fn get_not_found_keeps_the_selector() {
         surface: SurfaceId::from("local"),
         external_id: String::from("nope"),
     };
-    let res = client
-        .chats()
-        .get()
-        .call(get::Args {
-            chat: alias.clone(),
-        })
-        .await;
+    let res = client.chats().get(alias.clone()).await;
     assert!(
         matches!(&res, Err(Generic::Spec(get::Err::NotFound(e))) if e.chat == alias),
         "{res:?}"
@@ -473,6 +442,7 @@ async fn list_filters_and_pages_by_activity() {
     loop {
         let list::Ok { found } = svc
             .chats()
+            .inner_mut()
             .list()
             .call(list::Args {
                 limit,
@@ -496,6 +466,7 @@ async fn list_filters_and_pages_by_activity() {
 
     let list::Ok { found } = client
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args {
             folder: Some(work),
@@ -507,6 +478,7 @@ async fn list_filters_and_pages_by_activity() {
 
     let list::Ok { found } = client
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args {
             surface: Some(SurfaceId::from(OTHER)),
@@ -518,6 +490,7 @@ async fn list_filters_and_pages_by_activity() {
 
     let res = svc
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args {
             surface: Some(SurfaceId::from(OTHER)),
@@ -532,6 +505,7 @@ async fn list_filters_and_pages_by_activity() {
 
     let list::Ok { found } = client
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await
@@ -539,17 +513,10 @@ async fn list_filters_and_pages_by_activity() {
     assert_eq!(found.len(), 7);
 
     // Якорь страницы исчез.
-    client
-        .chats()
-        .delete()
-        .call(delete::Args {
-            chat: mine[1],
-            purge: true,
-        })
-        .await
-        .expect("purge");
+    client.chats().delete(mine[1], true).await.expect("purge");
     let res = client
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args {
             after: Some(mine[1]),
@@ -581,19 +548,12 @@ async fn list_live_and_deleted() {
         })
         .await
         .expect("turn event");
-    client
-        .chats()
-        .delete()
-        .call(delete::Args {
-            chat: gone,
-            purge: false,
-        })
-        .await
-        .expect("delete");
+    client.chats().delete(gone, false).await.expect("delete");
 
     let ids = |found: Vec<Chat>| found.into_iter().map(|c| c.id).collect::<Vec<_>>();
     let list::Ok { found } = client
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args {
             live: true,
@@ -606,6 +566,7 @@ async fn list_live_and_deleted() {
 
     let list::Ok { found } = client
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await
@@ -616,6 +577,7 @@ async fn list_live_and_deleted() {
 
     let list::Ok { found } = client
         .chats()
+        .inner_mut()
         .list()
         .call(list::Args {
             deleted: true,
@@ -950,12 +912,7 @@ async fn move_within_surface_with_trust_confirmation() {
 
     let r#move::Ok { chat: moved } = client
         .chats()
-        .r#move()
-        .call(r#move::Args {
-            chat,
-            folder: same_trust.into(),
-            confirm: false,
-        })
+        .r#move(chat, same_trust.into(), false)
         .await
         .expect("same trust");
     assert_eq!(moved.folder_id, same_trust);
@@ -965,15 +922,7 @@ async fn move_within_surface_with_trust_confirmation() {
         surface: SurfaceId::from("local"),
         name: String::from("public"),
     };
-    let res = client
-        .chats()
-        .r#move()
-        .call(r#move::Args {
-            chat,
-            folder: by_name.clone(),
-            confirm: false,
-        })
-        .await;
+    let res = client.chats().r#move(chat, by_name.clone(), false).await;
     assert!(
         matches!(&res, Err(Generic::Spec(r#move::Err::TrustChange(e))) if e.chat == chat && e.from && !e.to),
         "{res:?}"
@@ -986,27 +935,14 @@ async fn move_within_surface_with_trust_confirmation() {
 
     let r#move::Ok { chat: moved } = client
         .chats()
-        .r#move()
-        .call(r#move::Args {
-            chat,
-            folder: by_name,
-            confirm: true,
-        })
+        .r#move(chat, by_name, true)
         .await
         .expect("confirmed");
     assert_eq!(moved.folder_id, untrusted);
     assert!(!moved.trusted_chat);
     assert!(reset_pending(&h, chat).await, "segment_reset is pending");
 
-    let res = client
-        .chats()
-        .r#move()
-        .call(r#move::Args {
-            chat,
-            folder: foreign.into(),
-            confirm: true,
-        })
-        .await;
+    let res = client.chats().r#move(chat, foreign.into(), true).await;
     assert!(
         matches!(&res, Err(Generic::Spec(r#move::Err::CrossSurface(e))) if e.surface.as_str() == "local"),
         "{res:?}"
@@ -1014,22 +950,12 @@ async fn move_within_surface_with_trust_confirmation() {
 
     let res = client
         .chats()
-        .r#move()
-        .call(r#move::Args {
-            chat,
-            folder: FolderId(9_999).into(),
-            confirm: true,
-        })
+        .r#move(chat, FolderId(9_999).into(), true)
         .await;
     assert_eq!(outcome(&res), Outcome::NotFound, "missing folder: {res:?}");
     let res = client
         .chats()
-        .r#move()
-        .call(r#move::Args {
-            chat: ChatId(404),
-            folder: same_trust.into(),
-            confirm: true,
-        })
+        .r#move(ChatId(404), same_trust.into(), true)
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(r#move::Err::NotFound(_)))),
@@ -1057,12 +983,7 @@ async fn explicit_chat_trust_survives_a_move() {
 
     let r#move::Ok { chat: moved } = client
         .chats()
-        .r#move()
-        .call(r#move::Args {
-            chat,
-            folder: untrusted.into(),
-            confirm: false,
-        })
+        .r#move(chat, untrusted.into(), false)
         .await
         .expect("chat trust wins over the folder");
     assert!(moved.trusted_chat);
@@ -1084,12 +1005,7 @@ async fn delete_restore_and_purge() {
     .id;
     drain(&mut events);
 
-    client
-        .chats()
-        .delete()
-        .call(delete::Args { chat, purge: false })
-        .await
-        .expect("delete");
+    client.chats().delete(chat, false).await.expect("delete");
     let deleted = get(&mut client, chat).await;
     assert!(deleted.deleted_at.is_some());
     assert!(deleted.alias.is_some(), "alias stays for auto-restore");
@@ -1102,19 +1018,13 @@ async fn delete_restore_and_purge() {
 
     client
         .chats()
-        .delete()
-        .call(delete::Args { chat, purge: false })
+        .delete(chat, false)
         .await
         .expect("repeat delete");
     assert_eq!(get(&mut client, chat).await.deleted_at, deleted.deleted_at);
     drain(&mut events);
 
-    let restore::Ok { chat: restored } = client
-        .chats()
-        .restore()
-        .call(restore::Args { chat })
-        .await
-        .expect("restore");
+    let restore::Ok { chat: restored } = client.chats().restore(chat).await.expect("restore");
     assert_eq!(restored.deleted_at, None);
     assert!(matches!(
         drain(&mut events).as_slice(),
@@ -1124,16 +1034,12 @@ async fn delete_restore_and_purge() {
         }]
     ));
 
-    let res = client.chats().restore().call(restore::Args { chat }).await;
+    let res = client.chats().restore(chat).await;
     assert!(
         matches!(&res, Err(Generic::Spec(restore::Err::NotDeleted(e))) if e.chat == chat),
         "{res:?}"
     );
-    let res = client
-        .chats()
-        .restore()
-        .call(restore::Args { chat: ChatId(404) })
-        .await;
+    let res = client.chats().restore(ChatId(404)).await;
     assert!(
         matches!(&res, Err(Generic::Spec(restore::Err::NotFound(_)))),
         "{res:?}"
@@ -1158,18 +1064,9 @@ async fn delete_restore_and_purge() {
         .expect("agent");
     drain(&mut events);
 
-    client
-        .chats()
-        .delete()
-        .call(delete::Args { chat, purge: true })
-        .await
-        .expect("purge");
+    client.chats().delete(chat, true).await.expect("purge");
     for id in [chat, agent] {
-        let res = client
-            .chats()
-            .get()
-            .call(get::Args { chat: id.into() })
-            .await;
+        let res = client.chats().get(id.into()).await;
         assert!(
             matches!(&res, Err(Generic::Spec(get::Err::NotFound(_)))),
             "{id} is gone: {res:?}"
@@ -1193,14 +1090,7 @@ async fn delete_restore_and_purge() {
         "{published:?}"
     );
 
-    let res = client
-        .chats()
-        .delete()
-        .call(delete::Args {
-            chat: ChatId(404),
-            purge: false,
-        })
-        .await;
+    let res = client.chats().delete(ChatId(404), false).await;
     assert!(
         matches!(&res, Err(Generic::Spec(delete::Err::NotFound(_)))),
         "{res:?}"
@@ -1220,11 +1110,7 @@ async fn undeletable_refuses_both_deletes() {
     .await;
 
     for purge in [false, true] {
-        let res = client
-            .chats()
-            .delete()
-            .call(delete::Args { chat, purge })
-            .await;
+        let res = client.chats().delete(chat, purge).await;
         assert!(
             matches!(&res, Err(Generic::Spec(delete::Err::Undeletable(e))) if e.chat == chat),
             "purge={purge}: {res:?}"
@@ -1252,6 +1138,7 @@ async fn history_reads_in_pages() {
     };
     let history_read::Ok { messages, next_seq } = client
         .chats()
+        .inner_mut()
         .history_read()
         .call(read(0, 2))
         .await
@@ -1266,6 +1153,7 @@ async fn history_reads_in_pages() {
 
     let history_read::Ok { messages, next_seq } = client
         .chats()
+        .inner_mut()
         .history_read()
         .call(read(3, 3))
         .await
@@ -1278,6 +1166,7 @@ async fn history_reads_in_pages() {
 
     let history_read::Ok { messages, next_seq } = client
         .chats()
+        .inner_mut()
         .history_read()
         .call(read(6, 10))
         .await
@@ -1287,6 +1176,7 @@ async fn history_reads_in_pages() {
 
     let res = client
         .chats()
+        .inner_mut()
         .history_read()
         .call(history_read::Args {
             before: None,
@@ -1340,21 +1230,23 @@ async fn history_respects_the_turn_view() {
         (current, view(false, false), Outcome::Ok),
         (untrusted, view(false, true), Outcome::Ok),
     ] {
-        let res = client.chats().history_read().call(read(chat, view)).await;
+        let res = client
+            .chats()
+            .inner_mut()
+            .history_read()
+            .call(read(chat, view))
+            .await;
         assert_eq!(outcome(&res), want, "{chat}: {res:?}");
     }
 
     client
         .chats()
-        .delete()
-        .call(delete::Args {
-            chat: untrusted,
-            purge: false,
-        })
+        .delete(untrusted, false)
         .await
         .expect("delete");
     let res = client
         .chats()
+        .inner_mut()
         .history_read()
         .call(read(untrusted, view(false, false)))
         .await;
@@ -1371,11 +1263,7 @@ async fn database_failure_is_aux_db() {
     let mut client = h.client_session().await;
     let chat = new_chat(&mut client, create_args("local")).await.id;
     h.db_fail.store(true, Ordering::Relaxed);
-    let res = client
-        .chats()
-        .get()
-        .call(get::Args { chat: chat.into() })
-        .await;
+    let res = client.chats().get(chat.into()).await;
     assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
     let res = update(&mut client, chat, update::Update::default()).await;
     assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
@@ -1420,47 +1308,44 @@ async fn oversized_strings_are_invalid() {
         ),
     ];
     for (what, args) in cases {
-        let res = svc.chats().create().call(args).await;
+        let res = svc.chats().inner_mut().create().call(args).await;
         assert_eq!(outcome(&res), Outcome::Invalid, "create {what}: {res:?}");
     }
 
     let chat = new_chat(&mut svc, create_args(SVC)).await.id;
     let res = svc
         .chats()
-        .update()
-        .call(update::Args {
+        .update(
             chat,
-            update: update::Update {
+            update::Update {
                 title: Patch::Change(Some("t".repeat(257))),
                 ..Default::default()
             },
-        })
+        )
         .await;
     assert_eq!(outcome(&res), Outcome::Invalid, "update title: {res:?}");
     let res = svc
         .chats()
-        .update()
-        .call(update::Args {
+        .update(
             chat,
-            update: update::Update {
+            update::Update {
                 title: Patch::Change(Some("т".repeat(256))),
                 workdir: Patch::Change(Some(huge)),
                 ..Default::default()
             },
-        })
+        )
         .await;
     assert_eq!(outcome(&res), Outcome::Invalid, "update workdir: {res:?}");
 
     let renamed = svc
         .chats()
-        .update()
-        .call(update::Args {
+        .update(
             chat,
-            update: update::Update {
+            update::Update {
                 title: Patch::Change(Some("т".repeat(256))),
                 ..Default::default()
             },
-        })
+        )
         .await
         .expect("256 characters fit, whatever their bytes")
         .chat;

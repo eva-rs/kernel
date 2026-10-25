@@ -5,10 +5,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{
-    CallStep as _,
-    service::{chats::Chats as _, persons::Persons as _},
-};
+use eva_core::{CallStep as _, service::Persons::Trait as _};
 use eva_protocol::{
     errors::Generic,
     requests::{
@@ -49,6 +46,7 @@ fn resolve_args(surface: &str, external_id: &str) -> resolve::Args {
 async fn resolve(session: &mut TestSession, args: resolve::Args) -> Person {
     session
         .persons()
+        .inner_mut()
         .resolve()
         .call(args)
         .await
@@ -144,12 +142,14 @@ async fn resolve_rejects_bad_input() {
     let mut client = h.client_session().await;
     let res = client
         .persons()
+        .inner_mut()
         .resolve()
         .call(resolve_args("nowhere", "1"))
         .await;
     assert_eq!(outcome(&res), Outcome::NotFound, "{res:?}");
     let res = client
         .persons()
+        .inner_mut()
         .resolve()
         .call(resolve_args("local", ""))
         .await;
@@ -167,12 +167,7 @@ async fn service_sees_only_identities_of_its_surfaces() {
     let b = resolve(&mut other, resolve_args(OTHER, "7")).await;
     client
         .persons()
-        .merge()
-        .call(merge::Args {
-            from: b.id.clone(),
-            into: a.id.clone(),
-            confirm: false,
-        })
+        .merge(b.id.clone(), a.id.clone(), false)
         .await
         .expect("merge");
 
@@ -203,11 +198,7 @@ async fn list_filters_and_pages() {
     }
     client
         .persons()
-        .whitelist()
-        .call(whitelist::Args {
-            person: created[0].clone(),
-            on: true,
-        })
+        .whitelist(created[0].clone(), true)
         .await
         .expect("whitelist");
 
@@ -217,6 +208,7 @@ async fn list_filters_and_pages() {
     loop {
         let list::Ok { found } = client
             .persons()
+            .inner_mut()
             .list()
             .call(list::Args {
                 limit,
@@ -240,6 +232,7 @@ async fn list_filters_and_pages() {
 
     let list::Ok { found } = client
         .persons()
+        .inner_mut()
         .list()
         .call(list::Args {
             surface: Some(SurfaceId::from(SVC)),
@@ -256,6 +249,7 @@ async fn list_filters_and_pages() {
 
     let list::Ok { found } = client
         .persons()
+        .inner_mut()
         .list()
         .call(list::Args {
             whitelisted: Some(true),
@@ -272,6 +266,7 @@ async fn list_filters_and_pages() {
 
     let list::Ok { found } = client
         .persons()
+        .inner_mut()
         .list()
         .call(list::Args {
             whitelisted: Some(false),
@@ -283,6 +278,7 @@ async fn list_filters_and_pages() {
 
     let res = client
         .persons()
+        .inner_mut()
         .list()
         .call(list::Args {
             after: Some(PersonId::from("bob")),
@@ -301,11 +297,7 @@ async fn rename_and_its_errors() {
 
     let rename::Ok { person } = client
         .persons()
-        .rename()
-        .call(rename::Args {
-            person: alice.id.clone(),
-            name: String::from("Alice"),
-        })
+        .rename(alice.id.clone(), String::from("Alice"))
         .await
         .expect("rename");
     assert_eq!(person.name, "Alice");
@@ -313,11 +305,7 @@ async fn rename_and_its_errors() {
 
     let res = client
         .persons()
-        .rename()
-        .call(rename::Args {
-            person: PersonId::system(),
-            name: String::from("Kernel"),
-        })
+        .rename(PersonId::system(), String::from("Kernel"))
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(rename::Err::System(_)))),
@@ -325,11 +313,7 @@ async fn rename_and_its_errors() {
     );
     let res = client
         .persons()
-        .rename()
-        .call(rename::Args {
-            person: PersonId::from("p99"),
-            name: String::from("Ghost"),
-        })
+        .rename(PersonId::from("p99"), String::from("Ghost"))
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(rename::Err::NotFound(e))) if e.person.as_str() == "p99"),
@@ -337,11 +321,7 @@ async fn rename_and_its_errors() {
     );
     let res = client
         .persons()
-        .rename()
-        .call(rename::Args {
-            person: alice.id.clone(),
-            name: String::from("Two\nlines"),
-        })
+        .rename(alice.id.clone(), String::from("Two\nlines"))
         .await;
     assert_eq!(outcome(&res), Outcome::Invalid, "{res:?}");
 }
@@ -357,58 +337,32 @@ async fn whitelist_and_its_errors() {
     for on in [true, false] {
         let whitelist::Ok { person } = client
             .persons()
-            .whitelist()
-            .call(whitelist::Args {
-                person: alice.id.clone(),
-                on,
-            })
+            .whitelist(alice.id.clone(), on)
             .await
             .expect("whitelist");
         assert_eq!(person.whitelisted, on);
     }
 
-    let res = client
-        .persons()
-        .whitelist()
-        .call(whitelist::Args {
-            person: me.id.clone(),
-            on: false,
-        })
-        .await;
+    let res = client.persons().whitelist(me.id.clone(), false).await;
     assert!(
         matches!(&res, Err(Generic::Spec(whitelist::Err::MasterWhitelist(e))) if e.person == me.id),
         "{res:?}"
     );
     let whitelist::Ok { person } = client
         .persons()
-        .whitelist()
-        .call(whitelist::Args {
-            person: me.id.clone(),
-            on: true,
-        })
+        .whitelist(me.id.clone(), true)
         .await
         .expect("master stays whitelisted");
     assert!(person.whitelisted);
 
-    let res = client
-        .persons()
-        .whitelist()
-        .call(whitelist::Args {
-            person: PersonId::system(),
-            on: false,
-        })
-        .await;
+    let res = client.persons().whitelist(PersonId::system(), false).await;
     assert!(
         matches!(&res, Err(Generic::Spec(whitelist::Err::System(_)))),
         "{res:?}"
     );
     let res = client
         .persons()
-        .whitelist()
-        .call(whitelist::Args {
-            person: PersonId::from("p99"),
-            on: true,
-        })
+        .whitelist(PersonId::from("p99"), true)
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(whitelist::Err::NotFound(_)))),
@@ -473,40 +427,30 @@ async fn merge_moves_every_reference() {
     let into = resolve(&mut svc, resolve_args(SVC, "b")).await;
     client
         .persons()
-        .whitelist()
-        .call(whitelist::Args {
-            person: from.id.clone(),
-            on: true,
-        })
+        .whitelist(from.id.clone(), true)
         .await
         .expect("whitelist from");
 
     let chats::create::Ok { chat } = client
         .chats()
-        .create()
-        .call(chats::create::Args {
-            surface: SurfaceId::from(SVC),
-            folder: None,
-            external_id: None,
-            external_kind: None,
-            kind: None,
-            title: None,
-            project: None,
-            workdir: None,
-            workdir_on: None,
-        })
+        .create(
+            SurfaceId::from(SVC),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("chat");
     reference_everywhere(&h, chat.id.0, from.id.clone()).await;
 
     let merge::Ok { person } = client
         .persons()
-        .merge()
-        .call(merge::Args {
-            from: from.id.clone(),
-            into: into.id.clone(),
-            confirm: false,
-        })
+        .merge(from.id.clone(), into.id.clone(), false)
         .await
         .expect("merge");
     assert_eq!(person.id, into.id);
@@ -550,6 +494,7 @@ async fn merge_moves_every_reference() {
 
     let res = client
         .persons()
+        .inner_mut()
         .resolve()
         .call(resolve_args(SVC, "a"))
         .await
@@ -606,6 +551,7 @@ async fn merge_refusals() {
 
     let res = client
         .persons()
+        .inner_mut()
         .merge()
         .call(call(&alice.id, &alice.id, true))
         .await;
@@ -616,6 +562,7 @@ async fn merge_refusals() {
 
     let res = client
         .persons()
+        .inner_mut()
         .merge()
         .call(call(&PersonId::system(), &alice.id, true))
         .await;
@@ -625,6 +572,7 @@ async fn merge_refusals() {
     );
     let res = client
         .persons()
+        .inner_mut()
         .merge()
         .call(call(&alice.id, &PersonId::system(), true))
         .await;
@@ -636,6 +584,7 @@ async fn merge_refusals() {
     let ghost = PersonId::from("p99");
     let res = client
         .persons()
+        .inner_mut()
         .merge()
         .call(call(&ghost, &alice.id, true))
         .await;
@@ -645,6 +594,7 @@ async fn merge_refusals() {
     );
     let res = client
         .persons()
+        .inner_mut()
         .merge()
         .call(call(&alice.id, &ghost, true))
         .await;
@@ -656,6 +606,7 @@ async fn merge_refusals() {
     // Чужой в хозяина без confirm — отказ, ничего не тронуто.
     let res = client
         .persons()
+        .inner_mut()
         .merge()
         .call(call(&alice.id, &me.id, false))
         .await;
@@ -668,6 +619,7 @@ async fn merge_refusals() {
 
     let merge::Ok { person } = client
         .persons()
+        .inner_mut()
         .merge()
         .call(call(&alice.id, &me.id, true))
         .await
@@ -689,6 +641,7 @@ async fn service_cannot_probe_surfaces() {
     for surface in [OTHER, "local", "nowhere"] {
         let res = svc
             .persons()
+            .inner_mut()
             .resolve()
             .call(resolve_args(surface, "1"))
             .await;
@@ -706,11 +659,17 @@ async fn database_failure_is_aux_db() {
     h.db_fail.store(true, std::sync::atomic::Ordering::Relaxed);
     let res = client
         .persons()
+        .inner_mut()
         .resolve()
         .call(resolve_args("local", MASTER))
         .await;
     assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
-    let res = client.persons().list().call(list::Args::default()).await;
+    let res = client
+        .persons()
+        .inner_mut()
+        .list()
+        .call(list::Args::default())
+        .await;
     assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
 }
 
@@ -739,7 +698,7 @@ async fn oversized_identity_strings_are_invalid() {
         ),
     ];
     for (what, args) in cases {
-        let res = svc.persons().resolve().call(args).await;
+        let res = svc.persons().inner_mut().resolve().call(args).await;
         assert_eq!(outcome(&res), Outcome::Invalid, "resolve {what}: {res:?}");
     }
 

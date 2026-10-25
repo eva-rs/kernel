@@ -1,6 +1,8 @@
 //! Разовый вызов модели модулем: без чата, истории и тулов.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
+
 use serde_json::Value;
 
 use crate::{
@@ -12,36 +14,28 @@ use crate::{
     },
 };
 
-pub mod complete {
-    use super::*;
-
-    #[data]
-    pub struct Args {
+#[service(export, result = Response)]
+pub trait Inference {
+    #[flags(mutating)]
+    #[errors(errors::inference::Provider)]
+    fn complete(
         /// `None` — `llm.roles.cheap`.
-        pub model: Option<ModelId>,
-        pub system: String,
-        pub input: Vec<Block>,
+        model: Option<ModelId>,
+        system: String,
+        input: Vec<Block>,
         /// JSON Schema структурированного ответа.
-        pub schema: Option<Value>,
-        pub max_tokens: Option<u32>,
+        schema: Option<Value>,
+        max_tokens: Option<u32>,
         /// `None` — `low`.
-        pub effort: Option<Effort>,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub text: Option<String>,
+        effort: Option<Effort>,
+    ) -> ok! {
+        text: Option<String>,
         /// При заданной `schema`.
-        pub json: Option<Value>,
-        pub stop: Stop,
-        pub usage: Usage,
+        json: Option<Value>,
+        stop: Stop,
+        usage: Usage,
+    };
+    embed! {
+        code!(Err => [Provider]);
     }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        Provider(#[from] errors::inference::Provider),
-    }
-
-    code!(Err => [Provider]);
 }

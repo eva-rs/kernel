@@ -7,13 +7,10 @@ use std::sync::atomic::Ordering;
 
 use common::{Harness, Outcome, outcome};
 use eva::{bytes::Bytes, time::Clock as _};
-use eva_core::{
-    CallStep as _,
-    service::{blobs::Blobs as _, chats::Chats as _, stats::Stats as _},
-};
+
 use eva_protocol::{
     errors::Aux,
-    requests::{blobs, chats, stats},
+    requests::blobs,
     types::{BlobId, ChatId, SurfaceId, blob, stats::Scope},
 };
 
@@ -21,18 +18,17 @@ async fn chat(h: &Harness) -> ChatId {
     h.client_session()
         .await
         .chats()
-        .create()
-        .call(chats::create::Args {
-            surface: SurfaceId::from("local"),
-            folder: None,
-            external_id: None,
-            external_kind: None,
-            kind: None,
-            title: None,
-            project: None,
-            workdir: None,
-            workdir_on: None,
-        })
+        .create(
+            SurfaceId::from("local"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("chat")
         .chat
@@ -46,9 +42,8 @@ async fn blobs_answer_aux_db() {
     let mut client = h.client_session().await;
     let blob = client
         .blobs()
-        .put()
-        .call(blobs::put::Args {
-            meta: blobs::put::Meta {
+        .put(
+            blobs::put::Meta {
                 chat,
                 name: String::from("a.txt"),
                 media_type: String::from("text/plain"),
@@ -56,29 +51,23 @@ async fn blobs_answer_aux_db() {
                 size: 3,
                 hash: None,
             },
-            body: Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
+            Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
                 b"abc",
             ))])),
-        })
+        )
         .await
         .expect("put before the failure")
         .id;
 
     h.db_fail.store(true, Ordering::Relaxed);
     let mut client = h.client_session().await;
-    let res = client
-        .blobs()
-        .stat()
-        .call(blobs::stat::Args { id: blob })
-        .await;
+    let res = client.blobs().stat(blob).await.map(|ok| ok.0);
     assert_eq!(outcome(&res), Outcome::Db, "stat: {res:?}");
     let res = client
         .blobs()
-        .stat()
-        .call(blobs::stat::Args {
-            id: BlobId::from("missing"),
-        })
-        .await;
+        .stat(BlobId::from("missing"))
+        .await
+        .map(|ok| ok.0);
     assert_eq!(
         outcome(&res),
         Outcome::Db,
@@ -86,9 +75,8 @@ async fn blobs_answer_aux_db() {
     );
     let res = client
         .blobs()
-        .put()
-        .call(blobs::put::Args {
-            meta: blobs::put::Meta {
+        .put(
+            blobs::put::Meta {
                 chat,
                 name: String::from("b.txt"),
                 media_type: String::from("text/plain"),
@@ -96,10 +84,10 @@ async fn blobs_answer_aux_db() {
                 size: 3,
                 hash: None,
             },
-            body: Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
+            Box::pin(futures::stream::iter([Ok::<_, Aux>(Bytes::from_static(
                 b"xyz",
             ))])),
-        })
+        )
         .await;
     assert_eq!(outcome(&res), Outcome::Db, "put: {res:?}");
 }
@@ -118,22 +106,10 @@ async fn stats_answer_aux_db() {
     let mut client = h.client_session().await;
     let res = client
         .stats()
-        .spend()
-        .call(stats::spend::Args {
-            scope: Scope::Global,
-            target: None,
-            from: day,
-            to: day,
-            group_by: Default::default(),
-            view: None,
-        })
+        .spend(Scope::Global, None, day, day, Default::default(), None)
         .await;
     assert_eq!(outcome(&res), Outcome::Db, "spend: {res:?}");
-    let res = client
-        .stats()
-        .chat_spend()
-        .call(stats::chat_spend::Args { chat })
-        .await;
+    let res = client.stats().chat_spend(chat).await;
     assert_eq!(outcome(&res), Outcome::Db, "chat_spend: {res:?}");
 }
 

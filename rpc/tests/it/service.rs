@@ -6,10 +6,7 @@ use std::time::Duration;
 use futures::stream;
 
 use eva::bytesize::ByteSize;
-use eva_core::{
-    CallStep as _,
-    service::{blobs::Blobs as _, surfaces::Surfaces as _},
-};
+
 use eva_protocol::{
     requests::{ByteStream, blobs::put, surfaces::create},
     types::{ModuleId, blob::Kind as BlobKind, module::ModuleKind},
@@ -53,12 +50,7 @@ async fn frames_over_noise() {
         let mut session = module.session();
         let create::Ok { surface } = session
             .surfaces()
-            .create()
-            .call(create::Args {
-                id: "tg".into(),
-                name: "tg".to_owned(),
-                rules: None,
-            })
+            .create("tg".into(), "tg".to_owned(), None)
             .await
             .unwrap();
         assert_eq!(surface.id.as_str(), "tg");
@@ -69,9 +61,8 @@ async fn frames_over_noise() {
         let body: ByteStream = Box::pin(stream::iter([Ok(big.clone().into())]));
         let ok = session
             .blobs()
-            .put()
-            .call(put::Args {
-                meta: put::Meta {
+            .put(
+                put::Meta {
                     chat: chat_id(1),
                     name: "big.bin".to_owned(),
                     media_type: "application/octet-stream".to_owned(),
@@ -80,7 +71,7 @@ async fn frames_over_noise() {
                     hash: None,
                 },
                 body,
-            })
+            )
             .await
             .unwrap();
         assert_eq!(ok.size, big.len() as u64);

@@ -4,7 +4,7 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::persons::Persons as _};
+use eva_core::{CallStep as _, service::Persons::Trait as _};
 use eva_protocol::{
     requests::persons::{list, merge, rename, resolve, whitelist},
     types::{PersonId, SurfaceId},
@@ -46,6 +46,7 @@ fn resolve_args(surface: &str, external_id: &str) -> resolve::Args {
 async fn person(owner: &mut TestSession, external_id: &str) -> PersonId {
     owner
         .persons()
+        .inner_mut()
         .resolve()
         .call(resolve_args(SVC, external_id))
         .await
@@ -57,7 +58,8 @@ async fn person(owner: &mut TestSession, external_id: &str) -> PersonId {
 async fn run(session: &mut TestSession, owner: &mut TestSession, case: Case, n: usize) -> Outcome {
     let target = person(owner, &format!("t{n}")).await;
     let into = person(owner, &format!("into{n}")).await;
-    let mut persons = session.persons();
+    let mut persons_client = session.persons();
+    let persons = persons_client.inner_mut();
     match case {
         Case::ResolveA => outcome(&persons.resolve().call(resolve_args(SVC, "x")).await),
         Case::ResolveLocal => outcome(&persons.resolve().call(resolve_args("local", "x")).await),

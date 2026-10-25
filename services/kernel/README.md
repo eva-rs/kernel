@@ -11,7 +11,7 @@
 | Путь | Что |
 |---|---|
 | `handling/` | хендлер на операцию (`#[eva::endpoint]` + `#[fastrace::trace]`), файл на домен |
-| `impls/` | `impl <Namespace> for Session<C>`: строка на операцию, пропуск — ошибка компиляции |
+| `impls/` | `for_each_op!(project)` связывает методы протокола с обработчиками; `decorate!` выбирает middleware |
 | `state/policy/` | `Policy` — единственное место авторизации; чужой объект — `forbidden`, не `not_found` |
 | `db/` | весь SQL, по файлу на домен; `migrate`, `seed`, пул `sqlite`, `quota_vfs` |
 | `convert/` | строка БД → тип протокола |

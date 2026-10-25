@@ -1,6 +1,7 @@
 //! Модули, реестр сервисов и токены клиентов.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::{
     errors,
@@ -10,112 +11,55 @@ use crate::{
     },
 };
 
-pub mod list {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {}
-
-    #[data]
-    pub struct Ok {
-        pub modules: Vec<Module>,
+#[service(export, result = Response)]
+pub trait Modules {
+    #[args(derive(Default))]
+    fn list() -> ok! {
+        modules: Vec<Module>,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod add {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub module: ModuleId,
-        pub address: ServiceAddress,
+    #[flags(mutating)]
+    #[errors(errors::modules::Taken)]
+    fn add(
+        module: ModuleId,
+        address: ServiceAddress,
         /// `None` — ключ генерирует ядро.
-        pub key: Option<ServiceKey>,
-    }
-
-    #[data]
-    pub struct Ok {
+        key: Option<ServiceKey>,
+    ) -> ok! {
         /// Сгенерированный ядром ключ; показывается один раз.
-        pub key: Option<ServiceKey>,
+        key: Option<ServiceKey>,
+    };
+    embed! {
+        code!(Err => [Taken]);
     }
 
-    /// Зарезервированное или невалидное имя, негодный ключ — `Aux::Invalid`;
-    /// адрес, который уже набирает другая запись реестра, — `Aux::Conflict`.
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        Taken(#[from] errors::modules::Taken),
+    #[flags(mutating)]
+    #[errors(errors::modules::ServiceNotFound)]
+    fn remove(module: ModuleId) -> ok! {};
+    embed! {
+        code!(Err => [ServiceNotFound]);
     }
 
-    code!(Err => [Taken]);
-}
-
-pub mod remove {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub module: ModuleId,
-    }
-
-    #[data]
-    pub struct Ok {}
-
-    /// Запись `modules.services` — `Aux::Conflict`.
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        ServiceNotFound(#[from] errors::modules::ServiceNotFound),
-    }
-
-    code!(Err => [ServiceNotFound]);
-}
-
-pub mod token_issue {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub module: ModuleId,
+    #[flags(mutating)]
+    fn token_issue(
+        module: ModuleId,
         /// Заполняет только обёртка тула: актор тура.
-        pub issued_by: Option<PersonId>,
-    }
-
-    #[data]
-    pub struct Ok {
+        issued_by: Option<PersonId>,
+    ) -> ok! {
         /// Токен клиента; показывается один раз, ядро хранит только хэш.
-        pub token: String,
+        token: String,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    /// Зарезервированное или невалидное имя — `Aux::Invalid`.
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod token_revoke {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub module: ModuleId,
+    #[flags(mutating)]
+    #[errors(errors::modules::NotFound)]
+    fn token_revoke(module: ModuleId) -> ok! {};
+    embed! {
+        code!(Err => [NotFound]);
     }
-
-    #[data]
-    pub struct Ok {}
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::modules::NotFound),
-    }
-
-    code!(Err => [NotFound]);
 }

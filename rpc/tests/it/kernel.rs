@@ -179,7 +179,10 @@ macro_rules! real {
 macro_rules! test_session {
     ($(
         $segment:ident {$(
-            $accessor:ident : $Trait:ident {$(
+            $accessor:ident : $Trait:ident {
+                trait: $TraitPath:path,
+                client: $Client:path,
+                $(
                 $(#[$flag:ident])*
                 $method:ident = $endpoint:ident {
                     args: $Args:ty,
@@ -191,7 +194,7 @@ macro_rules! test_session {
             )*}
         )*}
     )*) => {$($(
-        impl eva_core::service::$segment::$Trait for TestSession {$(
+        impl $TraitPath for TestSession {$(
             fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
                 reply!($segment $endpoint self)
             }
@@ -274,7 +277,7 @@ async fn turns_attach(state: Arc<State>, args: attach::Args) -> Response<attach:
         chat::BROKEN => Box::pin(stream::iter([Ok(item(0)), Ok(item(1)), Err(not_found())])),
         _ => return Err(not_found()),
     };
-    Ok(items)
+    Ok(items.into())
 }
 
 struct DropFlag(Arc<State>);

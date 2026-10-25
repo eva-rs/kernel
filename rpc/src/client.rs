@@ -396,20 +396,22 @@ where
 }
 
 /// Шаг потока к вызывающему: `Ok` — элементы из кадров потока.
-pub struct Streaming<A, T, E> {
+pub struct Streaming<A, T, E, O> {
+    wrap: fn(Items<T, E>) -> O,
     target: Target,
     _types: PhantomData<fn(A) -> (T, E)>,
 }
 
-impl<A, T, E> CallStep<A> for Streaming<A, T, E>
+impl<A, T, E, O> CallStep<A> for Streaming<A, T, E, O>
 where
     A: Serialize,
     T: DeserializeOwned + Send + 'static,
     E: DeserializeOwned + Send + 'static,
 {
-    type Output = OpResponse<Items<T, E>, E>;
+    type Output = OpResponse<O, E>;
 
     fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
+        let wrap = self.wrap;
         let inner = self.target.inner.clone();
         let method = self.target.method.clone();
         let params = codec::encode(&args);
@@ -422,7 +424,7 @@ where
                 done: false,
                 _types: PhantomData,
             });
-            Ok(items)
+            Ok(wrap(items))
         }
     }
 }
@@ -490,22 +492,23 @@ where
 }
 
 macro_rules! step {
-    ([] $target:ident $Args:ty) => {
+    ([] $target:ident $Args:ty, $Ok:ty) => {
         Unary {
             target: $target,
             _types: PhantomData,
         }
     };
-    ([mutating] $target:ident $Args:ty) => {
-        step!([] $target $Args)
+    ([mutating] $target:ident $Args:ty, $Ok:ty) => {
+        step!([] $target $Args, $Ok)
     };
-    ([stream] $target:ident $Args:ty) => {
+    ([stream] $target:ident $Args:ty, $Ok:ty) => {
         Streaming {
+            wrap: <$Ok>::from,
             target: $target,
             _types: PhantomData,
         }
     };
-    ([upload] $target:ident $Args:ty) => {{
+    ([upload] $target:ident $Args:ty, $Ok:ty) => {{
         type Args = $Args;
 
         Uploading {
@@ -519,7 +522,10 @@ macro_rules! step {
 macro_rules! client_impls {
     ($(
         $segment:ident {$(
-            $accessor:ident : $Trait:ident {$(
+            $accessor:ident : $Trait:ident {
+                trait: $TraitPath:path,
+                client: $Client:path,
+                $(
                 $(#[$flag:ident])*
                 $method:ident = $endpoint:ident {
                     args: $Args:ty,
@@ -531,10 +537,10 @@ macro_rules! client_impls {
             )*}
         )*}
     )*) => {$($(
-        impl eva_core::service::$segment::$Trait for RpcSession {$(
+        impl $TraitPath for RpcSession {$(
             fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
                 let target = self.target(stringify!($segment), stringify!($endpoint));
-                step!([$($flag)*] target $Args)
+                step!([$($flag)*] target $Args, $Ok)
             }
         )*}
     )*)*};

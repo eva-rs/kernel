@@ -24,3 +24,5 @@ pub use caller::Caller;
 pub use eva_protocol as protocol;
 pub use provider::{GenSink, Provider};
 pub use service::{CallStep, IsSession, NAMESPACES, Op, OpKind, Session, SessionMaker};
+
+pub use service::for_each_op;

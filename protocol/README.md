@@ -10,7 +10,7 @@
 
 | Путь | Что |
 |---|---|
-| `requests/<ns>.rs` | модуль на операцию: `Args`, `Ok`, `Err`; у потока `Ok = Items<Item, Err>`, у загрузки `Args { meta, body }` и по проводу — `Meta` |
+| `requests/<ns>.rs` | `#[service]` создаёт модуль на операцию: `Args`, `Ok`, `Err`; у потока `Ok(pub Items<Item, Err>)`, у загрузки `Args { meta, body }` и по проводу — `Meta` |
 | `requests::{Patch, Limit, RunsLimit, Response}` | частичное обновление, границы страниц, `Result<O, Generic<E>>` |
 | `requests::{Items, ByteStream}` | поток к вызывающему (`Response<Item, Err>` поштучно) и тело загрузки (`Result<Bytes, Aux>`); только типы |
 | `errors::{Generic, Aux, HasCode}` | `Generic<E>` = `Spec(E)` \| `Aux(Aux)`: отказ операции против беды подсистемы |

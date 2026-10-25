@@ -2,7 +2,7 @@
 
 mod common;
 
-use eva_core::{CallStep as _, service::surfaces::Surfaces as _};
+use eva_core::{CallStep as _, service::Surfaces::Trait as _};
 use eva_kernel::{
     config::chats::MasterIdentity,
     db::{DbResult, Queries as _},
@@ -165,7 +165,12 @@ async fn a_bound_master_surface_is_created_only_by_its_module() {
 
     h.register_module(common::OTHER).await;
     let mut other = h.session(common::service(common::OTHER)).await;
-    let res = other.surfaces().create().call(create_svc()).await;
+    let res = other
+        .surfaces()
+        .inner_mut()
+        .create()
+        .call(create_svc())
+        .await;
     assert!(
         matches!(res, Err(Generic::Aux(Aux::Forbidden(_)))),
         "{res:?}"

@@ -2,10 +2,12 @@
 
 use std::{borrow::Cow, fmt};
 
+use crate::requests::Response;
 use eva::{
     _priv::schemars::{JsonSchema, Schema, SchemaGenerator, json_schema},
-    data,
+    data, service,
 };
+
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, Visitor},
@@ -130,73 +132,40 @@ impl JsonSchema for Cell {
     }
 }
 
-pub mod exec {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        #[serde(flatten)]
-        pub statement: Statement,
+#[service(export, result = Response)]
+pub trait Sqlite {
+    #[flags(mutating)]
+    #[errors(errors::sqlite::Sql)]
+    fn exec(
+        #[serde(flatten)] statement: Statement,
+    ) -> ok! {
+        changes: u64,
+    };
+    embed! {
+        code!(Err => [Sql]);
     }
 
-    #[data]
-    pub struct Ok {
-        pub changes: u64,
+    #[errors(errors::sqlite::Sql)]
+    fn query(
+        #[serde(flatten)] statement: Statement,
+    ) -> ok! {
+        columns: Vec<String>,
+        rows: Vec<Vec<Cell>>,
+    };
+    embed! {
+        code!(Err => [Sql]);
     }
 
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        Sql(#[from] errors::sqlite::Sql),
-    }
-
-    code!(Err => [Sql]);
-}
-
-pub mod query {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        #[serde(flatten)]
-        pub statement: Statement,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub columns: Vec<String>,
-        pub rows: Vec<Vec<Cell>>,
-    }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        Sql(#[from] errors::sqlite::Sql),
-    }
-
-    code!(Err => [Sql]);
-}
-
-pub mod tx {
-    use super::*;
-
-    /// Одна транзакция: всё или ничего.
-    #[data]
-    pub struct Args {
-        pub statements: Vec<Statement>,
-    }
-
-    #[data]
-    pub struct Ok {
+    #[flags(mutating)]
+    #[args(doc = " Одна транзакция: всё или ничего.")]
+    #[errors(errors::sqlite::Sql)]
+    fn tx(
+        statements: Vec<Statement>,
+    ) -> ok! {
         /// По оператору.
-        pub changes: Vec<u64>,
+        changes: Vec<u64>,
+    };
+    embed! {
+        code!(Err => [Sql]);
     }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        Sql(#[from] errors::sqlite::Sql),
-    }
-
-    code!(Err => [Sql]);
 }

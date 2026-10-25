@@ -11,7 +11,7 @@ use std::{
 use common::{CountingHands, FaultyDb, Outcome, SVC, outcome, service};
 use eva_core::{
     CallStep as _, Caller, GenSink, Provider, SessionMaker as _,
-    service::{self, blobs::Blobs as _, inference::Inference as _},
+    service::{self, Inference::Trait as _},
 };
 use eva_hands::Limits;
 use eva_protocol::{
@@ -341,6 +341,7 @@ async fn complete_collects_text_usage_and_writes_spend() {
 
     let ok = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(ask(Some(CHEAP)))
         .await
@@ -414,6 +415,7 @@ async fn model_defaults_to_the_cheapest_or_the_cheap_role() {
 
     client
         .inference()
+        .inner_mut()
         .complete()
         .call(ask(None))
         .await
@@ -429,6 +431,7 @@ async fn model_defaults_to_the_cheapest_or_the_cheap_role() {
     h.script(vec![stop()], None);
     client
         .inference()
+        .inner_mut()
         .complete()
         .call(ask(None))
         .await
@@ -446,13 +449,19 @@ async fn arguments_are_validated() {
     let mut svc = h.session(service(SVC)).await;
     h.script(vec![stop()], None);
 
-    let res = svc.inference().complete().call(ask(Some("nope"))).await;
+    let res = svc
+        .inference()
+        .inner_mut()
+        .complete()
+        .call(ask(Some("nope")))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::NotFound(what))) if what.contains("nope")),
         "{res:?}"
     );
     let res = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             max_tokens: Some(0),
@@ -462,6 +471,7 @@ async fn arguments_are_validated() {
     assert_eq!(outcome(&res), Outcome::Invalid);
     let res = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             input: Vec::new(),
@@ -471,6 +481,7 @@ async fn arguments_are_validated() {
     assert_eq!(outcome(&res), Outcome::Invalid);
 
     svc.inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             max_tokens: Some(1_000_000),
@@ -499,7 +510,12 @@ async fn provider_error_is_spec_and_usage_is_still_recorded() {
         }),
     );
 
-    let res = svc.inference().complete().call(ask(Some(CHEAP))).await;
+    let res = svc
+        .inference()
+        .inner_mut()
+        .complete()
+        .call(ask(Some(CHEAP)))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Spec(complete::Err::Provider(e))) if e.error.kind == ProviderErrorKind::Quota),
         "{res:?}"
@@ -509,6 +525,7 @@ async fn provider_error_is_spec_and_usage_is_still_recorded() {
     h.script(vec![text("cut")], None);
     let ok = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(ask(Some(CHEAP)))
         .await
@@ -528,6 +545,7 @@ async fn schema_goes_native_or_as_text() {
     );
     let ok = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             schema: Some(schema.clone()),
@@ -547,6 +565,7 @@ async fn schema_goes_native_or_as_text() {
     h.script(vec![text("{\"label\": \"ham\"}"), stop()], None);
     let ok = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             schema: Some(schema.clone()),
@@ -562,6 +581,7 @@ async fn schema_goes_native_or_as_text() {
     h.script(vec![text("not json"), stop()], None);
     let ok = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             schema: Some(schema),
@@ -578,9 +598,8 @@ async fn put_blob(session: &mut Sess, chat: ChatId, name: &str, kind: Kind) -> B
     ))]));
     session
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: put::Meta {
+        .put(
+            put::Meta {
                 chat,
                 name: name.to_owned(),
                 media_type: String::from("image/png"),
@@ -589,7 +608,7 @@ async fn put_blob(session: &mut Sess, chat: ChatId, name: &str, kind: Kind) -> B
                 hash: None,
             },
             body,
-        })
+        )
         .await
         .expect("blobs.put")
         .id
@@ -617,6 +636,7 @@ async fn blob_blocks_follow_vision_and_policy() {
         Block::File { blob: doc.clone() },
     ];
     svc.inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             input: input.clone(),
@@ -642,6 +662,7 @@ async fn blob_blocks_follow_vision_and_policy() {
     );
 
     svc.inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             input,
@@ -661,6 +682,7 @@ async fn blob_blocks_follow_vision_and_policy() {
 
     let res = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             input: vec![Block::File { blob: foreign }],
@@ -674,6 +696,7 @@ async fn blob_blocks_follow_vision_and_policy() {
     );
     let res = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(complete::Args {
             input: vec![Block::File {
@@ -692,7 +715,12 @@ async fn policy_matrix() {
 
     for (who, caller) in common::matrix_callers() {
         let mut session = h.session(caller).await;
-        let res = session.inference().complete().call(ask(Some(CHEAP))).await;
+        let res = session
+            .inference()
+            .inner_mut()
+            .complete()
+            .call(ask(Some(CHEAP)))
+            .await;
         assert_eq!(outcome(&res), Outcome::Ok, "{who}: {res:?}");
     }
     let spend = h.spend().await;
@@ -742,6 +770,7 @@ async fn max_tokens_fits_the_context_window() {
     };
     for (requested, want) in [(None, room), (Some(3_500), room), (Some(100), 100)] {
         svc.inference()
+            .inner_mut()
             .complete()
             .call(call(String::from("hello"), requested))
             .await
@@ -752,6 +781,7 @@ async fn max_tokens_fits_the_context_window() {
     // 11 991 байт входа ≈ 3 000 токенов: на вывод остаётся меньше margin.
     let res = svc
         .inference()
+        .inner_mut()
         .complete()
         .call(call("x".repeat(11_991), None))
         .await;
@@ -763,6 +793,7 @@ async fn max_tokens_fits_the_context_window() {
     // Калиброванный ratio модели меняет оценку: 2 000 байт — 1 000 токенов, не 500.
     let input = "y".repeat(1_991);
     svc.inference()
+        .inner_mut()
         .complete()
         .call(call(input.clone(), None))
         .await
@@ -781,6 +812,7 @@ async fn max_tokens_fits_the_context_window() {
         .await
         .expect("calibrate");
     svc.inference()
+        .inner_mut()
         .complete()
         .call(call(input, None))
         .await
@@ -789,17 +821,11 @@ async fn max_tokens_fits_the_context_window() {
 }
 
 async fn create_surface(session: &mut Sess) {
-    use eva_core::service::surfaces::Surfaces as _;
-    use eva_protocol::{requests::surfaces::create, types::SurfaceId};
+    use eva_protocol::types::SurfaceId;
 
     session
         .surfaces()
-        .create()
-        .call(create::Args {
-            id: SurfaceId::from(SVC),
-            name: String::from("svc"),
-            rules: None,
-        })
+        .create(SurfaceId::from(SVC), String::from("svc"), None)
         .await
         .expect("surfaces.create");
 }

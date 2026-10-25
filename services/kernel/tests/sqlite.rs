@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service};
 use eva::{bytesize::ByteSize, time::HumanDuration};
-use eva_core::{CallStep as _, service::sqlite::Sqlite as _};
+
 use eva_kernel::handling::sqlite::{Limits, open};
 use eva_protocol::{
     errors::{Aux, Generic},
@@ -43,10 +43,7 @@ async fn run(
 ) -> Result<u64, Generic<exec::Err>> {
     session
         .sqlite()
-        .exec()
-        .call(exec::Args {
-            statement: stmt(sql, params),
-        })
+        .exec(stmt(sql, params))
         .await
         .map(|ok| ok.changes)
 }
@@ -56,13 +53,7 @@ async fn select(
     sql: &str,
     params: Vec<Value>,
 ) -> Result<query::Ok, Generic<query::Err>> {
-    session
-        .sqlite()
-        .query()
-        .call(query::Args {
-            statement: stmt(sql, params),
-        })
-        .await
+    session.sqlite().query(stmt(sql, params)).await
 }
 
 #[tokio::test]
@@ -147,12 +138,7 @@ async fn exec_with(
         sql: sql.to_owned(),
         params,
     };
-    session
-        .sqlite()
-        .exec()
-        .call(exec::Args { statement })
-        .await
-        .map(|ok| ok.changes)
+    session.sqlite().exec(statement).await.map(|ok| ok.changes)
 }
 
 /// BLOB из выдачи `query` пишется обратно параметром и остаётся BLOB, даже
@@ -187,12 +173,9 @@ async fn blob_params_roundtrip() {
         .expect("write the read blob back");
     let query::Ok { rows, .. } = svc
         .sqlite()
-        .query()
-        .call(query::Args {
-            statement: Statement {
-                sql: "SELECT count(*) FROM b WHERE v = ?1 AND typeof(v) = 'blob'".into(),
-                params: vec![Param::Bytes(raw)],
-            },
+        .query(Statement {
+            sql: "SELECT count(*) FROM b WHERE v = ?1 AND typeof(v) = 'blob'".into(),
+            params: vec![Param::Bytes(raw)],
         })
         .await
         .expect("count");
@@ -256,27 +239,21 @@ async fn tx_is_all_or_nothing() {
 
     let tx::Ok { changes } = svc
         .sqlite()
-        .tx()
-        .call(tx::Args {
-            statements: vec![
-                stmt("INSERT INTO t VALUES ('a'), ('b')", vec![]),
-                stmt("DELETE FROM t WHERE k = ?1", vec![json!("a")]),
-                stmt("SELECT * FROM t", vec![]),
-            ],
-        })
+        .tx(vec![
+            stmt("INSERT INTO t VALUES ('a'), ('b')", vec![]),
+            stmt("DELETE FROM t WHERE k = ?1", vec![json!("a")]),
+            stmt("SELECT * FROM t", vec![]),
+        ])
         .await
         .expect("tx");
     assert_eq!(changes, [2, 1, 0]);
 
     let res = svc
         .sqlite()
-        .tx()
-        .call(tx::Args {
-            statements: vec![
-                stmt("INSERT INTO t VALUES ('c')", vec![]),
-                stmt("INSERT INTO t VALUES ('b')", vec![]),
-            ],
-        })
+        .tx(vec![
+            stmt("INSERT INTO t VALUES ('c')", vec![]),
+            stmt("INSERT INTO t VALUES ('b')", vec![]),
+        ])
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(tx::Err::Sql(e))) if e.statement == 1),
@@ -314,10 +291,10 @@ async fn attach_and_transaction_control_are_refused() {
 
     let res = svc
         .sqlite()
-        .tx()
-        .call(tx::Args {
-            statements: vec![stmt("CREATE TABLE t (x)", vec![]), stmt(&attach, vec![])],
-        })
+        .tx(vec![
+            stmt("CREATE TABLE t (x)", vec![]),
+            stmt(&attach, vec![]),
+        ])
         .await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "{res:?}");
     let res = select(&mut svc, "SELECT * FROM t", vec![]).await;
@@ -404,10 +381,7 @@ async fn policy_matrix() {
         assert_eq!(outcome(&res), expect, "{who} query");
         let res = session
             .sqlite()
-            .tx()
-            .call(tx::Args {
-                statements: vec![stmt("INSERT INTO t VALUES (1)", vec![])],
-            })
+            .tx(vec![stmt("INSERT INTO t VALUES (1)", vec![])])
             .await;
         assert_eq!(outcome(&res), expect, "{who} tx");
     }
@@ -464,13 +438,7 @@ async fn attach_is_refused_by_the_connection_limit_too() {
     ] {
         let res = run(&mut svc, &sql, vec![]).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "{sql}: {res:?}");
-        let res = svc
-            .sqlite()
-            .tx()
-            .call(tx::Args {
-                statements: vec![stmt(&sql, vec![])],
-            })
-            .await;
+        let res = svc.sqlite().tx(vec![stmt(&sql, vec![])]).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "tx {sql}: {res:?}");
     }
     let query::Ok { rows, .. } = select(&mut svc, "SELECT name FROM pragma_database_list", vec![])
@@ -585,13 +553,10 @@ async fn file_and_temp_are_capped_by_the_quota() {
     assert!(is_quota(&res), "{res:?}");
     let res = svc
         .sqlite()
-        .tx()
-        .call(tx::Args {
-            statements: vec![stmt(
-                "CREATE TEMP TABLE big AS SELECT randomblob(400000) AS b",
-                vec![],
-            )],
-        })
+        .tx(vec![stmt(
+            "CREATE TEMP TABLE big AS SELECT randomblob(400000) AS b",
+            vec![],
+        )])
         .await;
     assert!(is_quota(&res), "temp: {res:?}");
     let file = h.dir.path().join("modules").join(SVC).join("state.sqlite");
@@ -630,13 +595,7 @@ async fn pragmas_outside_the_list_are_forbidden() {
         assert_eq!(outcome(&res), Outcome::Forbidden, "exec {sql}: {res:?}");
         let res = select(&mut svc, sql, vec![]).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "query {sql}: {res:?}");
-        let res = svc
-            .sqlite()
-            .tx()
-            .call(tx::Args {
-                statements: vec![stmt(sql, vec![])],
-            })
-            .await;
+        let res = svc.sqlite().tx(vec![stmt(sql, vec![])]).await;
         assert_eq!(outcome(&res), Outcome::Forbidden, "tx {sql}: {res:?}");
     }
 
@@ -676,10 +635,7 @@ fn runaway_call(mut session: TestSession, in_tx: bool) -> tokio::task::JoinHandl
         if in_tx {
             session
                 .sqlite()
-                .tx()
-                .call(tx::Args {
-                    statements: vec![stmt(RUNAWAY, vec![])],
-                })
+                .tx(vec![stmt(RUNAWAY, vec![])])
                 .await
                 .is_ok()
         } else {

@@ -7,7 +7,8 @@ use std::sync::atomic::Ordering;
 
 use common::{Harness, Outcome, outcome};
 use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::memory::Memory as _};
+use eva_core::{CallStep as _, service::Memory::Trait as _};
+
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
     errors::{Aux, Generic},
@@ -156,6 +157,7 @@ async fn list(h: &Harness, args: list::Args) -> Vec<i64> {
         .client_session()
         .await
         .memory()
+        .inner_mut()
         .list()
         .call(args)
         .await
@@ -249,15 +251,7 @@ async fn get_returns_full_row_and_archive() {
     seed(&h).await;
     let mut session = h.client_session().await;
 
-    let get::Ok { record, archive } = session
-        .memory()
-        .get()
-        .call(get::Args {
-            id: MemoryId(1),
-            view: None,
-        })
-        .await
-        .expect("get");
+    let get::Ok { record, archive } = session.memory().get(MemoryId(1), None).await.expect("get");
     assert_eq!(record.text, "coffee without sugar");
     assert_eq!(record.tags, ["alpha", "beta"]);
     assert_eq!(record.source.chat, Some(ChatId(7)));
@@ -268,11 +262,7 @@ async fn get_returns_full_row_and_archive() {
 
     let get::Ok { record, archive } = session
         .memory()
-        .get()
-        .call(get::Args {
-            id: MemoryId(5),
-            view: None,
-        })
+        .get(MemoryId(5), None)
         .await
         .expect("get forgotten");
     assert!(record.valid_to.is_some());
@@ -281,14 +271,7 @@ async fn get_returns_full_row_and_archive() {
     assert_eq!(archive.why, "stale");
     assert!(archive.restored_at.is_none());
 
-    let res = session
-        .memory()
-        .get()
-        .call(get::Args {
-            id: MemoryId(999),
-            view: None,
-        })
-        .await;
+    let res = session.memory().get(MemoryId(999), None).await;
     assert!(
         matches!(res, Err(Generic::Spec(get::Err::NotFound(ref e))) if e.id == MemoryId(999)),
         "{res:?}"
@@ -312,14 +295,7 @@ async fn view_hides_rows_as_not_found() {
         (4, None, true),
     ];
     for (id, view, visible) in cases {
-        let res = session
-            .memory()
-            .get()
-            .call(get::Args {
-                id: MemoryId(id),
-                view: view.clone(),
-            })
-            .await;
+        let res = session.memory().get(MemoryId(id), view.clone()).await;
         match (visible, &res) {
             (true, Ok(_)) | (false, Err(Generic::Spec(get::Err::NotFound(_)))) => {}
             _ => panic!("m{id} with {view:?}: want visible={visible}, got {res:?}"),
@@ -336,11 +312,7 @@ async fn history_walks_the_chain_root_to_current() {
     for id in [2, 3] {
         let history::Ok { versions } = session
             .memory()
-            .history()
-            .call(history::Args {
-                id: MemoryId(id),
-                view: None,
-            })
+            .history(MemoryId(id), None)
             .await
             .expect("history");
         assert_eq!(
@@ -354,11 +326,7 @@ async fn history_walks_the_chain_root_to_current() {
 
     let history::Ok { versions } = session
         .memory()
-        .history()
-        .call(history::Args {
-            id: MemoryId(7),
-            view: None,
-        })
+        .history(MemoryId(7), None)
         .await
         .expect("history with archive");
     assert_eq!(ids(versions.iter().map(|v| &v.record)), [6, 7]);
@@ -367,14 +335,7 @@ async fn history_walks_the_chain_root_to_current() {
         Some(ArchiveReason::Merge)
     );
 
-    let res = session
-        .memory()
-        .history()
-        .call(history::Args {
-            id: MemoryId(999),
-            view: None,
-        })
-        .await;
+    let res = session.memory().history(MemoryId(999), None).await;
     assert!(
         matches!(res, Err(Generic::Spec(history::Err::NotFound(_)))),
         "{res:?}"
@@ -389,11 +350,7 @@ async fn history_under_view_hides_what_the_turn_cannot_see() {
 
     let res = session
         .memory()
-        .history()
-        .call(history::Args {
-            id: MemoryId(4),
-            view: view(false, true),
-        })
+        .history(MemoryId(4), view(false, true))
         .await;
     assert!(
         matches!(res, Err(Generic::Spec(history::Err::NotFound(_)))),
@@ -402,11 +359,7 @@ async fn history_under_view_hides_what_the_turn_cannot_see() {
 
     let history::Ok { versions } = session
         .memory()
-        .history()
-        .call(history::Args {
-            id: MemoryId(7),
-            view: view(false, true),
-        })
+        .history(MemoryId(7), view(false, true))
         .await
         .expect("trusted chain in a trusted chat");
     assert_eq!(versions.len(), 2);
@@ -418,21 +371,13 @@ async fn restore_brings_a_forgotten_row_back_unchanged() {
     seed(&h).await;
     let mut session = h.client_session().await;
 
-    let get::Ok { record: before, .. } = session
-        .memory()
-        .get()
-        .call(get::Args {
-            id: MemoryId(5),
-            view: None,
-        })
-        .await
-        .expect("get");
+    let get::Ok { record: before, .. } =
+        session.memory().get(MemoryId(5), None).await.expect("get");
     h.clock.clone().advance(std::time::Duration::from_secs(60));
 
     let restore::Ok { record } = session
         .memory()
-        .restore()
-        .call(restore::Args { id: MemoryId(5) })
+        .restore(MemoryId(5))
         .await
         .expect("restore");
     assert_eq!(record.valid_to, None);
@@ -447,11 +392,7 @@ async fn restore_brings_a_forgotten_row_back_unchanged() {
 
     let get::Ok { record, archive } = session
         .memory()
-        .get()
-        .call(get::Args {
-            id: MemoryId(5),
-            view: None,
-        })
+        .get(MemoryId(5), None)
         .await
         .expect("get after restore");
     assert_eq!(record.valid_to, None);
@@ -462,11 +403,7 @@ async fn restore_brings_a_forgotten_row_back_unchanged() {
     );
     assert!(list(&h, list::Args::default()).await.contains(&5));
 
-    let res = session
-        .memory()
-        .restore()
-        .call(restore::Args { id: MemoryId(5) })
-        .await;
+    let res = session.memory().restore(MemoryId(5)).await;
     assert!(
         matches!(res, Err(Generic::Spec(restore::Err::NotArchived(_)))),
         "second restore: {res:?}"
@@ -522,13 +459,7 @@ async fn restore_refuses_a_taken_procedure_name() {
     )
     .await;
 
-    let res = h
-        .client_session()
-        .await
-        .memory()
-        .restore()
-        .call(restore::Args { id: MemoryId(1) })
-        .await;
+    let res = h.client_session().await.memory().restore(MemoryId(1)).await;
     assert!(
         matches!(res, Err(Generic::Aux(Aux::Conflict(_)))),
         "{res:?}"
@@ -554,6 +485,7 @@ async fn database_failure_is_aux_db() {
         .client_session()
         .await
         .memory()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await;
@@ -572,25 +504,15 @@ async fn memory_matrix() {
     let mut failures = Vec::new();
     for ((who, caller), want) in common::matrix_callers().into_iter().zip([K, K, F, F]) {
         let mut s = h.session(caller).await;
-        let listed = outcome(&s.memory().list().call(list::Args::default()).await);
-        let got = outcome(
+        let listed = outcome(
             &s.memory()
-                .get()
-                .call(get::Args {
-                    id: MemoryId(1),
-                    view: None,
-                })
+                .inner_mut()
+                .list()
+                .call(list::Args::default())
                 .await,
         );
-        let chain = outcome(
-            &s.memory()
-                .history()
-                .call(history::Args {
-                    id: MemoryId(3),
-                    view: None,
-                })
-                .await,
-        );
+        let got = outcome(&s.memory().get(MemoryId(1), None).await);
+        let chain = outcome(&s.memory().history(MemoryId(3), None).await);
         let got = [listed, got, chain];
         for (op, got) in ["list", "get", "history"].into_iter().zip(got) {
             if got != want {
@@ -599,12 +521,7 @@ async fn memory_matrix() {
         }
         // Несуществующая запись: хозяин доходит до Spec, сервис — нет.
         let want = if want == K { S } else { F };
-        let got = outcome(
-            &s.memory()
-                .restore()
-                .call(restore::Args { id: MemoryId(999) })
-                .await,
-        );
+        let got = outcome(&s.memory().restore(MemoryId(999)).await);
         if got != want {
             failures.push(format!(
                 "memory.restore as {who}: want {want:?}, got {got:?}"
@@ -618,11 +535,7 @@ async fn restore_id(
     session: &mut common::TestSession,
     id: i64,
 ) -> eva_protocol::requests::Response<restore::Ok, restore::Err> {
-    session
-        .memory()
-        .restore()
-        .call(restore::Args { id: MemoryId(id) })
-        .await
+    session.memory().restore(MemoryId(id)).await
 }
 
 /// `memory.changed{ids, op: restore}` — клиентам без surface (`06 §7`):
@@ -667,6 +580,7 @@ mod tools_and_recall {
     use std::time::Duration;
 
     use eva::time::Clock as _;
+
     use eva_core::Provider as _;
     use eva_kernel::{
         db::{Db as _, DbResult, Queries as _},
@@ -1106,13 +1020,12 @@ mod tools_and_recall {
 
         // restore возвращает байт-идентичную строку с valid_to = NULL.
         h.clock.clone().advance(Duration::from_secs(5));
-        use eva_core::{CallStep as _, service::memory::Memory as _};
+
         let restored = h
             .client_session()
             .await
             .memory()
-            .restore()
-            .call(eva_protocol::requests::memory::restore::Args { id: sup.id })
+            .restore(sup.id)
             .await
             .expect("restore");
         let back = row(&h, sup.id).await;

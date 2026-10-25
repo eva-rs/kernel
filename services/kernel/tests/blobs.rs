@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use common::{Harness, OTHER, Outcome, SVC, TestSession, matrix_callers, outcome};
 use eva::bytesize::ByteSize;
-use eva_core::{CallStep as _, service::blobs::Blobs as _};
+
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
@@ -72,11 +72,10 @@ fn hex(data: &[u8]) -> String {
 async fn upload(session: &mut TestSession, chat: ChatId) -> put::Ok {
     session
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(chat, "fox.txt", DATA.len()),
-            body: body(&[&DATA[..10], &DATA[10..]]),
-        })
+        .put(
+            args(chat, "fox.txt", DATA.len()),
+            body(&[&DATA[..10], &DATA[10..]]),
+        )
         .await
         .expect("blobs.put")
 }
@@ -86,14 +85,7 @@ async fn download(
     id: &BlobId,
     offset: u64,
 ) -> Result<(get::Item, Vec<u8>, usize), Generic<get::Err>> {
-    let mut items = session
-        .blobs()
-        .get()
-        .call(get::Args {
-            id: id.clone(),
-            offset,
-        })
-        .await?;
+    let mut items = session.blobs().get(id.clone(), offset).await?.0;
     let meta = items.next().await.expect("meta item")?;
     let (mut data, mut chunks) = (Vec::new(), 0);
     while let Some(item) = items.next().await {
@@ -175,9 +167,9 @@ async fn put_get_stat_roundtrip() {
 
     let meta = svc
         .blobs()
-        .stat()
-        .call(stat::Args { id: id.clone() })
+        .stat(id.clone())
         .await
+        .map(|ok| ok.0)
         .expect("stat");
     assert_eq!(meta.name, "fox.txt");
     assert_eq!(meta.size, DATA.len() as u64);
@@ -206,14 +198,13 @@ async fn declared_hash_is_checked() {
 
     let ok = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: put::Meta {
+        .put(
+            put::Meta {
                 hash: Some(hex(DATA)),
                 ..args(chat, "fox.txt", DATA.len())
             },
-            body: body(&[DATA]),
-        })
+            body(&[DATA]),
+        )
         .await
         .expect("matching hash");
     assert_eq!(ok.hash, hex(DATA));
@@ -221,14 +212,13 @@ async fn declared_hash_is_checked() {
     let wrong = hex(b"something else");
     let res = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: put::Meta {
+        .put(
+            put::Meta {
                 hash: Some(wrong.clone()),
                 ..args(chat, "fox.txt", DATA.len())
             },
-            body: body(&[DATA]),
-        })
+            body(&[DATA]),
+        )
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(put::Err::HashMismatch(e))) if e.declared == wrong && e.actual == hex(DATA)),
@@ -237,14 +227,13 @@ async fn declared_hash_is_checked() {
 
     let res = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: put::Meta {
+        .put(
+            put::Meta {
                 hash: Some(String::from("not-hex")),
                 ..args(chat, "fox.txt", DATA.len())
             },
-            body: body(&[DATA]),
-        })
+            body(&[DATA]),
+        )
         .await;
     assert_eq!(outcome(&res), Outcome::Invalid);
     assert_eq!(stored(&h), 1, "only the accepted blob is on disk");
@@ -258,11 +247,7 @@ async fn size_is_checked_while_receiving() {
 
     let res = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(chat, "short", 10),
-            body: body(&[b"abc"]),
-        })
+        .put(args(chat, "short", 10), body(&[b"abc"]))
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(put::Err::SizeMismatch(e))) if e.declared == 10 && e.actual == 3),
@@ -271,11 +256,7 @@ async fn size_is_checked_while_receiving() {
 
     let res = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(chat, "long", 4),
-            body: body(&[b"abc", b"def", b"ghi"]),
-        })
+        .put(args(chat, "long", 4), body(&[b"abc", b"def", b"ghi"]))
         .await;
     assert!(
         matches!(&res, Err(Generic::Spec(put::Err::SizeMismatch(e))) if e.declared == 4 && e.actual == 6),
@@ -284,11 +265,7 @@ async fn size_is_checked_while_receiving() {
 
     let res = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(chat, "huge", 65),
-            body: body(&[&[0; 65]]),
-        })
+        .put(args(chat, "huge", 65), body(&[&[0; 65]]))
         .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
 
@@ -296,14 +273,7 @@ async fn size_is_checked_while_receiving() {
         Ok(eva::bytes::Bytes::from_static(b"abc")),
         Err(Aux::Unavailable(String::from("socket closed"))),
     ]));
-    let res = client
-        .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(chat, "cut", 6),
-            body: broken,
-        })
-        .await;
+    let res = client.blobs().put(args(chat, "cut", 6), broken).await;
     assert!(
         matches!(res, Err(Generic::Aux(Aux::Unavailable(_)))),
         "{res:?}"
@@ -337,14 +307,7 @@ async fn name_must_be_a_leaf() {
         "line\nbreak",
         &"n".repeat(256),
     ] {
-        let res = client
-            .blobs()
-            .put()
-            .call(put::Args {
-                meta: args(chat, name, 1),
-                body: body(&[b"x"]),
-            })
-            .await;
+        let res = client.blobs().put(args(chat, name, 1), body(&[b"x"])).await;
         assert!(
             matches!(&res, Err(Generic::Spec(put::Err::BadName(e))) if e.name == name),
             "{name:?}: {res:?}"
@@ -352,14 +315,13 @@ async fn name_must_be_a_leaf() {
     }
     let res = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: put::Meta {
+        .put(
+            put::Meta {
                 media_type: String::new(),
                 ..args(chat, "ok", 1)
             },
-            body: body(&[b"x"]),
-        })
+            body(&[b"x"]),
+        )
         .await;
     assert_eq!(outcome(&res), Outcome::Invalid, "{res:?}");
 }
@@ -370,13 +332,7 @@ async fn missing_and_expired_blobs() {
     let mut client = h.client_session().await;
 
     let unknown = BlobId::from("0190aaaa-0000-7000-8000-000000000000");
-    let res = client
-        .blobs()
-        .stat()
-        .call(stat::Args {
-            id: unknown.clone(),
-        })
-        .await;
+    let res = client.blobs().stat(unknown.clone()).await.map(|ok| ok.0);
     assert!(
         matches!(&res, Err(Generic::Spec(stat::Err::NotFound(e))) if e.id == unknown),
         "{res:?}"
@@ -389,11 +345,7 @@ async fn missing_and_expired_blobs() {
 
     let res = client
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(ChatId(999), "x", 1),
-            body: body(&[b"x"]),
-        })
+        .put(args(ChatId(999), "x", 1), body(&[b"x"]))
         .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::NotFound(what))) if what.contains("c999")),
@@ -404,7 +356,7 @@ async fn missing_and_expired_blobs() {
     let put::Ok { id, .. } = upload(&mut client, chat).await;
     h.clock.advance(Duration::from_secs(30 * 24 * 60 * 60));
     let mut client = h.client_session().await;
-    let res = client.blobs().stat().call(stat::Args { id }).await;
+    let res = client.blobs().stat(id).await.map(|ok| ok.0);
     assert!(
         matches!(&res, Err(Generic::Spec(stat::Err::NotFound(_)))),
         "expired: {res:?}"
@@ -448,22 +400,14 @@ async fn policy_matrix() {
     for (case, chat, blob, expect) in cases {
         for ((who, caller), expect) in matrix_callers().into_iter().zip(expect) {
             let mut session = h.session(caller).await;
-            let res = session
-                .blobs()
-                .stat()
-                .call(stat::Args { id: blob.clone() })
-                .await;
+            let res = session.blobs().stat(blob.clone()).await.map(|ok| ok.0);
             assert_eq!(outcome(&res), expect, "{case}: {who} stat");
             let res = download(&mut session, &blob, 0).await.map(|_| ());
             assert_eq!(outcome(&res), expect, "{case}: {who} get");
             if case != "no chat" {
                 let res = session
                     .blobs()
-                    .put()
-                    .call(put::Args {
-                        meta: args(chat, "p.txt", 1),
-                        body: body(&[b"p"]),
-                    })
+                    .put(args(chat, "p.txt", 1), body(&[b"p"]))
                     .await;
                 assert_eq!(outcome(&res), expect, "{case}: {who} put");
             }
@@ -483,11 +427,7 @@ async fn cancelled_upload_leaves_nothing() {
     let upload = tokio::spawn(async move {
         client
             .blobs()
-            .put()
-            .call(put::Args {
-                meta: args(chat, "cut.bin", 64),
-                body: stalled,
-            })
+            .put(args(chat, "cut.bin", 64), stalled)
             .await
             .is_ok()
     });
@@ -557,21 +497,13 @@ async fn live_blobs_of_an_owner_share_a_quota() {
     upload(&mut svc, own).await;
     let res = svc
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(own, "fox.txt", DATA.len()),
-            body: body(&[DATA]),
-        })
+        .put(args(own, "fox.txt", DATA.len()), body(&[DATA]))
         .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
     let mut kernel = h.kernel_session().await;
     let res = kernel
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(own, "fox.txt", DATA.len()),
-            body: body(&[DATA]),
-        })
+        .put(args(own, "fox.txt", DATA.len()), body(&[DATA]))
         .await;
     assert!(
         matches!(res, Err(Generic::Aux(Aux::Quota(_)))),
@@ -593,11 +525,7 @@ async fn concurrent_uploads_cannot_overshoot_the_quota() {
     async fn put_60(session: &mut TestSession, chat: ChatId, name: &str) -> PutResult {
         session
             .blobs()
-            .put()
-            .call(put::Args {
-                meta: args(chat, name, 60),
-                body: body(&[&[1; 60]]),
-            })
+            .put(args(chat, name, 60), body(&[&[1; 60]]))
             .await
     }
 
@@ -627,21 +555,13 @@ async fn empty_blobs_are_charged_a_floor() {
     let fit = 64 * 1024 / BLOB_FLOOR;
     for n in 0..fit {
         svc.blobs()
-            .put()
-            .call(put::Args {
-                meta: args(own, &format!("empty-{n}"), 0),
-                body: body(&[]),
-            })
+            .put(args(own, &format!("empty-{n}"), 0), body(&[]))
             .await
             .unwrap_or_else(|e| panic!("empty blob {n}: {e:?}"));
     }
     let res = svc
         .blobs()
-        .put()
-        .call(put::Args {
-            meta: args(own, "one-too-many", 0),
-            body: body(&[]),
-        })
+        .put(args(own, "one-too-many", 0), body(&[]))
         .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Quota(_)))), "{res:?}");
     assert_eq!(stored(&h), usize::try_from(fit).expect("fits"));

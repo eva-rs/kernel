@@ -5,7 +5,7 @@ mod common;
 
 use common::{Harness, Outcome, outcome};
 use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::notes::Notes as _};
+
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
     errors::Generic,
@@ -65,8 +65,7 @@ async fn list(h: &Harness, chat: ChatId) -> list::Ok {
     h.client_session()
         .await
         .notes()
-        .list()
-        .call(list::Args { chat })
+        .list(chat)
         .await
         .expect("notes.list")
 }
@@ -202,26 +201,14 @@ async fn budget_and_switch_come_from_the_notes_section() {
 
     let h = common::start_with(|cfg| cfg.notes.enabled = false).await;
     let own = chat(&h, "local", None).await;
-    let res = h
-        .client_session()
-        .await
-        .notes()
-        .list()
-        .call(list::Args { chat: own })
-        .await;
+    let res = h.client_session().await.notes().list(own).await;
     assert_eq!(outcome(&res), Outcome::Unavailable, "{res:?}");
 }
 
 #[tokio::test]
 async fn unknown_chat_is_not_found() {
     let h = common::start().await;
-    let res = h
-        .client_session()
-        .await
-        .notes()
-        .list()
-        .call(list::Args { chat: ChatId(999) })
-        .await;
+    let res = h.client_session().await.notes().list(ChatId(999)).await;
     assert!(
         matches!(res, Err(Generic::Spec(list::Err::NotFound(ref e))) if e.chat == ChatId(999).into()),
         "{res:?}"
@@ -239,14 +226,7 @@ async fn notes_matrix() {
 
     let mut failures = Vec::new();
     for ((who, caller), want) in common::matrix_callers().into_iter().zip([K, K, F, F]) {
-        let got = outcome(
-            &h.session(caller)
-                .await
-                .notes()
-                .list()
-                .call(list::Args { chat: own })
-                .await,
-        );
+        let got = outcome(&h.session(caller).await.notes().list(own).await);
         if got != want {
             failures.push(format!("notes.list as {who}: want {want:?}, got {got:?}"));
         }
@@ -268,13 +248,7 @@ async fn database_failure_is_aux_db() {
     let h = common::start().await;
     let own = chat(&h, "local", None).await;
     h.db_fail.store(true, std::sync::atomic::Ordering::Relaxed);
-    let res = h
-        .client_session()
-        .await
-        .notes()
-        .list()
-        .call(list::Args { chat: own })
-        .await;
+    let res = h.client_session().await.notes().list(own).await;
     assert_eq!(outcome(&res), Outcome::Db, "{res:?}");
 }
 
@@ -287,7 +261,7 @@ mod tools_and_modes {
     use std::collections::BTreeSet;
 
     use eva::time::Clock as _;
-    use eva_core::{CallStep as _, service::notes::Notes as _};
+
     use eva_kernel::{
         config::NotesConfig,
         db::{Db as _, DbError, Queries as _, notes::NoteRow},
@@ -296,14 +270,11 @@ mod tools_and_modes {
             tools::{self as nt, Applied, Ctx, Error, Rejected},
         },
     };
-    use eva_protocol::{
-        requests::notes::list,
-        types::{
-            ChatId,
-            note::{
-                Fill, Mode, Op,
-                tools::{delete, read, save, update},
-            },
+    use eva_protocol::types::{
+        ChatId,
+        note::{
+            Fill, Mode, Op,
+            tools::{delete, read, save, update},
         },
     };
 
@@ -533,8 +504,7 @@ mod tools_and_modes {
             .client_session()
             .await
             .notes()
-            .list()
-            .call(list::Args { chat: c })
+            .list(c)
             .await
             .expect("list");
         assert_eq!(listed.notes.len(), 1);
@@ -780,8 +750,7 @@ mod tools_and_modes {
             .client_session()
             .await
             .notes()
-            .list()
-            .call(list::Args { chat: c })
+            .list(c)
             .await
             .expect("list");
         assert_eq!((listed.mode, listed.squeeze_turns), (Mode::Index, 0));

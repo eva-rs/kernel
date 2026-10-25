@@ -330,34 +330,38 @@ fn invalid<E>(what: &str, e: impl std::fmt::Display) -> Generic<E> {
     Generic::Aux(Aux::Invalid(format!("{what}: {e}")))
 }
 
-struct LiveStream<F> {
+struct LiveStream<F, O, T, E> {
+    unwrap: fn(O) -> Items<T, E>,
+    wrap: fn(Items<T, E>) -> O,
     link: Arc<Link>,
     op: F,
 }
 
-impl<A, T, E, F, R> CallStep<A> for LiveStream<F>
+impl<A, O, T, E, F, R> CallStep<A> for LiveStream<F, O, T, E>
 where
     A: Clone + Send + 'static,
+    O: Send + 'static,
     T: Send + 'static,
     E: Send + 'static,
     F: Fn(Rpc, A) -> R + Clone + Send + Sync + 'static,
-    R: Fut<Output = Response<Items<T, E>, E>>,
+    R: Fut<Output = Response<O, E>>,
 {
-    type Output = Response<Items<T, E>, E>;
+    type Output = Response<O, E>;
 
     fn call(&mut self, args: A) -> impl Fut<Output = Self::Output> {
+        let (unwrap, wrap) = (self.unwrap, self.wrap);
         let (link, op) = (self.link.clone(), self.op.clone());
         async move {
             link.run(move |session, peer| {
                 let opened = op(session, args.clone());
                 async move {
-                    let items = opened.await?;
+                    let items = unwrap(opened.await?);
                     let items: Items<T, E> =
                         Box::pin(items.map(move |item| match cut(&item, &peer) {
                             Some(reason) => Err(lost(reason)),
                             None => item,
                         }));
-                    Ok(items)
+                    Ok(wrap(items))
                 }
             })
             .await
@@ -396,26 +400,28 @@ where
 
 /// Мутация идёт мимо сессии соединения (`$method`, не `$op`), чтобы её id запроса пережил реконнект.
 macro_rules! live_step {
-    ([] $link:expr, $method:expr, $op:expr) => {
+    ([] $link:expr, $method:expr, $op:expr; $Ok:ty) => {
         LiveRead {
             link: $link,
             op: $op,
         }
     };
-    ([mutating] $link:expr, $method:expr, $op:expr) => {
+    ([mutating] $link:expr, $method:expr, $op:expr; $Ok:ty) => {
         LiveMut {
             link: $link,
             method: $method,
             _types: PhantomData,
         }
     };
-    ([stream] $link:expr, $method:expr, $op:expr) => {
+    ([stream] $link:expr, $method:expr, $op:expr; $Ok:ty) => {
         LiveStream {
+            unwrap: |ok: $Ok| ok.0,
+            wrap: <$Ok>::from,
             link: $link,
             op: $op,
         }
     };
-    ([upload] $link:expr, $method:expr, $op:expr) => {
+    ([upload] $link:expr, $method:expr, $op:expr; $Ok:ty) => {
         LiveUpload {
             link: $link,
             op: $op,
@@ -426,7 +432,10 @@ macro_rules! live_step {
 macro_rules! live_impls {
     ($(
         $segment:ident {$(
-            $accessor:ident : $Trait:ident {$(
+            $accessor:ident : $Trait:ident {
+                trait: $TraitPath:path,
+                client: $Client:path,
+                $(
                 $(#[$flag:ident])*
                 $method:ident = $endpoint:ident {
                     args: $Args:ty,
@@ -438,14 +447,14 @@ macro_rules! live_impls {
             )*}
         )*}
     )*) => {$($(
-        impl eva_core::service::$segment::$Trait for LiveSession {$(
+        impl $TraitPath for LiveSession {$(
             fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
                 live_step!(
                     [$($flag)*] self.link.clone(),
                     format!("{}.{}", stringify!($segment), op_name(stringify!($endpoint))),
                     |mut session: Rpc, args: $Args| async move {
-                        session.$accessor().$method().call(args).await
-                    }
+                        session.$accessor().inner_mut().$method().call(args).await
+                    }; $Ok
                 )
             }
         )*}

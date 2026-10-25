@@ -6,10 +6,10 @@ use eva::{
     data,
     time::{Date, HumanDuration},
 };
-use eva_core::{CallStep as _, service::stats::Stats as _};
+
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::stats::{self, Top, health, spend, tools_usage},
+    requests::stats::{self, Top, spend, tools_usage},
     types::{
         ChatId, FolderId, SurfaceId,
         stats::{GroupBy, Scope, Target},
@@ -200,15 +200,14 @@ pub async fn call<C: Components>(
                     crate::handling::stats::scope(args.scope, target.clone(), Some(call.view))?;
                 let result = session
                     .stats()
-                    .tools_usage()
-                    .call(tools_usage::Args {
-                        scope: args.scope,
+                    .tools_usage(
+                        args.scope,
                         target,
-                        from: period.from,
-                        to: period.to,
-                        top: args.top,
-                        view: Some(call.view.clone()),
-                    })
+                        period.from,
+                        period.to,
+                        args.top,
+                        Some(call.view.clone()),
+                    )
                     .await
                     .map_err(api_error)?;
                 let (calls, distinct) = shared
@@ -227,15 +226,14 @@ pub async fn call<C: Components>(
                     crate::handling::stats::scope(args.scope, target.clone(), Some(call.view))?;
                 let result = session
                     .stats()
-                    .spend()
-                    .call(spend::Args {
-                        scope: args.scope,
+                    .spend(
+                        args.scope,
                         target,
-                        from: period.from,
-                        to: period.to,
-                        group_by: args.group_by,
-                        view: Some(call.view.clone()),
-                    })
+                        period.from,
+                        period.to,
+                        args.group_by,
+                        Some(call.view.clone()),
+                    )
                     .await
                     .map_err(api_error)?;
                 let zone = shared.day_zone();
@@ -252,11 +250,7 @@ pub async fn call<C: Components>(
                 let period = range(shared, args.period, args.ending)?;
                 let result = session
                     .stats()
-                    .health()
-                    .call(health::Args {
-                        from: period.from,
-                        to: period.to,
-                    })
+                    .health(period.from, period.to)
                     .await
                     .map_err(api_error)?;
                 Ok(text(health_text(result, call.view.public())))

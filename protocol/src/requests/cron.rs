@@ -1,6 +1,7 @@
 //! Крон: только чтение; мутации — тулы модели.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::{
     requests::RunsLimit,
@@ -10,45 +11,27 @@ use crate::{
     },
 };
 
-pub mod list {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {}
-
-    #[data]
-    pub struct Ok {
-        pub jobs: Vec<Job>,
+#[service(export, result = Response)]
+pub trait Cron {
+    #[args(derive(Default))]
+    fn list() -> ok! {
+        jobs: Vec<Job>,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod runs {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {
-        pub job: Option<CronJobId>,
-        #[serde(default)]
-        pub limit: RunsLimit,
+    #[args(derive(Default))]
+    fn runs(
+        job: Option<CronJobId>,
+        #[serde(default)] limit: RunsLimit,
         /// Keyset по `(started, run_id)`.
-        pub after: Option<RunId>,
-    }
-
-    #[data]
-    pub struct Ok {
+        after: Option<RunId>,
+    ) -> ok! {
         /// Новейшие первыми.
-        pub found: Vec<Run>,
+        found: Vec<Run>,
+    };
+    embed! {
+        code!(Err => []);
     }
-
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
 }

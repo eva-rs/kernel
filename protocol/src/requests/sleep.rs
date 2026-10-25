@@ -1,6 +1,7 @@
 //! Сон: журнал ночей и их фаз.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::{
     errors,
@@ -11,48 +12,28 @@ use crate::{
     },
 };
 
-pub mod runs {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {
-        #[serde(default)]
-        pub limit: RunsLimit,
+#[service(export, result = Response)]
+pub trait Sleep {
+    #[args(derive(Default))]
+    fn runs(
+        #[serde(default)] limit: RunsLimit,
         /// Keyset по `(started, run_id)`.
-        pub after: Option<RunId>,
+        after: Option<RunId>,
+    ) -> ok! {
+        found: Vec<Run>,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data]
-    pub struct Ok {
-        pub found: Vec<Run>,
-    }
-
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod phase_runs {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub run: RunId,
-    }
-
-    #[data]
-    pub struct Ok {
+    #[errors(errors::sleep::RunNotFound)]
+    fn phase_runs(
+        run: RunId,
+    ) -> ok! {
         /// В порядке фаз.
-        pub phases: Vec<PhaseRun>,
+        phases: Vec<PhaseRun>,
+    };
+    embed! {
+        code!(Err => [RunNotFound]);
     }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        RunNotFound(#[from] errors::sleep::RunNotFound),
-    }
-
-    code!(Err => [RunNotFound]);
 }

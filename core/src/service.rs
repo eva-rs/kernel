@@ -1,10 +1,10 @@
 //! `Session`, неймспейсы и шаги вызова.
 //!
-//! Трейты неймспейсов (`service::<ns>::<Ns>`) и X-макро `for_each_op!`
-//! порождены списком операций в `eva-kernel-macros`; шаг операции —
+//! `#[service]` объявляет трейты неймспейсов в протоколе; `#[export]`
+//! объединяет их в X-макро `for_each_op!`. Шаг операции —
 //! `CallStep<Args, Output = Response<Ok, Err>>`.
 
-use eva::{auto_impl, handling, trait_set};
+use eva::{auto_impl, export, handling, trait_set};
 
 use eva_protocol::{errors::Aux, requests::Response};
 
@@ -12,14 +12,60 @@ use crate::Caller;
 
 pub use eva::handling::CallStep;
 
-eva_kernel_macros::endpoints!(for_each_op);
+pub use crate::protocol::requests::agents::Agents;
+pub use crate::protocol::requests::blobs::Blobs;
+pub use crate::protocol::requests::chats::Chats;
+pub use crate::protocol::requests::cron::Cron;
+pub use crate::protocol::requests::folders::Folders;
+pub use crate::protocol::requests::fs::Fs;
+pub use crate::protocol::requests::hands_grants::HandsGrants;
+pub use crate::protocol::requests::inference::Inference;
+pub use crate::protocol::requests::kv::Kv;
+pub use crate::protocol::requests::memory::Memory;
+pub use crate::protocol::requests::models::Models;
+pub use crate::protocol::requests::modules::Modules;
+pub use crate::protocol::requests::notes::Notes;
+pub use crate::protocol::requests::persons::Persons;
+pub use crate::protocol::requests::sleep::Sleep;
+pub use crate::protocol::requests::sqlite::Sqlite;
+pub use crate::protocol::requests::stats::Stats;
+pub use crate::protocol::requests::surfaces::Surfaces;
+pub use crate::protocol::requests::tools::Tools;
+pub use crate::protocol::requests::turns::Turns;
+#[export(name = for_each_op)]
+#[derive(Debug, Clone)]
+pub struct Services {
+    surfaces: crate::protocol::requests::surfaces::Surfaces,
+    folders: crate::protocol::requests::folders::Folders,
+    chats: crate::protocol::requests::chats::Chats,
+    turns: crate::protocol::requests::turns::Turns,
+    persons: crate::protocol::requests::persons::Persons,
+    memory: crate::protocol::requests::memory::Memory,
+    notes: crate::protocol::requests::notes::Notes,
+    tools: crate::protocol::requests::tools::Tools,
+    models: crate::protocol::requests::models::Models,
+    cron: crate::protocol::requests::cron::Cron,
+    sleep: crate::protocol::requests::sleep::Sleep,
+    agents: crate::protocol::requests::agents::Agents,
+    stats: crate::protocol::requests::stats::Stats,
+    modules: crate::protocol::requests::modules::Modules,
+    hands_grants: crate::protocol::requests::hands_grants::HandsGrants,
+    blobs: crate::protocol::requests::blobs::Blobs,
+    inference: crate::protocol::requests::inference::Inference,
+    fs: crate::protocol::requests::fs::Fs,
+    sqlite: crate::protocol::requests::sqlite::Sqlite,
+    kv: crate::protocol::requests::kv::Kv,
+}
+pub use ServicesFeatures as IsSession;
 
-/// Из списка операций: `IsSession`, проекции `Session`, `traits` для `prelude`
-/// и `NAMESPACES`.
+/// Из метаданных сервисов: `traits` для `prelude` и `NAMESPACES`.
 macro_rules! domains {
     ($(
         $segment:ident {$(
-            $accessor:ident : $Trait:ident {$(
+            $accessor:ident : $Trait:ident {
+                trait: $TraitPath:path,
+                client: $Client:path,
+                $(
                 $(#[$flag:ident])*
                 $method:ident = $endpoint:ident {
                     args: $Args:ty,
@@ -31,19 +77,9 @@ macro_rules! domains {
             )*}
         )*}
     )*) => {
-        trait_set! {
-            pub trait IsSession = Send + Sync $($(+ $segment::$Trait)*)*;
-        }
-
-        impl<S: IsSession> Session<S> {$($(
-            pub const fn $accessor(&mut self) -> impl $segment::$Trait {
-                &mut self.session
-            }
-        )*)*}
-
         /// Все трейты неймспейсов анонимно: glob-импорт открывает методы `Session`.
         pub mod traits {
-            $($(pub use super::$segment::$Trait as _;)*)*
+            $($(pub use $TraitPath as _;)*)*
         }
 
         /// Все операции библиотеки: RPC-метод — `<namespace>.<op>`.
@@ -86,17 +122,32 @@ pub type SessionOf<T> = <T as SessionMaker>::Session;
 /// Сессия: неймспейсы плюс тот, кто зовёт.
 #[derive(Debug, Clone)]
 pub struct Session<S> {
-    session: S,
+    session: Services<S>,
     caller: Caller,
 }
 
 impl<S: IsSession> Session<S> {
     pub const fn new(session: S, caller: Caller) -> Self {
-        Self { session, caller }
+        Self {
+            session: Services::new(session),
+            caller,
+        }
     }
 
     pub const fn caller(&self) -> &Caller {
         &self.caller
+    }
+}
+
+impl<S> std::ops::Deref for Session<S> {
+    type Target = Services<S>;
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+impl<S> std::ops::DerefMut for Session<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session
     }
 }
 

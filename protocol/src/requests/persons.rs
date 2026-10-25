@@ -1,6 +1,7 @@
 //! Личности: резолв адреса поверхности, переименование, слияние, whitelist.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::{
     errors,
@@ -8,132 +9,79 @@ use crate::{
     types::{PersonId, SurfaceId, person::Person},
 };
 
-pub mod resolve {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub surface: SurfaceId,
-        pub external_id: String,
-        pub handle: Option<String>,
-        pub name: Option<String>,
+#[service(export, result = Response)]
+pub trait Persons {
+    #[flags(mutating)]
+    fn resolve(
+        surface: SurfaceId,
+        external_id: String,
+        handle: Option<String>,
+        name: Option<String>,
+    ) -> ok! {
+        person: Person,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data]
-    pub struct Ok {
-        pub person: Person,
+    #[args(derive(Default))]
+    fn list(
+        surface: Option<SurfaceId>,
+        whitelisted: Option<bool>,
+        #[serde(default)] limit: Limit,
+        after: Option<PersonId>,
+    ) -> ok! {
+        found: Vec<Person>,
+    };
+    embed! {
+        code!(Err => []);
     }
 
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod list {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {
-        pub surface: Option<SurfaceId>,
-        pub whitelisted: Option<bool>,
-        #[serde(default)]
-        pub limit: Limit,
-        pub after: Option<PersonId>,
+    #[flags(mutating)]
+    #[errors(errors::persons::NotFound, errors::persons::System)]
+    fn rename(
+        person: PersonId,
+        name: String,
+    ) -> ok! {
+        person: Person,
+    };
+    embed! {
+        code!(Err => [NotFound, System]);
     }
 
-    #[data]
-    pub struct Ok {
-        pub found: Vec<Person>,
-    }
-
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
-}
-
-pub mod rename {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub person: PersonId,
-        pub name: String,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub person: Person,
-    }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::persons::NotFound),
-        #[display("{_0}")]
-        System(#[from] errors::persons::System),
-    }
-
-    code!(Err => [NotFound, System]);
-}
-
-pub mod merge {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub from: PersonId,
-        pub into: PersonId,
+    #[flags(mutating)]
+    #[errors(
+        errors::persons::NotFound,
+        errors::persons::System,
+        errors::persons::SelfMerge,
+        errors::persons::MasterMerge
+    )]
+    fn merge(
+        from: PersonId,
+        into: PersonId,
         /// Подтверждает слияние, меняющее `master`.
         #[serde(default)]
-        pub confirm: bool,
+        confirm: bool,
+    ) -> ok! {
+        person: Person,
+    };
+    embed! {
+        code!(Err => [NotFound, System, SelfMerge, MasterMerge]);
     }
 
-    #[data]
-    pub struct Ok {
-        pub person: Person,
+    #[flags(mutating)]
+    #[errors(
+        errors::persons::NotFound,
+        errors::persons::System,
+        errors::persons::MasterWhitelist
+    )]
+    fn whitelist(
+        person: PersonId,
+        on: bool,
+    ) -> ok! {
+        person: Person,
+    };
+    embed! {
+        code!(Err => [NotFound, System, MasterWhitelist]);
     }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::persons::NotFound),
-        #[display("{_0}")]
-        System(#[from] errors::persons::System),
-        #[display("{_0}")]
-        SelfMerge(#[from] errors::persons::SelfMerge),
-        #[display("{_0}")]
-        MasterMerge(#[from] errors::persons::MasterMerge),
-    }
-
-    code!(Err => [NotFound, System, SelfMerge, MasterMerge]);
-}
-
-pub mod whitelist {
-    use super::*;
-
-    #[data]
-    pub struct Args {
-        pub person: PersonId,
-        pub on: bool,
-    }
-
-    #[data]
-    pub struct Ok {
-        pub person: Person,
-    }
-
-    #[data(error)]
-    pub enum Err {
-        #[display("{_0}")]
-        NotFound(#[from] errors::persons::NotFound),
-        #[display("{_0}")]
-        System(#[from] errors::persons::System),
-        #[display("{_0}")]
-        MasterWhitelist(#[from] errors::persons::MasterWhitelist),
-    }
-
-    code!(Err => [NotFound, System, MasterWhitelist]);
 }

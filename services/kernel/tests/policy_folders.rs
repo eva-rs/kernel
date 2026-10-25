@@ -3,7 +3,7 @@
 mod common;
 
 use common::{OTHER, Outcome, SVC, TestSession, outcome};
-use eva_core::{CallStep as _, service::folders::Folders as _};
+use eva_core::{CallStep as _, service::Folders::Trait as _};
 use eva_protocol::{
     requests::{
         Patch,
@@ -31,7 +31,8 @@ const MATRIX: &[(Case, [Outcome; 4])] = &[
 ];
 
 async fn run(session: &mut TestSession, case: Case, who: &str, folder: FolderId) -> Outcome {
-    let mut folders = session.folders();
+    let mut folders_client = session.folders();
+    let folders = folders_client.inner_mut();
     match case {
         Case::CreateA => outcome(
             &folders
@@ -81,11 +82,7 @@ async fn folders_matrix() {
             n += 1;
             let create::Ok { folder } = owner
                 .folders()
-                .create()
-                .call(create::Args {
-                    surface: SurfaceId::from(SVC),
-                    name: format!("target {n}"),
-                })
+                .create(SurfaceId::from(SVC), format!("target {n}"))
                 .await
                 .expect("target folder");
             let mut session = h.session(caller).await;

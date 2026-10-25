@@ -12,7 +12,7 @@ use crate::{
     },
 };
 use eva::{data, time::HumanDuration};
-use eva_core::{CallStep as _, service::hands_grants::HandsGrants as _};
+use eva_core::{CallStep as _, service::HandsGrants::Trait as _};
 use eva_hands::{Error, Kind, Limits};
 use eva_protocol::{
     errors::Aux,
@@ -438,6 +438,7 @@ pub async fn call<C: Components>(
             return Ok(
                 match session
                     .hands_grants()
+                    .inner_mut()
                     .list()
                     .call(hands_grants::list::Args {
                         surface: Some(call.ctx.surface.clone()),
@@ -457,10 +458,12 @@ pub async fn call<C: Components>(
             Ok(args) => args,
             Err(error) => return Ok(ToolResult::error(format!("invalid input: {error}"))),
         };
-        return Ok(match session.hands_grants().revoke().call(args).await {
-            Ok(_) => ok("{\"revoked\":true}"),
-            Err(error) => ToolResult::error(error.to_string()),
-        });
+        return Ok(
+            match session.hands_grants().inner_mut().revoke().call(args).await {
+                Ok(_) => ok("{\"revoked\":true}"),
+                Err(error) => ToolResult::error(error.to_string()),
+            },
+        );
     }
     let chat = call.ctx.chat;
     let (row, segment) = shared

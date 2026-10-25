@@ -6,13 +6,10 @@ use eva::{
     data,
     time::{HumanDuration, Timestamp},
 };
-use eva_core::{CallStep as _, service::cron::Cron as _};
+use eva_core::{CallStep as _, service::Cron::Trait as _};
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{
-        RunsLimit,
-        cron::{list, runs},
-    },
+    requests::{RunsLimit, cron::list},
     types::{
         CronJobId, Effort, ModelId, SurfaceId, ToolId,
         chat::Kind,
@@ -225,6 +222,7 @@ pub async fn call<C: Components>(
                 let args: list::Args = parse(call.input)?;
                 let rows = crate::session::internal(shared)
                     .cron()
+                    .inner_mut()
                     .list()
                     .call(args)
                     .await
@@ -235,12 +233,7 @@ pub async fn call<C: Components>(
                 let args: Log = parse(call.input)?;
                 let rows = crate::session::internal(shared)
                     .cron()
-                    .runs()
-                    .call(runs::Args {
-                        job: args.job_id,
-                        limit: args.limit,
-                        after: None,
-                    })
+                    .runs(args.job_id, args.limit, None)
                     .await
                     .map_err(api_error)?;
                 json_result(rows.found)

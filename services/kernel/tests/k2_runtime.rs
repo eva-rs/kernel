@@ -12,7 +12,7 @@ use eva::{
     utils::SecretString,
 };
 use eva_core::Caller;
-use eva_core::{CallStep as _, service::surfaces::Surfaces as _};
+
 use eva_kernel::{
     Config, Kernel, Parts,
     config::chats::MasterIdentity,
@@ -22,7 +22,6 @@ use eva_kernel::{
 };
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::surfaces::get,
     types::{ModuleId, SurfaceId},
 };
 
@@ -241,13 +240,7 @@ async fn a_policy_refusal_bumps_modules_forbidden() {
     h.register_module(OTHER).await;
     let mut other = h.session(service(OTHER)).await;
 
-    let res = other
-        .surfaces()
-        .get()
-        .call(get::Args {
-            surface: SurfaceId::from(SVC),
-        })
-        .await;
+    let res = other.surfaces().get(SurfaceId::from(SVC)).await;
     assert!(
         matches!(res, Err(Generic::Aux(Aux::Forbidden(_)))),
         "{res:?}"

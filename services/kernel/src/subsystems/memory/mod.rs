@@ -113,7 +113,7 @@ async fn core_overflow<C: Components>(
     count: u32,
 ) -> AuxResult<()> {
     use crate::db::{DbResult, meta::CORE_OVERFLOW_NOTIFIED_AT, stats::elapsed};
-    use eva_core::{CallStep as _, service::chats::Chats as _};
+
     let now = shared.now();
     let interval = *shared.cfg().memory.hot.core_overflow_notify;
     let claimed = shared
@@ -132,11 +132,7 @@ async fn core_overflow<C: Components>(
         .await?;
     if claimed {
         let mut session = crate::session::internal(shared);
-        if let Err(error) = session.chats().notify().call(eva_protocol::requests::chats::notify::Args {
-            subject: "Core over budget".into(),
-            body: format!("{count} core memory records did not fit. Fold related core records, remove obsolete records, or demote them to facts."),
-            source_chat: Some(chat),
-        }).await {
+        if let Err(error) = session . chats () . notify ("Core over budget" . into () , format ! ("{count} core memory records did not fit. Fold related core records, remove obsolete records, or demote them to facts.") , Some (chat)) . await {
             log::warn!(error:% = error; "core overflow notification failed");
         }
     }

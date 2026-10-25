@@ -450,7 +450,7 @@ pub async fn Get<C: Components>(
         }
     };
 
-    Ok(Box::pin(items))
+    Ok(get::Ok(Box::pin(items)))
 }
 
 #[eva::endpoint]
@@ -461,5 +461,5 @@ pub async fn Stat<C: Components>(
 ) -> Response<stat::Ok, stat::Err> {
     let stat::Args { id } = args;
     let row = load::<C, stat::Err>(state, id).await?;
-    Ok(convert::blob::meta(row))
+    Ok(convert::blob::meta(row).into())
 }

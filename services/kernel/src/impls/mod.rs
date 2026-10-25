@@ -1,41 +1,38 @@
-//! `impl <Namespace> for Session<C>`: строка `project!` на операцию.
-//! Операция трейта без строки — ошибка компиляции.
+//! Реализации сервисов следуют метаданным протокола и именам обработчиков.
 
-/// `fn get() = h::Get;` → шаг `with_state`. Модуль операции должен быть в
-/// области видимости.
-macro_rules! project {
-    () => {};
-    (fn $method:ident() = $handler:expr; $($tail:tt)*) => {
-        fn $method(
-            &mut self,
-        ) -> impl ::eva_core::CallStep<
-            $method::Args,
-            Output = ::eva_protocol::requests::Response<$method::Ok, $method::Err>,
-        > {
-            self.with_state($handler)
-        }
+use eva_core::CallStep;
 
-        project!($($tail)*);
+use crate::{components::Components, handling, session::Session};
+
+macro_rules! decorate {
+    ($service:ident, $method:ident; $handler:expr) => {
+        $handler
     };
 }
 
-mod agents;
-mod blobs;
-mod chats;
-mod cron;
-mod folders;
-mod fs;
-mod hands_grants;
-mod inference;
-mod kv;
-mod memory;
-mod models;
-mod modules;
-mod notes;
-mod persons;
-mod sleep;
-mod sqlite;
-mod stats;
-mod surfaces;
-mod tools;
-mod turns;
+macro_rules! project {
+    ($(
+        $segment:ident { $accessor:ident: $Name:ident {
+            trait: $Trait:path,
+            client: $Client:path,
+            $(
+                $(#[$flag:ident])*
+                $method:ident = $endpoint:ident {
+                    args: $Args:ty,
+                    ok: $Ok:ty,
+                    err: $Err:ty,
+                    output: $Output:ty,
+                    docs: [$($doc:literal),*],
+                }
+            )*
+        } }
+    )*) => { eva::paste! {
+        $(impl<C: Components> $Trait for Session<C> {
+            $(fn $method(&mut self) -> impl CallStep<$Args, Output = $Output> {
+                self.with_state(decorate!($segment, $method; handling::$segment::[<$endpoint:camel>]))
+            })*
+        })*
+    } };
+}
+
+eva_core::for_each_op!(project);

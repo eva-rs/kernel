@@ -196,9 +196,6 @@ async fn shell_timeout_preserves_trapped_exit_and_partial_output() {
 
 #[tokio::test]
 async fn shell_cancellation_waits_for_real_exit_and_output() {
-    use eva_core::{CallStep as _, service::turns::Turns as _};
-    use eva_protocol::requests::turns::cancel;
-
     let h = strict().await;
     let chat = working_chat(&h).await;
     let command =
@@ -220,12 +217,7 @@ async fn shell_cancellation_waits_for_real_exit_and_output() {
         .live()
         .expect("live turn");
     let mut session = h.client_session().await;
-    session
-        .turns()
-        .cancel()
-        .call(cancel::Args { chat })
-        .await
-        .unwrap();
+    session.turns().cancel(chat).await.unwrap();
     assert!(live.cancel.is_cancelled());
     assert!(
         tokio::time::timeout(
@@ -246,9 +238,6 @@ async fn shell_cancellation_waits_for_real_exit_and_output() {
 #[cfg(unix)]
 #[tokio::test]
 async fn shell_timeout_and_cancellation_are_independent() {
-    use eva_core::{CallStep as _, service::turns::Turns as _};
-    use eva_protocol::requests::turns::cancel;
-
     let h = strict().await;
     let chat = working_chat(&h).await;
     let command = "trap 'exit 0' TERM; : > started; while :; do sleep 1; done";
@@ -262,12 +251,7 @@ async fn shell_timeout_and_cancellation_are_independent() {
     append(&h, chat, "run command").await;
     shell_started(&h).await;
     let mut session = h.client_session().await;
-    session
-        .turns()
-        .cancel()
-        .call(cancel::Args { chat })
-        .await
-        .unwrap();
+    session.turns().cancel(chat).await.unwrap();
     assert_eq!(done(&mut rx).await.0, TurnOutcome::Cancelled);
     let result = shell_result(&h, chat).await;
     assert_eq!(
@@ -402,13 +386,9 @@ async fn symlink_components_cannot_escape_workdir_or_endpoint_roots() {
 
 #[tokio::test]
 async fn cancellation_closes_permission_and_late_allow_creates_no_grant() {
-    use eva_core::{CallStep as _, service::turns::Turns as _};
-    use eva_protocol::{
-        requests::turns::{cancel, respond},
-        types::{
-            module::ModuleKind,
-            turn::{Answer, FeedEvent, ItemBody, Permission},
-        },
+    use eva_protocol::types::{
+        module::ModuleKind,
+        turn::{Answer, FeedEvent, ItemBody, Permission},
     };
     let h = strict().await;
     let chat = working_chat(&h).await;
@@ -432,23 +412,17 @@ async fn cancellation_closes_permission_and_late_allow_creates_no_grant() {
     .await
     .unwrap();
     let mut session = h.client_session().await;
-    session
-        .turns()
-        .cancel()
-        .call(cancel::Args { chat })
-        .await
-        .unwrap();
+    session.turns().cancel(chat).await.unwrap();
     assert_eq!(done(&mut rx).await.0, TurnOutcome::Cancelled);
     let late = session
         .turns()
-        .respond()
-        .call(respond::Args {
+        .respond(
             pending,
-            answer: Answer::Permission {
+            Answer::Permission {
                 decision: Permission::AllowAlways,
             },
-            actor: None,
-        })
+            None,
+        )
         .await;
     assert!(late.is_err());
     assert!(!h.dir.path().join("work/new.txt").exists());

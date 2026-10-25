@@ -34,8 +34,7 @@ use eva_protocol::requests::surfaces;
 let mut session = kernel.make_session(Caller::Kernel).await?;
 let surfaces::get::Ok { surface } = session
     .surfaces()
-    .get()
-    .call(surfaces::get::Args { surface: "local".into() })
+    .get("local".into())
     .await?;
 ```
 

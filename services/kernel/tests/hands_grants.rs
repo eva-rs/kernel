@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 
 use common::{Harness, Outcome, SVC, matrix_callers, outcome};
 use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::hands_grants::HandsGrants as _};
+use eva_core::{CallStep as _, service::HandsGrants::Trait as _};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::hands_grants::{list, revoke},
@@ -80,6 +80,7 @@ async fn list_filters_and_orders_newest_first() {
     let mut call = async |args: list::Args| {
         client
             .hands_grants()
+            .inner_mut()
             .list()
             .call(args)
             .await
@@ -134,14 +135,10 @@ async fn revoke_deletes_the_grant() {
     let g2 = grant(&h, "local", "local", None, GrantKind::Shell, "ls").await;
     let mut client = h.client_session().await;
 
-    client
-        .hands_grants()
-        .revoke()
-        .call(revoke::Args { id: g1 })
-        .await
-        .expect("revoke");
+    client.hands_grants().revoke(g1).await.expect("revoke");
     let left = client
         .hands_grants()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await
@@ -149,11 +146,7 @@ async fn revoke_deletes_the_grant() {
         .grants;
     assert_eq!(ids(&left), [g2]);
 
-    let res = client
-        .hands_grants()
-        .revoke()
-        .call(revoke::Args { id: g1 })
-        .await;
+    let res = client.hands_grants().revoke(g1).await;
     assert!(
         matches!(&res, Err(Generic::Spec(revoke::Err::NotFound(e))) if e.id == g1),
         "{res:?}"
@@ -176,6 +169,7 @@ async fn policy_matrix() {
 
         let res = session
             .hands_grants()
+            .inner_mut()
             .list()
             .call(list::Args {
                 surface: Some(SurfaceId::from(SVC)),
@@ -184,11 +178,7 @@ async fn policy_matrix() {
             .await;
         assert_eq!(outcome(&res), expect, "{who} list of its own surface");
 
-        let res = session
-            .hands_grants()
-            .revoke()
-            .call(revoke::Args { id })
-            .await;
+        let res = session.hands_grants().revoke(id).await;
         assert_eq!(outcome(&res), expect, "{who} revoke");
     }
 }
@@ -201,16 +191,11 @@ async fn database_failure_is_aux_db() {
 
     let res = client
         .hands_grants()
+        .inner_mut()
         .list()
         .call(list::Args::default())
         .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
-    let res = client
-        .hands_grants()
-        .revoke()
-        .call(revoke::Args {
-            id: HandsGrantId(1),
-        })
-        .await;
+    let res = client.hands_grants().revoke(HandsGrantId(1)).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
 }

@@ -6,13 +6,10 @@ use eva::{
     data,
     time::{HumanDuration, Timestamp},
 };
-use eva_core::{
-    CallStep as _,
-    service::{chats::Chats as _, persons::Persons as _},
-};
+
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{Limit, Patch, Response, chats, persons},
+    requests::{Limit, Patch, Response, chats},
     types::{
         ChatId, FolderId, PersonId, SurfaceId,
         chat::{Chat, Kind, Role},
@@ -386,16 +383,15 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             });
             let hits = api(session
                 .chats()
-                .search()
-                .call(chats::search::Args {
-                    query: args.query,
-                    limit: args.limit,
+                .search(
+                    args.query,
+                    args.limit,
                     since,
-                    surface: if full { args.surface } else { None },
+                    if full { args.surface } else { None },
                     folder,
-                    include_deleted: full && args.include_deleted,
-                    view: Some(call.view.clone()),
-                })
+                    full && args.include_deleted,
+                    Some(call.view.clone()),
+                )
                 .await)?
             .hits;
             let ids: Vec<_> = hits.iter().filter_map(|h| h.sender.clone()).collect();
@@ -464,14 +460,13 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             let chat = args.chat_id.unwrap_or(current);
             let page = api(session
                 .chats()
-                .history_read()
-                .call(chats::history_read::Args {
+                .history_read(
                     chat,
-                    from_seq: args.from_seq,
-                    before: None,
-                    count: args.count,
-                    view: Some(call.view.clone()),
-                })
+                    args.from_seq,
+                    None,
+                    args.count,
+                    Some(call.view.clone()),
+                )
                 .await)?;
             let ids: Vec<_> = page.messages.iter().map(|m| m.id).collect();
             let payloads = shared
@@ -545,16 +540,15 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             .await?;
             let chats = api(session
                 .chats()
-                .list()
-                .call(chats::list::Args {
-                    surface: args.surface,
+                .list(
+                    args.surface,
                     folder,
-                    deleted: args.deleted,
-                    live: false,
-                    limit: Limit::new(u16::from(args.limit.into_inner()))
+                    args.deleted,
+                    false,
+                    Limit::new(u16::from(args.limit.into_inner()))
                         .ok_or_else(|| Aux::Internal("validated limit out of range".into()))?,
-                    after: None,
-                })
+                    None,
+                )
                 .await)?
             .found;
             let ids: Vec<_> = chats.iter().map(|c| c.folder_id).collect();
@@ -601,14 +595,13 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             let chat = args.chat_id.unwrap_or(current);
             api(session
                 .chats()
-                .update()
-                .call(chats::update::Args {
+                .update(
                     chat,
-                    update: chats::update::Update {
+                    chats::update::Update {
                         alerted: Patch::Change(args.on),
                         ..Default::default()
                     },
-                })
+                )
                 .await)?;
             if args.on {
                 let subject = args
@@ -619,12 +612,7 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
                     .unwrap_or_else(|| format!("chat {chat} flagged"));
                 api(session
                     .chats()
-                    .notify()
-                    .call(chats::notify::Args {
-                        subject,
-                        body: format!("Chat {chat} needs attention."),
-                        source_chat: Some(chat),
-                    })
+                    .notify(subject, format!("Chat {chat} needs attention."), Some(chat))
                     .await)?;
             }
             Ok(format!("alerted = {}", args.on))
@@ -633,14 +621,13 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             let args: Pin = parse(call.input)?;
             api(session
                 .chats()
-                .update()
-                .call(chats::update::Args {
-                    chat: args.chat_id.unwrap_or(current),
-                    update: chats::update::Update {
+                .update(
+                    args.chat_id.unwrap_or(current),
+                    chats::update::Update {
                         pinned: Patch::Change(args.on),
                         ..Default::default()
                     },
-                })
+                )
                 .await)?;
             Ok(format!("pinned = {}", args.on))
         }
@@ -648,14 +635,13 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             let args: Current = parse(call.input)?;
             api(session
                 .chats()
-                .update()
-                .call(chats::update::Args {
-                    chat: args.chat_id.unwrap_or(current),
-                    update: chats::update::Update {
+                .update(
+                    args.chat_id.unwrap_or(current),
+                    chats::update::Update {
                         kind: Patch::Change(Kind::Persistent),
                         ..Default::default()
                     },
-                })
+                )
                 .await)?;
             Ok("kind = persistent".into())
         }
@@ -664,37 +650,30 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             let title = clean(&args.title);
             api(session
                 .chats()
-                .update()
-                .call(chats::update::Args {
-                    chat: args.chat_id.unwrap_or(current),
-                    update: chats::update::Update {
+                .update(
+                    args.chat_id.unwrap_or(current),
+                    chats::update::Update {
                         title: Patch::Change(Some(title.clone())),
                         ..Default::default()
                     },
-                })
+                )
                 .await)?;
             Ok(format!("title = {title}"))
         }
         "chats_move" => {
             let args: Move = parse(call.input)?;
             let chat = args.chat_id.unwrap_or(current);
-            let row = api(session
-                .chats()
-                .get()
-                .call(chats::get::Args { chat: chat.into() })
-                .await)?
-            .chat;
+            let row = api(session.chats().get(chat.into()).await)?.chat;
             api(session
                 .chats()
-                .r#move()
-                .call(chats::r#move::Args {
+                .r#move(
                     chat,
-                    folder: folder::Selector::Name {
+                    folder::Selector::Name {
                         surface: row.surface_id,
                         name: args.folder,
                     },
-                    confirm: args.confirm,
-                })
+                    args.confirm,
+                )
                 .await)?;
             Ok("moved".into())
         }
@@ -702,35 +681,26 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
             let args: Delete = parse(call.input)?;
             api(session
                 .chats()
-                .delete()
-                .call(chats::delete::Args {
-                    chat: args.chat_id.unwrap_or(current),
-                    purge: args.purge,
-                })
+                .delete(args.chat_id.unwrap_or(current), args.purge)
                 .await)?;
             Ok("deleted".into())
         }
         "chats_restore" => {
             let args: Restore = parse(call.input)?;
-            api(session
-                .chats()
-                .restore()
-                .call(chats::restore::Args { chat: args.chat_id })
-                .await)?;
+            api(session.chats().restore(args.chat_id).await)?;
             Ok("restored".into())
         }
         "persons_list" => {
             let args: People = parse(call.input)?;
             let people = api(session
                 .persons()
-                .list()
-                .call(persons::list::Args {
-                    surface: args.surface,
-                    whitelisted: args.whitelisted,
-                    limit: Limit::new(u16::from(args.limit.into_inner()))
+                .list(
+                    args.surface,
+                    args.whitelisted,
+                    Limit::new(u16::from(args.limit.into_inner()))
                         .ok_or_else(|| Aux::Internal("validated limit out of range".into()))?,
-                    after: None,
-                })
+                    None,
+                )
                 .await)?
             .found;
             Ok(if people.is_empty() {
@@ -766,39 +736,20 @@ async fn invoke<C: Components>(shared: &Shared<C>, call: ToolsetCall<'_>) -> Res
         }
         "persons_rename" => {
             let args: PersonRename = parse(call.input)?;
-            api(session
-                .persons()
-                .rename()
-                .call(persons::rename::Args {
-                    person: args.person_id,
-                    name: args.name,
-                })
-                .await)?;
+            api(session.persons().rename(args.person_id, args.name).await)?;
             Ok("renamed".into())
         }
         "persons_merge" => {
             let args: Merge = parse(call.input)?;
             api(session
                 .persons()
-                .merge()
-                .call(persons::merge::Args {
-                    from: args.from,
-                    into: args.into,
-                    confirm: args.confirm,
-                })
+                .merge(args.from, args.into, args.confirm)
                 .await)?;
             Ok("merged".into())
         }
         "persons_whitelist" => {
             let args: Whitelist = parse(call.input)?;
-            api(session
-                .persons()
-                .whitelist()
-                .call(persons::whitelist::Args {
-                    person: args.person_id,
-                    on: args.on,
-                })
-                .await)?;
+            api(session.persons().whitelist(args.person_id, args.on).await)?;
             Ok(format!("whitelisted = {}", args.on))
         }
         _ => Err(Aux::Internal("unhandled chat/person tool".into())),

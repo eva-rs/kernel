@@ -1194,7 +1194,7 @@ fn timestamps_survive() {
         kind: blob::Kind::Image,
         expires_at: at(),
     };
-    roundtrip::<blobs::stat::Ok>(&meta);
+    roundtrip::<blobs::stat::Ok>(&meta.clone().into());
     assert!(
         serde_json::to_value(&meta)
             .expect("json")

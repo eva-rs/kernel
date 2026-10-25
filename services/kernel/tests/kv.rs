@@ -7,12 +7,12 @@ use std::sync::atomic::Ordering;
 
 use common::{OTHER, Outcome, SVC, TestSession, matrix_callers, outcome, service, with_modules};
 use eva::bytesize::ByteSize;
-use eva_core::{CallStep as _, service::kv::Kv as _};
+use eva_core::{CallStep as _, service::Kv::Trait as _};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::{
         Limit,
-        kv::{del, get, list, set},
+        kv::{list, set},
     },
     types::{Bytes, Value},
 };
@@ -22,11 +22,7 @@ use serde_json::json;
 async fn put(session: &mut TestSession, key: &str, value: impl Into<Value>) {
     session
         .kv()
-        .set()
-        .call(set::Args {
-            key: key.to_owned(),
-            value: value.into(),
-        })
+        .set(key.to_owned(), value.into())
         .await
         .expect("kv.set");
 }
@@ -34,17 +30,21 @@ async fn put(session: &mut TestSession, key: &str, value: impl Into<Value>) {
 async fn read(session: &mut TestSession, key: &str) -> Option<Value> {
     session
         .kv()
-        .get()
-        .call(get::Args {
-            key: key.to_owned(),
-        })
+        .get(key.to_owned())
         .await
         .expect("kv.get")
         .value
 }
 
 async fn keys(session: &mut TestSession, args: list::Args) -> Vec<String> {
-    session.kv().list().call(args).await.expect("kv.list").keys
+    session
+        .kv()
+        .inner_mut()
+        .list()
+        .call(args)
+        .await
+        .expect("kv.list")
+        .keys
 }
 
 #[tokio::test]
@@ -60,20 +60,11 @@ async fn set_get_del_last_write_wins() {
     put(&mut svc, "offset", 42_i64).await;
     assert_eq!(read(&mut svc, "offset").await, Some(Value::Integer(42)));
 
-    svc.kv()
-        .del()
-        .call(del::Args {
-            key: String::from("offset"),
-        })
-        .await
-        .expect("del");
+    svc.kv().del(String::from("offset")).await.expect("del");
     assert_eq!(read(&mut svc, "offset").await, None);
 
     svc.kv()
-        .del()
-        .call(del::Args {
-            key: String::from("offset"),
-        })
+        .del(String::from("offset"))
         .await
         .expect("deleting a missing key is not an error");
 }
@@ -111,21 +102,14 @@ async fn bytes_roundtrip_in_process_and_over_uds() {
     let mut kernel = module.kernel().await.expect("the kernel dials the module");
     let far = kernel
         .kv()
-        .get()
-        .call(get::Args {
-            key: String::from("near"),
-        })
+        .get(String::from("near"))
         .await
         .expect("kv.get over uds");
     assert_eq!(far.value, Some(value.clone()));
 
     kernel
         .kv()
-        .set()
-        .call(set::Args {
-            key: String::from("far"),
-            value: value.clone(),
-        })
+        .set(String::from("far"), value.clone())
         .await
         .expect("kv.set over uds");
     assert_eq!(read(&mut svc, "far").await, Some(value));
@@ -146,14 +130,7 @@ async fn modules_do_not_see_each_other() {
     assert_eq!(read(&mut client, "k").await, Some("client".into()));
     assert!(keys(&mut other, list::Args::default()).await.is_empty());
 
-    other
-        .kv()
-        .del()
-        .call(del::Args {
-            key: String::from("k"),
-        })
-        .await
-        .expect("del");
+    other.kv().del(String::from("k")).await.expect("del");
     assert_eq!(read(&mut svc, "k").await, Some("svc".into()));
 }
 
@@ -216,18 +193,11 @@ async fn key_is_validated() {
     let mut svc = h.session(service(SVC)).await;
 
     for key in [String::new(), "k".repeat(1025)] {
-        let res = svc.kv().get().call(get::Args { key: key.clone() }).await;
+        let res = svc.kv().get(key.clone()).await;
         assert_eq!(outcome(&res), Outcome::Invalid, "get {}", key.len());
-        let res = svc
-            .kv()
-            .set()
-            .call(set::Args {
-                key: key.clone(),
-                value: Value::Integer(1),
-            })
-            .await;
+        let res = svc.kv().set(key.clone(), Value::Integer(1)).await;
         assert_eq!(outcome(&res), Outcome::Invalid, "set {}", key.len());
-        let res = svc.kv().del().call(del::Args { key }).await;
+        let res = svc.kv().del(key).await;
         assert_eq!(outcome(&res), Outcome::Invalid, "del");
     }
 }
@@ -245,24 +215,18 @@ async fn policy_matrix() {
         let mut session = h.session(caller).await;
         let key = String::from("k");
 
-        let res = session
-            .kv()
-            .set()
-            .call(set::Args {
-                key: key.clone(),
-                value: Value::Integer(1),
-            })
-            .await;
+        let res = session.kv().set(key.clone(), Value::Integer(1)).await;
         assert_eq!(outcome(&res), expect, "{who} set");
+        let res = session.kv().get(key.clone()).await;
+        assert_eq!(outcome(&res), expect, "{who} get");
         let res = session
             .kv()
-            .get()
-            .call(get::Args { key: key.clone() })
+            .inner_mut()
+            .list()
+            .call(list::Args::default())
             .await;
-        assert_eq!(outcome(&res), expect, "{who} get");
-        let res = session.kv().list().call(list::Args::default()).await;
         assert_eq!(outcome(&res), expect, "{who} list");
-        let res = session.kv().del().call(del::Args { key }).await;
+        let res = session.kv().del(key).await;
         assert_eq!(outcome(&res), expect, "{who} del");
     }
 }
@@ -273,22 +237,9 @@ async fn database_failure_is_aux_db() {
     let mut svc = h.session(service(SVC)).await;
     h.db_fail.store(true, Ordering::Relaxed);
 
-    let res = svc
-        .kv()
-        .set()
-        .call(set::Args {
-            key: String::from("k"),
-            value: Value::Integer(1),
-        })
-        .await;
+    let res = svc.kv().set(String::from("k"), Value::Integer(1)).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
-    let res = svc
-        .kv()
-        .get()
-        .call(get::Args {
-            key: String::from("k"),
-        })
-        .await;
+    let res = svc.kv().get(String::from("k")).await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
 }
 
@@ -297,14 +248,7 @@ async fn try_put(
     key: &str,
     value: Value,
 ) -> Result<set::Ok, Generic<set::Err>> {
-    session
-        .kv()
-        .set()
-        .call(set::Args {
-            key: key.to_owned(),
-            value,
-        })
-        .await
+    session.kv().set(key.to_owned(), value).await
 }
 
 /// Строка в 269 байт квоты: ключ 3, msgpack-строка 202, накладные 64.
@@ -340,13 +284,7 @@ async fn module_total_is_capped() {
         put(&mut other, key, row_269()).await;
     }
 
-    svc.kv()
-        .del()
-        .call(del::Args {
-            key: String::from("k00"),
-        })
-        .await
-        .expect("del");
+    svc.kv().del(String::from("k00")).await.expect("del");
     put(&mut svc, "k03", row_269()).await;
 }
 

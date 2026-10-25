@@ -9,20 +9,13 @@ use std::{sync::Arc, time::Duration};
 
 use common::{CLIENT, CLIENT2, Harness, OTHER, SVC, TestSession, dialed, token, with_modules};
 use eva::{time::Clock as _, url::Url};
-use eva_core::{
-    CallStep as _, Caller, GenSink, NAMESPACES,
-    service::{
-        chats::Chats as _, inference::Inference as _, models::Models as _, modules::Modules as _,
-        surfaces::Surfaces as _,
-    },
-};
+use eva_core::{Caller, GenSink, NAMESPACES};
 use eva_kernel::{
     config::llm::{ModuleKind as ProviderKind, ModuleProvider, ProviderEntry},
     db::{Db as _, Queries as _, modules::TokenRow},
 };
 use eva_protocol::{
     errors::{Aux, Generic},
-    requests::{chats, inference, models, modules, surfaces},
     types::{
         ChatId, ModelId, ModuleId, SurfaceId,
         content::Block,
@@ -161,7 +154,6 @@ async fn config_registrations_open_sessions_and_track_the_row() {
         .await
         .modules()
         .list()
-        .call(modules::list::Args {})
         .await
         .expect("modules.list")
         .modules;
@@ -267,7 +259,6 @@ async fn listed(h: &Harness, module: &str) -> eva_protocol::types::module::Modul
         .await
         .modules()
         .list()
-        .call(modules::list::Args {})
         .await
         .expect("modules.list")
         .modules
@@ -347,11 +338,7 @@ async fn the_token_alone_decides_which_client_connected() {
 async fn issue(session: &mut TestSession, module: &str) -> String {
     session
         .modules()
-        .token_issue()
-        .call(modules::token_issue::Args {
-            module: ModuleId::from(module),
-            issued_by: None,
-        })
+        .token_issue(ModuleId::from(module), None)
         .await
         .expect("token_issue")
         .token
@@ -386,10 +373,7 @@ async fn issued_tokens_rotate_and_revoke_close_the_session() {
 
     owner
         .modules()
-        .token_revoke()
-        .call(modules::token_revoke::Args {
-            module: ModuleId::from("tablet"),
-        })
+        .token_revoke(ModuleId::from("tablet"))
         .await
         .expect("token_revoke");
     assert_eq!(closed(&tablet).await.code, ErrorCode::Unauthorized);
@@ -430,10 +414,7 @@ async fn config_token_wins_over_an_issued_one() {
     // Отзыв выданных токенов не трогает сессию с токеном из конфига.
     owner
         .modules()
-        .token_revoke()
-        .call(modules::token_revoke::Args {
-            module: ModuleId::from(CLIENT2),
-        })
+        .token_revoke(ModuleId::from(CLIENT2))
         .await
         .expect("token_revoke");
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -455,11 +436,7 @@ async fn a_module_cannot_rotate_its_own_token_over_its_session() {
     let mut session = tablet.session();
     let res = session
         .modules()
-        .token_issue()
-        .call(modules::token_issue::Args {
-            module: ModuleId::from("tablet"),
-            issued_by: None,
-        })
+        .token_issue(ModuleId::from("tablet"), None)
         .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Conflict(_)))),
@@ -497,10 +474,7 @@ async fn a_second_hello_of_the_same_name_supersedes_the_first() {
     let mut session = second.session();
     let surface = session
         .surfaces()
-        .get()
-        .call(surfaces::get::Args {
-            surface: SurfaceId::from(CLIENT),
-        })
+        .get(SurfaceId::from(CLIENT))
         .await
         .expect("the new session owns the surface");
     assert_eq!(
@@ -548,12 +522,7 @@ where
 {
     session
         .surfaces()
-        .create()
-        .call(surfaces::create::Args {
-            id: SurfaceId::from(id),
-            name: format!("{id} surface"),
-            rules: None,
-        })
+        .create(SurfaceId::from(id), format!("{id} surface"), None)
         .await
         .expect("surfaces.create");
 }
@@ -604,18 +573,17 @@ async fn next_chat_event(rx: &mut mpsc::UnboundedReceiver<Publish>) -> (u64, Cha
 async fn create_chat(session: &mut TestSession, surface: &str) -> ChatId {
     session
         .chats()
-        .create()
-        .call(chats::create::Args {
-            surface: SurfaceId::from(surface),
-            folder: None,
-            external_id: None,
-            external_kind: None,
-            kind: None,
-            title: None,
-            project: None,
-            workdir: None,
-            workdir_on: None,
-        })
+        .create(
+            SurfaceId::from(surface),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("chats.create")
         .chat
@@ -736,7 +704,6 @@ async fn models(h: &Harness) -> Vec<(String, String)> {
         .await
         .models()
         .list()
-        .call(models::list::Args {})
         .await
         .expect("models.list")
         .models
@@ -795,15 +762,14 @@ async fn provider_capability_needs_the_config_and_lives_with_the_session() {
         .client_session()
         .await
         .inference()
-        .complete()
-        .call(inference::complete::Args {
-            model: Some(ModelId::from(REMOTE_MODEL)),
-            system: String::new(),
-            input: vec![Block::text("hi")],
-            schema: None,
-            max_tokens: None,
-            effort: None,
-        })
+        .complete(
+            Some(ModelId::from(REMOTE_MODEL)),
+            String::new(),
+            vec![Block::text("hi")],
+            None,
+            None,
+            None,
+        )
         .await
         .expect("inference through the module");
     assert_eq!(ok.text.as_deref(), Some("from the module"));
@@ -818,15 +784,14 @@ async fn provider_capability_needs_the_config_and_lives_with_the_session() {
         .client_session()
         .await
         .inference()
-        .complete()
-        .call(inference::complete::Args {
-            model: Some(ModelId::from(REMOTE_MODEL)),
-            system: String::new(),
-            input: vec![Block::text("hi")],
-            schema: None,
-            max_tokens: None,
-            effort: None,
-        })
+        .complete(
+            Some(ModelId::from(REMOTE_MODEL)),
+            String::new(),
+            vec![Block::text("hi")],
+            None,
+            None,
+            None,
+        )
         .await;
     assert!(
         matches!(res, Err(Generic::Aux(Aux::NotFound(_)))),
@@ -905,7 +870,6 @@ async fn tool_declarations_with_markers_are_refused_in_warnings() {
         .await
         .modules()
         .list()
-        .call(modules::list::Args {})
         .await
         .expect("modules.list")
         .modules;
@@ -1072,15 +1036,14 @@ async fn module_rpc_errors_are_counted() {
         .client_session()
         .await
         .inference()
-        .complete()
-        .call(inference::complete::Args {
-            model: Some(ModelId::from(REMOTE_MODEL)),
-            system: String::new(),
-            input: vec![Block::text("hi")],
-            schema: None,
-            max_tokens: None,
-            effort: None,
-        })
+        .complete(
+            Some(ModelId::from(REMOTE_MODEL)),
+            String::new(),
+            vec![Block::text("hi")],
+            None,
+            None,
+            None,
+        )
         .await;
     assert!(matches!(res, Err(Generic::Spec(_))), "{res:?}");
 

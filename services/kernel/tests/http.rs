@@ -9,12 +9,12 @@ use std::{
 };
 
 use common::{CLIENT, Harness, token, with_modules};
-use eva_core::{CallStep as _, service::modules::Modules as _};
+
 use eva_kernel::{
     config::ModulesConfig,
     subsystems::modules::{Listening, auth::REFUSED_DELAY},
 };
-use eva_protocol::{requests::modules, types::ModuleId};
+use eva_protocol::types::ModuleId;
 use eva_rpc::config::{Cors, HttpListen, Listen};
 use reqwest::{
     StatusCode,
@@ -215,11 +215,7 @@ async fn bearer_tokens_follow_the_hello_rules() {
         .client_session()
         .await
         .modules()
-        .token_issue()
-        .call(modules::token_issue::Args {
-            module: ModuleId::from("tablet"),
-            issued_by: None,
-        })
+        .token_issue(ModuleId::from("tablet"), None)
         .await
         .expect("token_issue")
         .token;
@@ -228,10 +224,7 @@ async fn bearer_tokens_follow_the_hello_rules() {
         .client_session()
         .await
         .modules()
-        .token_revoke()
-        .call(modules::token_revoke::Args {
-            module: ModuleId::from("tablet"),
-        })
+        .token_revoke(ModuleId::from("tablet"))
         .await
         .expect("token_revoke");
     assert_eq!(rig.status_of(Some(&issued)).await, StatusCode::UNAUTHORIZED);

@@ -6,7 +6,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use eva::url::Url;
-use eva_core::{CallStep as _, service::surfaces::Surfaces as _};
+
 use eva_protocol::requests::surfaces::create;
 use eva_rpc::{
     ClientOptions, ClientTls, ConnectError, Listener, NoHandler, RpcClient, Server,
@@ -69,12 +69,7 @@ async fn wss_with_extra_ca() {
     let create::Ok { surface } = client
         .session()
         .surfaces()
-        .create()
-        .call(create::Args {
-            id: "tls".into(),
-            name: "tls".to_owned(),
-            rules: None,
-        })
+        .create("tls".into(), "tls".to_owned(), None)
         .await
         .unwrap();
     assert_eq!(surface.id.as_str(), "tls");

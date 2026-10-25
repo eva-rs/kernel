@@ -289,7 +289,7 @@ pub async fn attach<C: Components>(
             },
         ));
     }
-    Ok(Box::pin(async_stream::stream! {
+    Ok(attach::Ok(Box::pin(async_stream::stream! {
         for item in replay { yield Ok(item); }
         loop {
             match live.recv().await {
@@ -298,7 +298,7 @@ pub async fn attach<C: Components>(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    }))
+    })))
 }
 
 pub fn attachments(blocks: &[Block]) -> Vec<ItemBody> {

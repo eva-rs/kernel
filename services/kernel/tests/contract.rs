@@ -62,7 +62,7 @@ const WAIT: Duration = Duration::from_secs(10);
 /// `call!(r.c.chats.get(args))` — операция в новой сессии клиента (`c`) или сервиса (`s`).
 macro_rules! call {
     ($r:ident . $who:ident . $ns:ident . $op:ident ($args:expr)) => {
-        $r.$who().await.$ns().$op().call($args).await
+        $r.$who().await.$ns().inner_mut().$op().call($args).await
     };
 }
 
@@ -710,34 +710,17 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
         .s()
         .await
         .blobs()
-        .put()
-        .call(blobs::put::Args {
-            meta: put(bridge, NOTE.len() as u64),
-            body: body(NOTE),
-        })
+        .put(put(bridge, NOTE.len() as u64), body(NOTE))
         .await;
     let own = r.ok("blobs.put own", res).id;
     let res = r
         .c()
         .await
         .blobs()
-        .put()
-        .call(blobs::put::Args {
-            meta: put(tea, NOTE.len() as u64),
-            body: body(NOTE),
-        })
+        .put(put(tea, NOTE.len() as u64), body(NOTE))
         .await;
     let foreign = r.ok("blobs.put by client", res).id;
-    let res = r
-        .c()
-        .await
-        .blobs()
-        .put()
-        .call(blobs::put::Args {
-            meta: put(tea, 3),
-            body: body(NOTE),
-        })
-        .await;
+    let res = r.c().await.blobs().put(put(tea, 3), body(NOTE)).await;
     r.check("blobs.put size mismatch", &res, Outcome::Spec);
 
     let res = call!(r.s.blobs.stat(blobs::stat::Args { id: own.clone() }));
@@ -745,13 +728,7 @@ async fn blobs_part<M: SessionMaker>(r: &mut Run<'_, M>, bridge: ChatId, tea: Ch
     let res = call!(r.s.blobs.stat(blobs::stat::Args { id: foreign }));
     r.check("blobs.stat foreign", &res, Outcome::Forbidden);
 
-    let res = r
-        .s()
-        .await
-        .blobs()
-        .get()
-        .call(blobs::get::Args { id: own, offset: 2 })
-        .await;
+    let res = r.s().await.blobs().get(own, 2).await.map(|ok| ok.0);
     let items = match res {
         Ok(items) => Ok(items.collect::<Vec<_>>().await),
         Err(e) => Err(e),
@@ -918,12 +895,7 @@ async fn create_surface(kernel: &Kernel, id: &str, name: &str) {
     kernel
         .clone()
         .surfaces()
-        .create()
-        .call(surfaces::create::Args {
-            id: SurfaceId::from(id),
-            name: name.to_owned(),
-            rules: None,
-        })
+        .create(SurfaceId::from(id), name.to_owned(), None)
         .await
         .unwrap_or_else(|e| panic!("{id} creates its surface: {e:?}"));
 }
@@ -1080,11 +1052,7 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
     for surface in surfaces {
         let folder = owner
             .folders()
-            .create()
-            .call(folders::create::Args {
-                surface: surface.clone(),
-                name: String::from("work"),
-            })
+            .create(surface.clone(), String::from("work"))
             .await
             .unwrap_or_else(|e| panic!("owner creates a folder on {surface}: {e:?}"))
             .folder
@@ -1093,6 +1061,7 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
             let alias = format!("ext-{n}");
             let chat = owner
                 .chats()
+                .inner_mut()
                 .create()
                 .call(chats::create::Args {
                     title: Some(format!("{surface} #{n}")),
@@ -1106,9 +1075,8 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
                 .id;
             let blob = owner
                 .blobs()
-                .put()
-                .call(blobs::put::Args {
-                    meta: blobs::put::Meta {
+                .put(
+                    blobs::put::Meta {
                         chat,
                         name: String::from("a.txt"),
                         media_type: String::from("text/plain"),
@@ -1116,8 +1084,8 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
                         size: 3,
                         hash: None,
                     },
-                    body: body(b"abc"),
-                })
+                    body(b"abc"),
+                )
                 .await
                 .expect("owner uploads a blob")
                 .id;
@@ -1136,13 +1104,7 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
         for surface in surfaces {
             let person = owner
                 .persons()
-                .resolve()
-                .call(persons::resolve::Args {
-                    surface: surface.clone(),
-                    external_id: format!("user-{n}"),
-                    handle: None,
-                    name: None,
-                })
+                .resolve(surface.clone(), format!("user-{n}"), None, None)
                 .await
                 .expect("owner resolves an identity")
                 .person
@@ -1152,12 +1114,7 @@ async fn populate(h: &Harness, surfaces: &[SurfaceId], per_surface: usize) -> Ve
         for from in &people[1..] {
             owner
                 .persons()
-                .merge()
-                .call(persons::merge::Args {
-                    from: from.clone(),
-                    into: people[0].clone(),
-                    confirm: true,
-                })
+                .merge(from.clone(), people[0].clone(), true)
                 .await
                 .expect("one person on every surface");
         }
@@ -1208,11 +1165,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
 
         match rng.random_range(0..15u8) {
             0 => {
-                let res = k
-                    .chats()
-                    .get()
-                    .call(chats::get::Args { chat: chat.into() })
-                    .await;
+                let res = k.chats().get(chat.into()).await;
                 expect_own(&step("chats.get"), own, &res);
                 if let Ok(ok) = &res {
                     assert_eq!(ok.chat.surface_id, mine);
@@ -1221,93 +1174,61 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
             1 => {
                 let res = k
                     .chats()
-                    .history_read()
-                    .call(chats::history_read::Args {
-                        before: None,
-                        chat,
-                        from_seq: 0,
-                        count: Default::default(),
-                        view: None,
-                    })
+                    .history_read(chat, 0, None, Default::default(), None)
                     .await;
                 expect_own(&step("chats.history_read"), own, &res);
             }
             2 => {
                 let res = k
                     .chats()
-                    .update()
-                    .call(chats::update::Args {
+                    .update(
                         chat,
-                        update: chats::update::Update {
+                        chats::update::Update {
                             title: Patch::Change(Some(format!("renamed {round}"))),
                             ..Default::default()
                         },
-                    })
+                    )
                     .await;
                 expect_own(&step("chats.update"), own, &res);
             }
             3 => {
-                let res = k
-                    .blobs()
-                    .stat()
-                    .call(blobs::stat::Args { id: blob_id })
-                    .await;
+                let res = k.blobs().stat(blob_id).await.map(|ok| ok.0);
                 expect_own(&step("blobs.stat"), own, &res);
             }
             4 => {
-                let res = k
-                    .blobs()
-                    .get()
-                    .call(blobs::get::Args {
-                        id: blob_id,
-                        offset: 0,
-                    })
-                    .await
-                    .map(|_| ());
+                let res = k.blobs().get(blob_id, 0).await.map(|ok| ok.0).map(|_| ());
                 expect_own(&step("blobs.get"), own, &res);
             }
             5 => {
-                let res = k
-                    .stats()
-                    .chat_spend()
-                    .call(stats::chat_spend::Args { chat })
-                    .await;
+                let res = k.stats().chat_spend(chat).await;
                 expect_own(&step("stats.chat_spend"), own, &res);
             }
             6 => {
-                let res = k
-                    .surfaces()
-                    .get()
-                    .call(surfaces::get::Args {
-                        surface: surface.clone(),
-                    })
-                    .await;
+                let res = k.surfaces().get(surface.clone()).await;
                 expect_own(&step("surfaces.get"), own, &res);
             }
             7 => {
                 let res = k
                     .surfaces()
-                    .update()
-                    .call(surfaces::update::Args {
-                        surface: surface.clone(),
-                        update: surfaces::update::Update {
+                    .update(
+                        surface.clone(),
+                        surfaces::update::Update {
                             name: Patch::Change(format!("name {round}")),
                             ..Default::default()
                         },
-                    })
+                    )
                     .await;
                 expect_own(&step("surfaces.update"), own, &res);
             }
             8 => {
                 let res = k
                     .persons()
-                    .resolve()
-                    .call(persons::resolve::Args {
-                        surface: surface.clone(),
-                        external_id: format!("user-{}", rng.random_range(0..20u8)),
-                        handle: None,
-                        name: None,
-                    })
+                    .resolve(
+                        surface.clone(),
+                        format!("user-{}", rng.random_range(0..20u8)),
+                        None,
+                        None,
+                    )
                     .await;
                 expect_own(&step("persons.resolve"), own, &res);
                 if let Ok(ok) = &res {
@@ -1318,15 +1239,19 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                 }
             }
             9 => {
-                let res = k.chats().create().call(new_chat(&surface)).await;
+                let res = k
+                    .chats()
+                    .inner_mut()
+                    .create()
+                    .call(new_chat(&surface))
+                    .await;
                 expect_own(&step("chats.create"), own, &res);
                 if let Ok(ok) = res {
                     assert_eq!(ok.chat.surface_id, mine);
                     let blob = k
                         .blobs()
-                        .put()
-                        .call(blobs::put::Args {
-                            meta: blobs::put::Meta {
+                        .put(
+                            blobs::put::Meta {
                                 chat: ok.chat.id,
                                 name: String::from("b.txt"),
                                 media_type: String::from("text/plain"),
@@ -1334,8 +1259,8 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                                 size: 3,
                                 hash: None,
                             },
-                            body: body(b"xyz"),
-                        })
+                            body(b"xyz"),
+                        )
                         .await
                         .expect("the service uploads into its own chat")
                         .id;
@@ -1351,6 +1276,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
             10 => {
                 let res = k
                     .chats()
+                    .inner_mut()
                     .list()
                     .call(chats::list::Args {
                         surface: Some(surface.clone()),
@@ -1366,6 +1292,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
             11 => {
                 let res = k
                     .chats()
+                    .inner_mut()
                     .list()
                     .call(chats::list::Args {
                         folder: Some(folder),
@@ -1380,6 +1307,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
             12 => {
                 let res = k
                     .chats()
+                    .inner_mut()
                     .list()
                     .call(chats::list::Args {
                         after: Some(chat),
@@ -1401,12 +1329,9 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                 let exists = alias.as_ref() == Some(&external_id);
                 let res = k
                     .chats()
-                    .get()
-                    .call(chats::get::Args {
-                        chat: chats::Selector::Alias {
-                            surface: surface.clone(),
-                            external_id,
-                        },
+                    .get(chats::Selector::Alias {
+                        surface: surface.clone(),
+                        external_id,
                     })
                     .await;
                 let want = match (own, exists) {
@@ -1421,13 +1346,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
             }
             _ => {
                 let missing = ChatId(100_000 + i64::from(rng.random_range(0..1000u16)));
-                let res = k
-                    .chats()
-                    .get()
-                    .call(chats::get::Args {
-                        chat: missing.into(),
-                    })
-                    .await;
+                let res = k.chats().get(missing.into()).await;
                 assert_eq!(
                     outcome(&res),
                     Outcome::Spec,
@@ -1436,6 +1355,7 @@ async fn a_service_over_uds_reaches_only_its_own_surface() {
                 );
                 let res = k
                     .surfaces()
+                    .inner_mut()
                     .list()
                     .call(surfaces::list::Args::default())
                     .await;
@@ -1482,6 +1402,7 @@ async fn two_sdk_clients_serve_local_together() {
     let chat = phone
         .kernel()
         .chats()
+        .inner_mut()
         .create()
         .call(new_chat(&local))
         .await
@@ -1491,8 +1412,7 @@ async fn two_sdk_clients_serve_local_together() {
     let seen = tui
         .kernel()
         .chats()
-        .get()
-        .call(chats::get::Args { chat: chat.into() })
+        .get(chat.into())
         .await
         .expect("tui sees the phone's chat")
         .chat;
@@ -1530,10 +1450,7 @@ async fn a_superseded_sdk_client_stops_instead_of_fighting_back() {
     let res = second
         .kernel()
         .surfaces()
-        .get()
-        .call(surfaces::get::Args {
-            surface: SurfaceId::from(CLIENT2),
-        })
+        .get(SurfaceId::from(CLIENT2))
         .await;
     assert!(res.is_ok(), "{res:?}");
     assert!(!second.client().peer().is_closed());
@@ -1585,10 +1502,7 @@ async fn an_sdk_client_reconnects_with_resume() {
     let res = handle
         .kernel()
         .surfaces()
-        .get()
-        .call(surfaces::get::Args {
-            surface: SurfaceId::from(CLIENT2),
-        })
+        .get(SurfaceId::from(CLIENT2))
         .await;
     assert!(res.is_ok(), "{res:?}");
     running.abort();
@@ -1632,14 +1546,7 @@ async fn an_sdk_service_is_redialed_with_resume() {
         "the second hello carried resume"
     );
 
-    let res = kernel
-        .clone()
-        .surfaces()
-        .get()
-        .call(surfaces::get::Args {
-            surface: SurfaceId::from(SVC),
-        })
-        .await;
+    let res = kernel.clone().surfaces().get(SurfaceId::from(SVC)).await;
     assert!(res.is_ok(), "{res:?}");
     running.abort();
 }
@@ -1677,13 +1584,7 @@ async fn a_restarted_sdk_service_is_redialed() {
     );
     assert_eq!(h.serving(SVC).await, [SVC]);
     assert!(h.ask_ui(SVC).await, "capabilities come from the new hello");
-    let res = kernel
-        .surfaces()
-        .get()
-        .call(surfaces::get::Args {
-            surface: SurfaceId::from(SVC),
-        })
-        .await;
+    let res = kernel.surfaces().get(SurfaceId::from(SVC)).await;
     assert!(res.is_ok(), "{res:?}");
 }
 
@@ -1722,13 +1623,7 @@ async fn an_sdk_service_outlives_a_kernel_restart() {
     );
     assert_eq!(reconnects(&h, SVC).await, 1, "the hello carried resume");
     assert_eq!(h.serving(SVC).await, [SVC]);
-    let res = kernel
-        .surfaces()
-        .get()
-        .call(surfaces::get::Args {
-            surface: SurfaceId::from(SVC),
-        })
-        .await;
+    let res = kernel.surfaces().get(SurfaceId::from(SVC)).await;
     assert!(res.is_ok(), "{res:?}");
     assert!(!running.is_finished(), "run outlives the kernel");
     running.abort();
@@ -1795,12 +1690,11 @@ async fn the_owner_adds_and_removes_an_sdk_service_at_runtime() {
     let modules::add::Ok { key } = phone
         .kernel()
         .modules()
-        .add()
-        .call(modules::add::Args {
-            module: ModuleId::from("bridge"),
-            address: common::service_address(h.dir.path(), "bridge"),
-            key: None,
-        })
+        .add(
+            ModuleId::from("bridge"),
+            common::service_address(h.dir.path(), "bridge"),
+            None,
+        )
         .await
         .expect("the owner's client adds a service");
     let key = key.expect("the kernel generates the key");
@@ -1815,20 +1709,14 @@ async fn the_owner_adds_and_removes_an_sdk_service_at_runtime() {
     assert_eq!(bridge_kernel.caller(), &service("bridge"));
     create_surface(&bridge_kernel, "bridge", "Bridge").await;
 
-    let res = phone
-        .kernel()
-        .modules()
-        .remove()
-        .call(modules::remove::Args {
-            module: ModuleId::from(SVC),
-        })
-        .await;
+    let res = phone.kernel().modules().remove(ModuleId::from(SVC)).await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Conflict(_)))),
         "config is stronger: {res:?}"
     );
     let res = svc_kernel
         .surfaces()
+        .inner_mut()
         .list()
         .call(surfaces::list::Args::default())
         .await;
@@ -1838,10 +1726,7 @@ async fn the_owner_adds_and_removes_an_sdk_service_at_runtime() {
     phone
         .kernel()
         .modules()
-        .remove()
-        .call(modules::remove::Args {
-            module: ModuleId::from("bridge"),
-        })
+        .remove(ModuleId::from("bridge"))
         .await
         .expect("the owner's client removes its service");
     let reason = tokio::time::timeout(WAIT, peer.closed())
@@ -1878,11 +1763,7 @@ async fn owner_clients_connect_with_tokens_over_uds_ws_and_wss() {
         .client_session()
         .await
         .modules()
-        .token_issue()
-        .call(modules::token_issue::Args {
-            module: ModuleId::from("tablet"),
-            issued_by: None,
-        })
+        .token_issue(ModuleId::from("tablet"), None)
         .await
         .expect("token_issue")
         .token;
@@ -1914,10 +1795,7 @@ async fn owner_clients_connect_with_tokens_over_uds_ws_and_wss() {
         let res = client
             .kernel()
             .surfaces()
-            .get()
-            .call(surfaces::get::Args {
-                surface: SurfaceId::from("local"),
-            })
+            .get(SurfaceId::from("local"))
             .await;
         assert!(res.is_ok(), "{kernel}: {res:?}");
         connected.push(client);
@@ -1948,7 +1826,6 @@ async fn listed(h: &Harness, module: &str) -> eva_protocol::types::module::Modul
         .await
         .modules()
         .list()
-        .call(modules::list::Args {})
         .await
         .expect("modules.list")
         .modules

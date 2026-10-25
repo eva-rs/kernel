@@ -14,10 +14,7 @@ use std::{
 
 use common::{CLIENT, ENDPOINT, FaultyDb, PROVIDER, SVC, client, service};
 use eva::{time::Timestamp, url::Url};
-use eva_core::{
-    CallStep as _, Caller, SessionMaker as _,
-    service::{chats::Chats as _, modules::Modules as _, surfaces::Surfaces as _},
-};
+use eva_core::{Caller, SessionMaker as _};
 use eva_hands::Limits;
 use eva_kernel::{
     Components, Kernel, Parts,
@@ -31,7 +28,6 @@ use eva_kernel::{
 };
 use eva_protocol::{
     errors::Aux,
-    requests::{chats, modules as ops, surfaces},
     types::{ModuleId, SessionId, SurfaceId},
     wire::{
         Capabilities, ErrorCode, RpcError,
@@ -221,12 +217,7 @@ async fn events_published_during_the_handshake_reach_the_module() {
         .await
         .expect("session")
         .surfaces()
-        .create()
-        .call(surfaces::create::Args {
-            id: SurfaceId::from(SVC),
-            name: String::from("Service"),
-            rules: None,
-        })
+        .create(SurfaceId::from(SVC), String::from("Service"), None)
         .await
         .expect("surface");
 
@@ -238,18 +229,17 @@ async fn events_published_during_the_handshake_reach_the_module() {
             .await
             .expect("kernel session")
             .chats()
-            .create()
-            .call(chats::create::Args {
-                surface: SurfaceId::from(SVC),
-                folder: None,
-                external_id: None,
-                external_kind: None,
-                kind: None,
-                title: None,
-                project: None,
-                workdir: None,
-                workdir_on: None,
-            })
+            .create(
+                SurfaceId::from(SVC),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .expect("chat during the handshake");
     });
@@ -283,11 +273,7 @@ async fn a_session_revoked_before_welcome_registers_nothing() {
         .await
         .expect("owner")
         .modules()
-        .token_issue()
-        .call(ops::token_issue::Args {
-            module: ModuleId::from(BRIDGE),
-            issued_by: None,
-        })
+        .token_issue(ModuleId::from(BRIDGE), None)
         .await
         .expect("token_issue")
         .token;
@@ -301,10 +287,7 @@ async fn a_session_revoked_before_welcome_registers_nothing() {
             .await
             .expect("owner")
             .modules()
-            .token_revoke()
-            .call(ops::token_revoke::Args {
-                module: ModuleId::from(BRIDGE),
-            })
+            .token_revoke(ModuleId::from(BRIDGE))
             .await
             .expect("token_revoke");
     });
@@ -467,11 +450,7 @@ async fn a_handshake_finishing_after_shut_down_gets_no_session() {
         .await
         .expect("owner")
         .modules()
-        .token_issue()
-        .call(ops::token_issue::Args {
-            module: ModuleId::from(BRIDGE),
-            issued_by: None,
-        })
+        .token_issue(ModuleId::from(BRIDGE), None)
         .await
         .expect("token_issue")
         .token;

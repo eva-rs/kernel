@@ -27,7 +27,6 @@ use eva::{
 };
 use eva_sdk::{
     Event, Kernel, Module, ServiceConfig, ToolContent, ToolCtx, ToolError, ToolResult, Topic,
-    prelude::*,
     protocol::{
         requests::{kv, surfaces},
         types::Value,
@@ -81,32 +80,17 @@ async fn entrypoint(_: NoArgs, cfgs: ComponentConfigs) -> eyre::Result<()> {
     // Идемпотентно для создателя: безопасно звать на каждом старте.
     let surfaces::create::Ok { surface } = kernel
         .surfaces()
-        .create()
-        .call(surfaces::create::Args {
-            id: SURFACE.into(),
-            name: "Echo".into(),
-            rules: None,
-        })
+        .create(SURFACE.into(), "Echo".into(), None)
         .await?;
 
-    let kv::get::Ok { value } = kernel
-        .kv()
-        .get()
-        .call(kv::get::Args {
-            key: "starts".into(),
-        })
-        .await?;
+    let kv::get::Ok { value } = kernel.kv().get("starts".into()).await?;
     let starts = match value {
         Some(Value::Integer(n)) => n + 1,
         _ => 1,
     };
     kernel
         .kv()
-        .set()
-        .call(kv::set::Args {
-            key: "starts".into(),
-            value: Value::Integer(starts),
-        })
+        .set("starts".into(), Value::Integer(starts))
         .await?;
     log::info!(surface:% = surface.id, starts; "ready");
 

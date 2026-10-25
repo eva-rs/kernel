@@ -96,13 +96,13 @@ macro_rules! route {
             kind: OpKind::$kind,
             run: Run::Unary(|mut session, params| {
                 Box::pin(async move {
-                    let result = unary(session.$accessor().$method(), params).await;
+                    let result = unary(session.$accessor().inner_mut().$method(), params).await;
                     result
                 })
             }),
             http: Some(|mut session, call| {
                 Box::pin(async move {
-                    let reply = http::unary(session.$accessor().$method(), call).await;
+                    let reply = http::unary(session.$accessor().inner_mut().$method(), call).await;
                     reply
                 })
             }),
@@ -113,7 +113,7 @@ macro_rules! route {
             kind: OpKind::Stream,
             run: Run::Stream(|mut session, params| {
                 Box::pin(async move {
-                    let result = stream(session.$accessor().$method(), params).await;
+                    let result = stream(session.$accessor().inner_mut().$method(), params, |ok| ok.0).await;
                     result
                 })
             }),
@@ -128,7 +128,7 @@ macro_rules! route {
                     type Args = $Args;
 
                     let args = |meta| Args { meta, body };
-                    let result = upload(session.$accessor().$method(), params, args).await;
+                    let result = upload(session.$accessor().inner_mut().$method(), params, args).await;
                     result
                 })
             }),
@@ -140,7 +140,10 @@ macro_rules! route {
 macro_rules! routes {
     ($(
         $segment:ident {$(
-            $accessor:ident : $Trait:ident {$(
+            $accessor:ident : $Trait:ident {
+                trait: $TraitPath:path,
+                client: $Client:path,
+                $(
                 $(#[$flag:ident])*
                 $method:ident = $endpoint:ident {
                     args: $Args:ty,
@@ -153,7 +156,7 @@ macro_rules! routes {
         )*}
     )*) => {
         fn routes<S: IsSession + 'static>() -> Vec<(String, Route<S>)> {
-            $($(use eva_core::service::$segment::$Trait as _;)*)*
+            $($(use $TraitPath as _;)*)*
 
             vec![$($($(
                 (
@@ -183,9 +186,10 @@ where
     }
 }
 
-async fn stream<A, T, E>(
-    mut step: impl CallStep<A, Output = Response<Items<T, E>, E>>,
+async fn stream<A, T, E, O>(
+    mut step: impl CallStep<A, Output = Response<O, E>>,
     params: Payload,
+    unwrap: impl FnOnce(O) -> Items<T, E>,
 ) -> Result<Outgoing, RpcError>
 where
     A: DeserializeOwned,
@@ -193,7 +197,7 @@ where
     E: Serialize + HasCode + fmt::Display + 'static,
 {
     let args = codec::decode(&params).map_err(codec::bad_params)?;
-    let items = step.call(args).await.map_err(|e| codec::typed(&e))?;
+    let items = unwrap(step.call(args).await.map_err(|e| codec::typed(&e))?);
     Ok(Box::pin(items.map(|item| match item {
         Ok(item) => encode_ok(&item),
         Err(error) => Err(codec::typed(&error)),

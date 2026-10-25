@@ -6,7 +6,7 @@ use crate::{
     subsystems::{tools::schema::input_schema, turns::ports::ToolsetCall},
 };
 use eva::data;
-use eva_core::{CallStep as _, service::blobs::Blobs as _};
+use eva_core::{CallStep as _, service::Blobs::Trait as _};
 use eva_protocol::{
     errors::Aux,
     requests::blobs::{get, put},
@@ -98,7 +98,7 @@ pub async fn call<C: Components>(
                 Ok(bytes::Bytes::from(bytes))
             })),
         };
-        return Ok(match session.blobs().put().call(args).await {
+        return Ok(match session.blobs().inner_mut().put().call(args).await {
             Ok(result) => ToolResult::ok(vec![
                 ToolContent::text(json!({"id": result.id}).to_string()),
                 ToolContent::Blob { id: result.id },
@@ -110,15 +110,7 @@ pub async fn call<C: Components>(
         Ok(args) => args,
         Err(e) => return Ok(ToolResult::error(format!("invalid input: {e}"))),
     };
-    let mut stream = match session
-        .blobs()
-        .get()
-        .call(get::Args {
-            id: args.id,
-            offset: 0,
-        })
-        .await
-    {
+    let mut stream = match session.blobs().get(args.id, 0).await.map(|ok| ok.0) {
         Ok(stream) => stream,
         Err(error) => return Ok(ToolResult::error(error.to_string())),
     };

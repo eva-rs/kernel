@@ -6,7 +6,7 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{CLIENT, OTHER, Outcome, SVC, TestSession, client, matrix_callers, outcome, service};
-use eva_core::{CallStep as _, service::modules::Modules as _};
+use eva_core::{CallStep as _, service::Modules::Trait as _};
 use eva_protocol::{
     errors::{Aux, Generic},
     requests::modules::{add, list, remove, token_issue, token_revoke},
@@ -88,7 +88,6 @@ async fn list_modules(session: &mut TestSession) -> Vec<eva_protocol::types::mod
     session
         .modules()
         .list()
-        .call(list::Args {})
         .await
         .expect("modules.list")
         .modules
@@ -164,12 +163,14 @@ async fn list_kind_comes_from_the_registry_and_live_tokens() {
 
     client
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("tablet"))
         .await
         .expect("issue");
     client
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", Some(KEY)))
         .await
@@ -196,6 +197,7 @@ async fn list_kind_comes_from_the_registry_and_live_tokens() {
 
     client
         .modules()
+        .inner_mut()
         .token_revoke()
         .call(revoke("tablet"))
         .await
@@ -214,6 +216,7 @@ async fn a_never_dialed_registry_entry_is_listed_offline() {
     let mut client = h.client_session().await;
     client
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", Some(KEY)))
         .await
@@ -260,6 +263,7 @@ async fn add_generates_a_key_once_and_stores_it_as_is() {
 
     let add::Ok { key } = client
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", None))
         .await
@@ -274,6 +278,7 @@ async fn add_generates_a_key_once_and_stores_it_as_is() {
 
     let add::Ok { key: shown } = client
         .modules()
+        .inner_mut()
         .add()
         .call(add("mcp", Some(KEY)))
         .await
@@ -315,15 +320,26 @@ async fn add_rejects_bad_ids_and_weak_keys() {
         "a/b",
         "9lives",
     ] {
-        let res = client.modules().add().call(add(bad, Some(KEY))).await;
+        let res = client
+            .modules()
+            .inner_mut()
+            .add()
+            .call(add(bad, Some(KEY)))
+            .await;
         assert_eq!(outcome(&res), Outcome::Invalid, "{bad:?}: {res:?}");
     }
     for weak in ["", "short", &"k".repeat(31), "\n"] {
-        let res = client.modules().add().call(add("bridge", Some(weak))).await;
+        let res = client
+            .modules()
+            .inner_mut()
+            .add()
+            .call(add("bridge", Some(weak)))
+            .await;
         assert_eq!(outcome(&res), Outcome::Invalid, "{weak:?}: {res:?}");
     }
     client
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", Some(&"k".repeat(32))))
         .await
@@ -338,19 +354,26 @@ async fn add_of_a_taken_id_is_taken() {
     let mut client = h.client_session().await;
     client
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("tablet"))
         .await
         .expect("issue");
     client
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", Some(KEY)))
         .await
         .expect("add");
 
     for taken in [SVC, CLIENT, "tablet", "bridge"] {
-        let res = client.modules().add().call(add(taken, Some(KEY))).await;
+        let res = client
+            .modules()
+            .inner_mut()
+            .add()
+            .call(add(taken, Some(KEY)))
+            .await;
         assert!(
             matches!(&res, Err(Generic::Spec(add::Err::Taken(e))) if e.module.as_str() == taken),
             "{taken}: {res:?}"
@@ -360,12 +383,14 @@ async fn add_of_a_taken_id_is_taken() {
 
     client
         .modules()
+        .inner_mut()
         .token_revoke()
         .call(revoke("tablet"))
         .await
         .expect("revoke");
     client
         .modules()
+        .inner_mut()
         .add()
         .call(add("tablet", Some(KEY)))
         .await
@@ -377,13 +402,23 @@ async fn remove_takes_only_runtime_entries() {
     let h = common::start_with(common::with_modules).await;
     let mut client = h.client_session().await;
 
-    let res = client.modules().remove().call(remove(SVC)).await;
+    let res = client
+        .modules()
+        .inner_mut()
+        .remove()
+        .call(remove(SVC))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.services")),
         "config is stronger: {res:?}"
     );
     for unknown in ["bridge", CLIENT] {
-        let res = client.modules().remove().call(remove(unknown)).await;
+        let res = client
+            .modules()
+            .inner_mut()
+            .remove()
+            .call(remove(unknown))
+            .await;
         assert!(
             matches!(&res, Err(Generic::Spec(remove::Err::ServiceNotFound(e))) if e.module.as_str() == unknown),
             "{unknown}: {res:?}"
@@ -392,6 +427,7 @@ async fn remove_takes_only_runtime_entries() {
 
     client
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", Some(KEY)))
         .await
@@ -399,6 +435,7 @@ async fn remove_takes_only_runtime_entries() {
     h.register_module("bridge").await;
     client
         .modules()
+        .inner_mut()
         .remove()
         .call(remove("bridge"))
         .await
@@ -411,13 +448,19 @@ async fn remove_takes_only_runtime_entries() {
         .expect("the modules row stays");
     assert_eq!((bridge.kind, &bridge.dial), (None, &None));
 
-    let res = client.modules().remove().call(remove("bridge")).await;
+    let res = client
+        .modules()
+        .inner_mut()
+        .remove()
+        .call(remove("bridge"))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Spec(remove::Err::ServiceNotFound(_)))),
         "second remove: {res:?}"
     );
     client
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", Some(KEY)))
         .await
@@ -431,6 +474,7 @@ async fn token_issue_stores_only_the_hash() {
 
     let token_issue::Ok { token } = client
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("tablet"))
         .await
@@ -469,6 +513,7 @@ async fn token_issue_rotates_the_live_token() {
 
     let first = client
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("tablet"))
         .await
@@ -476,6 +521,7 @@ async fn token_issue_rotates_the_live_token() {
         .token;
     let second = client
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("tablet"))
         .await
@@ -497,12 +543,22 @@ async fn token_issue_rejects_reserved_and_malformed_names() {
     let mut client = h.client_session().await;
 
     for reserved in ["kernel", "system", "local"] {
-        let res = client.modules().token_issue().call(issue(reserved)).await;
+        let res = client
+            .modules()
+            .inner_mut()
+            .token_issue()
+            .call(issue(reserved))
+            .await;
         assert_eq!(outcome(&res), Outcome::Invalid, "{reserved}: {res:?}");
     }
 
     for bad in ["", "Bridge", "has space", "a/b", "9lives", &"a".repeat(65)] {
-        let res = client.modules().token_issue().call(issue(bad)).await;
+        let res = client
+            .modules()
+            .inner_mut()
+            .token_issue()
+            .call(issue(bad))
+            .await;
         assert_eq!(outcome(&res), Outcome::Invalid, "{bad:?}: {res:?}");
     }
 }
@@ -515,6 +571,7 @@ async fn issued_by_is_the_kernel_tool_path_only() {
 
     let res = client
         .modules()
+        .inner_mut()
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::system()),
@@ -523,7 +580,12 @@ async fn issued_by_is_the_kernel_tool_path_only() {
         .await;
     assert_eq!(outcome(&res), Outcome::Forbidden, "{res:?}");
 
-    let res = kernel.modules().token_issue().call(issue("tablet")).await;
+    let res = kernel
+        .modules()
+        .inner_mut()
+        .token_issue()
+        .call(issue("tablet"))
+        .await;
     assert_eq!(
         outcome(&res),
         Outcome::Invalid,
@@ -532,6 +594,7 @@ async fn issued_by_is_the_kernel_tool_path_only() {
 
     let res = kernel
         .modules()
+        .inner_mut()
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::numbered(99)),
@@ -545,6 +608,7 @@ async fn issued_by_is_the_kernel_tool_path_only() {
 
     kernel
         .modules()
+        .inner_mut()
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::system()),
@@ -569,7 +633,12 @@ async fn token_revoke_needs_a_live_token() {
     let h = common::start().await;
     let mut client = h.client_session().await;
 
-    let res = client.modules().token_revoke().call(revoke("tablet")).await;
+    let res = client
+        .modules()
+        .inner_mut()
+        .token_revoke()
+        .call(revoke("tablet"))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Spec(token_revoke::Err::NotFound(e))) if e.module.as_str() == "tablet"),
         "{res:?}"
@@ -577,6 +646,7 @@ async fn token_revoke_needs_a_live_token() {
 
     let token = client
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("tablet"))
         .await
@@ -584,13 +654,19 @@ async fn token_revoke_needs_a_live_token() {
         .token;
     client
         .modules()
+        .inner_mut()
         .token_revoke()
         .call(revoke("tablet"))
         .await
         .expect("revoke");
     assert_eq!(live(&h, &token).await, None);
 
-    let res = client.modules().token_revoke().call(revoke("tablet")).await;
+    let res = client
+        .modules()
+        .inner_mut()
+        .token_revoke()
+        .call(revoke("tablet"))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Spec(token_revoke::Err::NotFound(_)))),
         "second revoke: {res:?}"
@@ -615,7 +691,8 @@ async fn policy_matrix() {
             Outcome::Forbidden
         };
         let mut session = h.session(caller.clone()).await;
-        let mut modules = session.modules();
+        let mut modules_client = session.modules();
+        let modules = modules_client.inner_mut();
 
         let res = modules.list().call(list::Args {}).await;
         assert_eq!(outcome(&res), expect, "{who} list");
@@ -638,9 +715,19 @@ async fn policy_matrix() {
 
     // Отказ Policy — до базы: чужой модуль не узнает, есть ли токен или сервис.
     let mut svc = h.session(service(SVC)).await;
-    let res = svc.modules().token_revoke().call(revoke("nobody")).await;
+    let res = svc
+        .modules()
+        .inner_mut()
+        .token_revoke()
+        .call(revoke("nobody"))
+        .await;
     assert_eq!(outcome(&res), Outcome::Forbidden);
-    let res = svc.modules().remove().call(remove("nobody")).await;
+    let res = svc
+        .modules()
+        .inner_mut()
+        .remove()
+        .call(remove("nobody"))
+        .await;
     assert_eq!(outcome(&res), Outcome::Forbidden);
 }
 
@@ -650,13 +737,28 @@ async fn database_failure_is_aux_db() {
     let mut client = h.session(client(CLIENT)).await;
     h.db_fail.store(true, Ordering::Relaxed);
 
-    let res = client.modules().list().call(list::Args {}).await;
+    let res = client.modules().list().await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
-    let res = client.modules().token_issue().call(issue("tablet")).await;
+    let res = client
+        .modules()
+        .inner_mut()
+        .token_issue()
+        .call(issue("tablet"))
+        .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
-    let res = client.modules().add().call(add("bridge", Some(KEY))).await;
+    let res = client
+        .modules()
+        .inner_mut()
+        .add()
+        .call(add("bridge", Some(KEY)))
+        .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
-    let res = client.modules().remove().call(remove("bridge")).await;
+    let res = client
+        .modules()
+        .inner_mut()
+        .remove()
+        .call(remove("bridge"))
+        .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
 }
 
@@ -670,6 +772,7 @@ async fn token_issue_for_a_registered_module_is_a_conflict() {
 
     let res = owner
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue(common::CLIENT2))
         .await;
@@ -677,13 +780,19 @@ async fn token_issue_for_a_registered_module_is_a_conflict() {
         matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.tokens")),
         "{res:?}"
     );
-    let res = owner.modules().token_issue().call(issue(SVC)).await;
+    let res = owner
+        .modules()
+        .inner_mut()
+        .token_issue()
+        .call(issue(SVC))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.services")),
         "{res:?}"
     );
     let res = kernel
         .modules()
+        .inner_mut()
         .token_issue()
         .call(token_issue::Args {
             issued_by: Some(PersonId::system()),
@@ -694,11 +803,17 @@ async fn token_issue_for_a_registered_module_is_a_conflict() {
 
     owner
         .modules()
+        .inner_mut()
         .add()
         .call(add("bridge", Some(KEY)))
         .await
         .expect("add");
-    let res = owner.modules().token_issue().call(issue("bridge")).await;
+    let res = owner
+        .modules()
+        .inner_mut()
+        .token_issue()
+        .call(issue("bridge"))
+        .await;
     assert!(
         matches!(&res, Err(Generic::Aux(Aux::Conflict(why))) if why.contains("modules.add")),
         "{res:?}"
@@ -717,6 +832,7 @@ async fn a_module_cannot_rotate_the_token_of_its_own_session() {
     let mut owner = h.client_session().await;
     let first = owner
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("tablet"))
         .await
@@ -724,7 +840,12 @@ async fn a_module_cannot_rotate_the_token_of_its_own_session() {
         .token;
 
     let mut tablet = h.session(client("tablet")).await;
-    let res = tablet.modules().token_issue().call(issue("tablet")).await;
+    let res = tablet
+        .modules()
+        .inner_mut()
+        .token_issue()
+        .call(issue("tablet"))
+        .await;
     assert_eq!(outcome(&res), Outcome::Conflict, "{res:?}");
     assert_eq!(
         live(&h, &first).await,
@@ -734,6 +855,7 @@ async fn a_module_cannot_rotate_the_token_of_its_own_session() {
 
     tablet
         .modules()
+        .inner_mut()
         .token_issue()
         .call(issue("laptop"))
         .await

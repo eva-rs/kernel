@@ -1,26 +1,20 @@
 //! Подагенты.
 
-use eva::data;
+use crate::requests::Response;
+use eva::service;
 
 use crate::types::{ChatId, agent::Agent};
 
-pub mod list {
-    use super::*;
-
-    #[data]
-    #[derive(Default)]
-    pub struct Args {
+#[service(export, result = Response)]
+pub trait Agents {
+    #[args(derive(Default))]
+    fn list(
         /// Подагенты этого тимлида; `None` — все.
-        pub chat: Option<ChatId>,
+        chat: Option<ChatId>,
+    ) -> ok! {
+        agents: Vec<Agent>,
+    };
+    embed! {
+        code!(Err => []);
     }
-
-    #[data]
-    pub struct Ok {
-        pub agents: Vec<Agent>,
-    }
-
-    #[data(error, display("_"))]
-    pub enum Err {}
-
-    code!(Err => []);
 }

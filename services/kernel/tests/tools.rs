@@ -1,6 +1,6 @@
 mod common;
 
-use eva_core::{CallStep as _, service::tools::Tools as _};
+use eva_core::{CallStep as _, service::Tools::Trait as _};
 use eva_kernel::{
     db::{Db as _, DbResult, Queries as _},
     subsystems::tools::{
@@ -48,6 +48,7 @@ async fn catalog_registration_reconnect_and_overlay_share_one_registry() {
     let mut session = h.client_session().await;
     let entries = session
         .tools()
+        .inner_mut()
         .catalog()
         .call(catalog::Args {
             path: Some("project".into()),

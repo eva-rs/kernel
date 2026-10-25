@@ -5,7 +5,7 @@ mod common;
 
 use common::{Harness, Outcome, outcome};
 use eva::time::Clock as _;
-use eva_core::{CallStep as _, service::agents::Agents as _};
+use eva_core::{CallStep as _, service::Agents::Trait as _};
 use eva_kernel::db::{Db as _, DbResult};
 use eva_protocol::{
     errors::{Aux, Generic},
@@ -65,10 +65,7 @@ async fn list(h: &Harness, chat: Option<i64>) -> list::Ok {
     h.client_session()
         .await
         .agents()
-        .list()
-        .call(list::Args {
-            chat: chat.map(ChatId),
-        })
+        .list(chat.map(ChatId))
         .await
         .expect("agents.list")
 }
@@ -133,10 +130,7 @@ async fn corrupt_whitelist_is_a_db_error() {
         .client_session()
         .await
         .agents()
-        .list()
-        .call(list::Args {
-            chat: Some(ChatId(1)),
-        })
+        .list(Some(ChatId(1)))
         .await;
     assert!(matches!(res, Err(Generic::Aux(Aux::Db(_)))), "{res:?}");
 }
@@ -156,6 +150,7 @@ async fn agents_matrix() {
             &h.session(caller)
                 .await
                 .agents()
+                .inner_mut()
                 .list()
                 .call(list::Args::default())
                 .await,
