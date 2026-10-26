@@ -14,7 +14,7 @@ use eva_rpc::{
 
 use crate::{
     harness::{Harness, KEY, Via, config, service_hello},
-    kernel::SERVICE,
+    soul::SERVICE,
 };
 
 fn uds(path: &Path) -> ServiceListen {
@@ -104,10 +104,10 @@ async fn an_unnamed_inherited_socket_fails_the_start() {
     assert!(!message.contains("named.sock"), "{message}");
 }
 
-/// Слушатели клиентов ядра узнают свои сокеты по адресу: uds по пути, ws по
+/// Слушатели soul для клиентов узнают свои сокеты по адресу: uds по пути, ws по
 /// `ip:port`; свой bind на drop убирает файл, унаследованный — нет.
 #[tokio::test(flavor = "multi_thread")]
-async fn kernel_listeners_take_inherited_sockets_by_address() {
+async fn soul_listeners_take_inherited_sockets_by_address() {
     let cfg = config();
     let dir = tempfile::tempdir().unwrap();
     let inherited_path = dir.path().join("inherited.sock");

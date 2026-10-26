@@ -48,7 +48,7 @@ expression: "body(&conversation(SONNET, CacheMode::Long), SONNET)[\"messages\"]"
           "ttl": "1h",
           "type": "ephemeral"
         },
-        "text": "[kernel] reminder",
+        "text": "[soul] reminder",
         "type": "text"
       }
     ],

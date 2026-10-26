@@ -1,10 +1,10 @@
 # eva-protocol
 
-Типы протокола Евы: аргументы, результаты и ошибки каждой операции, сущности домена и проводные формы обмена ядро ↔ модуль. Один и тот же модуль операции читают библиотека ядра, RPC-сервер, RPC-клиент модуля и тул модели, поэтому форма вызова у всех одна.
+Типы протокола Евы: аргументы, результаты и ошибки каждой операции, сущности домена и проводные формы обмена soul ↔ модуль. Один и тот же модуль операции читают библиотека soul, RPC-сервер, RPC-клиент модуля и тул модели, поэтому форма вызова у всех одна.
 
 ## Место в слоях
 
-Нижний слой воркспейса: от него зависят все остальные крейты, включая клиентов. Сам зависит только от фреймворка [eva](https://git.desu.church/VienDesu/eva) и крейтов `serde`, `serde_json`, `serde_with`, `serde_bytes`, `futures-core` (трейт `Stream`). Никакого I/O и рантайма: без `tokio`, сети, файлов и БД; не зависит от `eva-core` и выше. Строк конкретных вендоров и поверхностей здесь нет — их место в `providers/*`.
+Нижний слой воркспейса: от него зависят все остальные крейты, включая клиентов. Сам зависит только от фреймворка [eva](https://github.com/nerodono/eva) и крейтов `serde`, `serde_json`, `serde_with`, `serde_bytes`, `futures-core` (трейт `Stream`). Никакого I/O и рантайма: без `tokio`, сети, файлов и БД; не зависит от `eva-core` и выше. Строк конкретных вендоров и поверхностей здесь нет — их место в `providers/*`.
 
 ## Точки входа
 
@@ -19,14 +19,14 @@
 | `wire::{Frame, RpcError, ErrorCode}` | кадры RPC и коды ошибок провода |
 | `wire::handshake::{Hello, Welcome, ProtoVersion}` | handshake; `ProtoVersion::CURRENT` — `MAJOR.MINOR` версии крейта |
 | `wire::Capabilities` | `provider`, `tools`, `events`, `hooks`, `ask` из `hello` |
-| `wire::{events, hooks, tools, provider}` | направление ядро → модуль |
+| `wire::{events, hooks, tools, provider}` | направление soul → модуль |
 | `wire::method` | методы вне операций: `hello`, `ping`, `close`, `tools.call`, `events.publish`, `provider.*` |
 
 Правила формы:
 
 - Кодировка провода — msgpack с именами полей (`rmp_serde::to_vec_named`).
-- `hello` не несёт имени модуля: клиенту идентичность даёт токен (id — ключ записи `modules.tokens` или строки `module_tokens`), сервису — запись реестра, которую набрало ядро (`modules.services` или `module_services`); id возвращает `Welcome::module`, вид — `Welcome::kind`.
-- Surface — не capability, а сущность ядра: модуль создаёт её операцией `surfaces.create`.
+- `hello` не несёт имени модуля: клиенту идентичность даёт токен (id — ключ записи `modules.tokens` или строки `module_tokens`), сервису — запись реестра, которую набрал soul (`modules.services` или `module_services`); id возвращает `Welcome::module`, вид — `Welcome::kind`.
+- Surface — не capability, а сущность soul: модуль создаёт её операцией `surfaces.create`.
 - Enum'ы, которые принимает пир, терпят незнакомый вариант (`Unknown` или ближайший общий); незнакомые поля структур пропускаются. Аргументы запросов строгие: непонятое — `invalid_params`.
 - `Patch<T>`: отсутствие поля, `null` и `"keep"` — не трогать; `{change: v}` — записать; `{change: null}` у `Patch<Option<T>>` — очистить.
 

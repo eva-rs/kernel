@@ -1,6 +1,6 @@
 //! Эмбеддер за трейтом `Provider`: локальный OpenAI-совместимый сервер
 //! `/v1/embeddings` (llama-server, text-embeddings-inference, vLLM, …).
-//! Веса модели живут в сервере, не в ядре: крейт — только HTTP-клиент.
+//! Веса модели живут в сервере, не в soul: крейт — только HTTP-клиент.
 //!
 //! Процессный провайдер криптографии rustls ставит бинарь до
 //! [`EmbedLocalProvider::new`]: без него сборка HTTP-клиента паникует.
@@ -35,7 +35,7 @@ pub struct Config {
     /// Модели сервера: `GET /models` размерности не отдаёт, поэтому они объявляются здесь.
     pub models: BTreeMap<ModelId, EmbedDecl>,
     /// `None` — по хосту `base_url` (loopback); `Some(true)` — хозяин ручается, что
-    /// сервер его: только такому эмбеддеру ядро отдаёт private-текст.
+    /// сервер его: только такому эмбеддеру soul отдаёт private-текст.
     pub local: Option<bool>,
 }
 
@@ -65,7 +65,7 @@ pub struct EmbedLocalProvider {
 }
 
 impl EmbedLocalProvider {
-    /// Сеть при сборке не трогается: сервер может подняться позже ядра.
+    /// Сеть при сборке не трогается: сервер может подняться позже soul.
     pub fn new(config: Config) -> Result<Self, BuildError> {
         let fail = |reason: String| BuildError { reason };
         let base = Url::parse(config.base_url.trim_end_matches('/'))
@@ -265,7 +265,7 @@ fn error(kind: ProviderErrorKind, raw: impl Into<String>) -> ProviderError {
     }
 }
 
-/// Инференс на машине ядра: только такому эмбеддеру ядро отдаёт private-текст.
+/// Инференс на машине soul: только такому эмбеддеру soul отдаёт private-текст.
 fn is_loopback(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;

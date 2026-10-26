@@ -76,14 +76,15 @@ fn schema_is_inline_without_title() {
 #[test]
 fn builder_fills_every_section() {
     let caps = Module::new()
-        .group("x", "Messenger X actions")
-        .tool("x.send", send)
+        .group_path("x", "Messenger X actions")
+        .tool_path("x.send", send)
         .ends_turn(true)
         .master_only(true)
         .trusted_only(true)
         .needs(&[Need::Hands])
-        .idempotent(true)
-        .tool("x.other", send)
+        .idempotent(false)
+        .parallel_safe(false)
+        .tool_path("x.other", send)
         .description("Another tool.")
         .on_event(Topic::ChatDeleted, |_, _| async {})
         .on_event(Topic::ChatCreated, |_, _| async {})
@@ -100,12 +101,14 @@ fn builder_fills_every_section() {
     let first = &tools.tools[0];
     assert_eq!(first.path, "x.send");
     assert_eq!(first.description, "Send a message to the chat.");
-    assert!(first.ends_turn && first.master_only && first.trusted_only && first.idempotent);
+    assert!(first.ends_turn && first.master_only && first.trusted_only);
+    assert!(!first.idempotent && !first.parallel_safe);
     assert_eq!(first.needs, vec![Need::Hands]);
     assert!(first.input.get("description").is_none());
     let second = &tools.tools[1];
     assert_eq!(second.description, "Another tool.");
     assert!(!second.ends_turn && !second.master_only);
+    assert!(second.idempotent && second.parallel_safe);
 
     let events = caps.events.expect("events section");
     assert_eq!(
@@ -130,5 +133,7 @@ fn hook_point_must_match_input() {
 #[test]
 #[should_panic(expected = "declared twice")]
 fn tool_path_is_unique() {
-    _ = Module::new().tool("x.send", send).tool("x.send", send);
+    _ = Module::new()
+        .tool_path("x.send", send)
+        .tool_path("x.send", send);
 }

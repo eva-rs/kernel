@@ -1,4 +1,4 @@
-//! Поддельное ядро: handshake руками, `surfaces.*` в памяти, вызовы ядро →
+//! Поддельный soul: handshake руками, `surfaces.*` в памяти, вызовы soul →
 //! модуль через `ModuleClient`.
 
 use std::{
@@ -27,7 +27,7 @@ use eva_rpc::{
     Call, Config, Conn, IdSeq, Kind, ModuleClient, Peer, Service, codec, transport::Outbound,
 };
 
-/// Id модуля, который поддельное ядро нашло по токену.
+/// Id модуля, найденного поддельным soul по токену.
 pub const MODULE: &str = "x-bridge";
 
 /// Токен в форме конфига.
@@ -39,7 +39,7 @@ pub fn welcome(session: &str, tool_ids: &[(&str, i64)]) -> Welcome {
     Welcome {
         session_id: SessionId::from(session),
         module: ModuleId::from(MODULE),
-        kernel_version: "0.0.0-test".to_owned(),
+        soul_version: "0.0.0-test".to_owned(),
         proto_version: ProtoVersion::CURRENT,
         kind: ModuleKind::Service,
         services: Vec::new(),
@@ -75,7 +75,7 @@ pub fn turn() -> TurnCtx {
     }
 }
 
-/// Принятая поддельным ядром сессия.
+/// Сессия, принятая поддельным soul.
 pub struct Session {
     pub hello: Hello,
     /// `id` запроса `hello`: по нему видно продолжение счётчика после resume.
@@ -89,7 +89,7 @@ impl Session {
     }
 }
 
-/// Отвечает на `hello` и поднимает пир ядра над `service`.
+/// Отвечает на `hello` и поднимает пир soul над `service`.
 pub async fn accept<S: Service>(mut conn: Conn, welcome: Welcome, service: S) -> Session {
     let raw = conn
         .recv()

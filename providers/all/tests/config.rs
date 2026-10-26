@@ -87,7 +87,7 @@ fn unknown_kind_is_rejected() {
     assert!(parse(&[("base_url", "x")]).is_err(), "kind is required");
 }
 
-/// Ошибка сборки — отказ старта ядра: она называет путь ключа конфига.
+/// Ошибка сборки — отказ старта soul: она называет путь ключа конфига.
 #[test]
 fn build_error_names_the_config_key_path() {
     // ключ читается до сборки HTTP-клиента: ни рантайма, ни провайдера rustls тесту не нужно

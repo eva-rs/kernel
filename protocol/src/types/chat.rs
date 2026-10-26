@@ -32,7 +32,7 @@ pub struct Chat {
     pub compact_at: Option<f32>,
     /// Явный trust; эффективный считается по цепочке surface → folder → chat.
     pub trusted: Option<bool>,
-    /// Эффективный trust на момент чтения — считает ядро.
+    /// Эффективный trust на момент чтения — его считает soul.
     pub trusted_chat: bool,
     pub project: Option<String>,
     pub workdir: Option<String>,

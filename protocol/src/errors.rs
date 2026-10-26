@@ -104,7 +104,7 @@ pub enum Aux {
     /// Состояние изменилось под вызовом.
     #[display("conflict: {_0}")]
     Conflict(String),
-    /// Баг ядра.
+    /// Баг soul.
     #[display("{_0}")]
     Internal(String),
 }

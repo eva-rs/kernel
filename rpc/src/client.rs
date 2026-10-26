@@ -1,5 +1,5 @@
 //! Сторона модуля: `hello` → `welcome` и `RpcSession`, реализующая все
-//! трейты неймспейсов поверх RPC — код модуля совпадает с кодом ядра (`11 §6`).
+//! трейты неймспейсов поверх RPC — код модуля совпадает с кодом soul (`11 §6`).
 
 use std::{
     marker::PhantomData,
@@ -54,14 +54,14 @@ pub enum ConnectError {
     /// Сокет, TLS или Upgrade не поднялись.
     #[display("transport: {_0}")]
     Transport(String),
-    /// Ядро ответило на `hello` отказом: `unauthorized`, `proto_version`, …
+    /// Soul ответил на `hello` отказом: `unauthorized`, `proto_version`, …
     #[display("rejected: {_0}")]
     Rejected(RpcError),
-    /// Ядро нарушило handshake: кадр до `welcome`, молчание, мусор.
+    /// Soul нарушил handshake: кадр до `welcome`, молчание, мусор.
     #[display("handshake: {_0}")]
     Handshake(String),
     /// Негоден конфиг самого модуля (секрет токена не прочитался, `hello`
-    /// не влез в `max_hello`): ядру ничего не ушло.
+    /// не влез в `max_hello`): в soul ничего не ушло.
     #[display("config: {_0}")]
     Config(String),
 }
@@ -96,7 +96,7 @@ impl std::fmt::Debug for RpcClient {
 }
 
 impl RpcClient {
-    /// Подключение без обработчиков ядро → модуль: такие вызовы получат `unknown_method`.
+    /// Подключение без обработчиков soul → модуль: такие вызовы получат `unknown_method`.
     pub async fn connect(target: &Url, hello: Hello) -> Result<(Self, Welcome), ConnectError> {
         Self::connect_with(target, hello, ClientOptions::default(), NoHandler).await
     }
@@ -129,7 +129,7 @@ impl RpcClient {
         Self::establish(conn, request, options, handler).await
     }
 
-    /// Handshake сервиса на соединении, которое набрало ядро
+    /// Handshake сервиса на соединении, которое soul набрал сам
     /// (`Incoming::secure`): `hello` без токена, ограничен лишь `max_frame`.
     pub async fn answer<H: ModuleHandler>(
         conn: Conn,
@@ -222,8 +222,8 @@ impl SessionMaker for RpcClient {
 
 type HandshakeFailure = (ConnectError, Option<RpcError>);
 
-/// Кадр `hello`, собранный до сети: не влезший в `max_hello` ядро всё
-/// равно отвергло бы, поэтому он не отправляется.
+/// Кадр `hello`, собранный до сети: soul отверг бы кадр сверх `max_hello`,
+/// поэтому такой не отправляется.
 struct HelloRequest {
     id: u64,
     raw: bytes::Bytes,
@@ -274,7 +274,7 @@ async fn hello_exchange(
 
     let HelloRequest { id, raw } = request;
     if let Err(e) = conn.tx.send(Outbound::Frame(raw)).await {
-        // Ядро рвёт сокет, не дочитав крупный `hello`, но причину кладёт в него раньше.
+        // Soul рвёт сокет, не дочитав крупный `hello`, но причину кладёт в него раньше.
         let reason = tokio::time::timeout(*config.handshake_timeout, close_reason(conn)).await;
         let error = match reason {
             Ok(Some(reason)) => ConnectError::Rejected(reason),
@@ -304,10 +304,10 @@ async fn hello_exchange(
             }
             Err(error) => Err((ConnectError::Rejected(error), None)),
         },
-        // Отказ до разбора `hello` (без id запроса) ядро шлёт уведомлением `close`.
+        // Soul шлёт отказ до разбора `hello` (без id запроса) уведомлением `close`.
         Ok(Frame::Notify(notify)) if notify.method == method::CLOSE => {
             let reason = codec::decode::<RpcError>(&notify.params)
-                .unwrap_or_else(|e| codec::unavailable(format_args!("closed by kernel: {e}")));
+                .unwrap_or_else(|e| codec::unavailable(format_args!("closed by soul: {e}")));
             Err((ConnectError::Rejected(reason), None))
         }
         Ok(_) => Err(protocol("a frame before welcome".to_owned())),
@@ -315,7 +315,7 @@ async fn hello_exchange(
     }
 }
 
-/// Причина из `notify close`, если ядро успело её прислать до обрыва.
+/// Причина из `notify close`, если soul успел её прислать до обрыва.
 async fn close_reason(conn: &mut Conn) -> Option<RpcError> {
     while let Some(Ok(raw)) = conn.rx.next().await {
         if let Ok(Frame::Notify(notify)) = codec::decode_frame(&raw)

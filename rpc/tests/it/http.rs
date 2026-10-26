@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     harness::config,
-    kernel::{Auth, CLIENT_TOKEN, Kernel},
+    soul::{Auth, CLIENT_TOKEN, Soul},
 };
 
 const JSON: &str = "application/json";
@@ -41,18 +41,18 @@ fn http(cors: Cors) -> Listen {
     })
 }
 
-/// Мост над тестовым ядром; сервер живёт, пока жив харнесс.
+/// Мост над тестовым soul; сервер живёт, пока жив харнесс.
 struct Bridge {
     addr: SocketAddr,
     scheme: &'static str,
-    kernel: Kernel,
+    soul: Soul,
     client: reqwest::Client,
     _stop: oneshot::Sender<()>,
 }
 
 impl Bridge {
     async fn start(listen: Listen, config: Config) -> Self {
-        // Клиент на rustls без провайдера по умолчанию: ставим его, как бинарь ядра.
+        // Клиент на rustls без провайдера по умолчанию: ставим его, как бинарь soul.
         eva_rpc::install_crypto_provider();
         Self::with_client(listen, config, reqwest::Client::new()).await
     }
@@ -64,8 +64,8 @@ impl Bridge {
         };
         let listener = Listener::bind(&listen, &config).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let kernel = Kernel::default();
-        let server = Server::new(kernel.clone(), Auth::default(), config);
+        let soul = Soul::default();
+        let server = Server::new(soul.clone(), Auth::default(), config);
         let (stop, stopped) = oneshot::channel::<()>();
         tokio::spawn(async move {
             let shutdown = async {
@@ -76,7 +76,7 @@ impl Bridge {
         Self {
             addr,
             scheme,
-            kernel,
+            soul,
             client,
             _stop: stop,
         }
@@ -155,7 +155,7 @@ async fn json_roundtrip_of_a_mutation_and_a_read() {
     assert_eq!(created["jsonrpc"], "2.0");
     assert_eq!(created["id"], 1);
     assert_eq!(created["result"]["surface"]["id"], "web");
-    assert_eq!(h.kernel.state.creates.load(Ordering::SeqCst), 1);
+    assert_eq!(h.soul.state.creates.load(Ordering::SeqCst), 1);
 
     let got = h
         .rpc(request(
@@ -270,7 +270,7 @@ async fn batch_answers_in_order_and_is_capped() {
     assert_eq!(batch[1]["result"]["surface"]["id"], "b");
     assert_eq!(batch[2]["id"], Value::Null);
     assert_eq!(batch[2]["error"]["code"], -32600);
-    assert_eq!(h.kernel.state.creates.load(Ordering::SeqCst), 2);
+    assert_eq!(h.soul.state.creates.load(Ordering::SeqCst), 2);
 
     let empty = h.rpc(json!([])).await;
     assert_eq!(empty["error"]["code"], -32600);
@@ -296,7 +296,7 @@ async fn batch_answers_in_order_and_is_capped() {
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(body, Value::Null);
-    assert_eq!(h.kernel.state.creates.load(Ordering::SeqCst), 3);
+    assert_eq!(h.soul.state.creates.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -349,7 +349,7 @@ async fn bearer_token_is_checked_before_the_body_is_read() {
         assert_eq!(body["error"]["data"]["code"], "unauthorized");
     }
     assert_eq!(
-        h.kernel.state.creates.load(Ordering::SeqCst),
+        h.soul.state.creates.load(Ordering::SeqCst),
         0,
         "nothing reached the dispatcher"
     );
@@ -426,7 +426,7 @@ async fn media_types_paths_and_body_limit() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(h.kernel.state.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(h.soul.state.creates.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -510,7 +510,7 @@ async fn cors_is_permissive_on_loopback_only_unless_configured() {
         let body: Value = response.json().await.unwrap();
         assert_eq!(body["error"]["data"]["code"], "forbidden");
     }
-    assert_eq!(listed.kernel.state.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(listed.soul.state.creates.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

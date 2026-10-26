@@ -2,13 +2,14 @@
 name = "eva-sdk"
 version.workspace = true
 edition.workspace = true
-description = "Eva SDK: write kernel modules — surfaces, tools, events, hooks — over the library API."
+description = "Eva SDK: write soul modules — surfaces, tools, events, hooks — over the library API."
 
 [dependencies]
 eva-protocol.workspace = true
 eva-core.workspace = true
 eva-rpc.workspace = true
-eva = { workspace = true, features = ["cli", "tokio"] }
+eva-sdk-macros = { path = "macros" }
+eva = { workspace = true, features = ["yaml", "tokio"] }
 serde.workspace = true
 serde_json.workspace = true
 eyre.workspace = true

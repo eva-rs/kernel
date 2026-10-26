@@ -1,5 +1,5 @@
-//! Транспорты (`06 §1`): клиенты звонят ядру по uds (`u32 BE` длина + кадр),
-//! ws и wss (один binary-message — один кадр); ядро набирает сервисы по uds
+//! Транспорты (`06 §1`): клиенты звонят в soul по uds (`u32 BE` длина + кадр),
+//! ws и wss (один binary-message — один кадр); soul набирает сервисы по uds
 //! и tcp под Noise (`service`). Выше транспорта все они — `Conn`: поток сырых
 //! кадров туда и обратно. Особняком `http`: мост JSON-RPC без сессии кадров,
 //! `Server::serve` ведёт его своим циклом.
@@ -174,7 +174,7 @@ impl Conn {
         self.rx.next().await
     }
 
-    /// Пара соединённых концов в памяти: ядро и модуль в одном процессе, тесты.
+    /// Пара соединённых концов в памяти: soul и модуль в одном процессе, тесты.
     pub fn pair(cfg: &Config) -> (Self, Self) {
         let (a, b) = tokio::io::duplex(64 * 1024);
         (
@@ -201,7 +201,7 @@ pub async fn connect(target: &Url, cfg: &Config, tls: &ClientTls) -> Result<Conn
     }
 }
 
-/// Слушатель ядра.
+/// Слушатель soul.
 pub struct Listener {
     kind: ListenerKind,
     cfg: Config,

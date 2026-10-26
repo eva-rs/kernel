@@ -1,7 +1,8 @@
-//! Пределы, которые держат ядро от чужого пира: `max_hello` и места до
+//! Пределы, которые держат soul от чужого пира: `max_hello` и места до
 //! `welcome`, срок подключения клиента, байты загрузок.
 
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
@@ -31,7 +32,7 @@ use eva_rpc::{
 
 use crate::{
     harness::{Harness, Raw, Via, config, hello, ms},
-    kernel::CLIENT_TOKEN,
+    soul::CLIENT_TOKEN,
 };
 
 fn small_hello() -> Config {
@@ -41,7 +42,7 @@ fn small_hello() -> Config {
     }
 }
 
-/// Кадр больше `max_hello` ядро не дочитывает: причина `invalid_params`
+/// Soul не дочитывает кадр больше `max_hello`: причина `invalid_params`
 /// приходит уведомлением `close` сразу, а не по `handshake_timeout`.
 #[tokio::test(flavor = "multi_thread")]
 async fn hello_over_max_hello_is_refused() {
@@ -65,7 +66,7 @@ async fn hello_over_max_hello_is_refused() {
     // Раньше `handshake_timeout` (2 с): закрывает бюджет, а не таймер.
     let raw = tokio::time::timeout(Duration::from_secs(1), frames.next())
         .await
-        .expect("the kernel waited for the whole oversized hello")
+        .expect("the soul waited for the whole oversized hello")
         .expect("closed without a reason")
         .unwrap();
     let Frame::Notify(notify) = codec::decode_frame(&raw).unwrap() else {
@@ -100,7 +101,7 @@ async fn oversized_hello_is_rejected_not_dropped() {
     }
 }
 
-/// Свой `max_hello` клиент проверяет до сети: адреса без ядра он даже не касается.
+/// Свой `max_hello` клиент проверяет до сети: адреса без soul он даже не касается.
 #[tokio::test(flavor = "multi_thread")]
 async fn hello_over_own_max_hello_is_not_sent() {
     let dir = tempfile::tempdir().unwrap();
@@ -257,7 +258,7 @@ async fn upload_chunk_over_blob_chunk_is_refused() {
     let error = raw.response(1).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidParams, "{error}");
     assert!(error.message.contains("blob_chunk"), "{error}");
-    assert!(h.kernel.state.uploads.lock().unwrap().is_empty());
+    assert!(h.soul.state.uploads.lock().unwrap().is_empty());
 }
 
 /// Загрузки одной сессии вместе держат не больше `stream_buffer × blob_chunk`
@@ -270,7 +271,7 @@ async fn upload_buffers_are_capped_per_session() {
         ..config()
     };
     let h = Harness::with(Via::Uds, cfg).await;
-    *h.kernel.state.put_delay.lock().unwrap() = Duration::from_millis(300);
+    *h.soul.state.put_delay.lock().unwrap() = Duration::from_millis(300);
     let mut raw = h.raw().await;
     raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
 
@@ -287,8 +288,24 @@ async fn upload_buffers_are_capped_per_session() {
         end(&mut raw, id).await;
     }
 
-    let first: put::Ok = codec::decode(&raw.response(1).await.unwrap()).unwrap();
+    // Отказ по квоте может прийти раньше результата задержанной загрузки.
+    let mut responses = BTreeMap::new();
+    while responses.len() < 2 {
+        match raw.recv().await {
+            Some(Frame::Response(response)) => {
+                assert!(matches!(response.id, 1 | 2));
+                assert!(
+                    responses
+                        .insert(response.id, response.into_result())
+                        .is_none()
+                );
+            }
+            Some(_) => {}
+            None => panic!("connection closed before upload responses"),
+        }
+    }
+    let first: put::Ok = codec::decode(&responses.remove(&1).unwrap().unwrap()).unwrap();
     assert_eq!(first.size, size as u64);
-    let error = raw.response(2).await.unwrap_err();
+    let error = responses.remove(&2).unwrap().unwrap_err();
     assert_eq!(error.code, ErrorCode::Quota, "{error}");
 }

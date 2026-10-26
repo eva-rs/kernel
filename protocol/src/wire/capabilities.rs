@@ -1,7 +1,7 @@
 //! Capabilities модуля (`06 §3`). Отсутствующая секция — capability не
 //! объявлена; пустой список — ровно ноль элементов (I8).
 //!
-//! Surface — не capability, а сущность ядра: модуль создаёт её `surfaces.create`.
+//! Surface — не capability, а сущность soul: модуль создаёт её `surfaces.create`.
 
 use eva::{data, time::HumanDuration};
 
@@ -86,7 +86,7 @@ pub struct HooksCap {
 pub enum FailMode {
     /// `cancel` с маркером `hook <module>.<point> unavailable`.
     Closed,
-    /// `continue`; сюда же — режим новее ядра.
+    /// `continue`; сюда же — режим новее soul.
     #[default]
     #[serde(other)]
     Open,

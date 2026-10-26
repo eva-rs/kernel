@@ -1,13 +1,14 @@
-//! Блокнот чата: только чтение, режим не пересчитывается.
+//! Чтение, ручная правка и восстановление блокнота хозяином.
 
 use crate::requests::Response;
 use eva::service;
 
 use crate::{
     errors,
+    requests::Limit,
     types::{
         ChatId,
-        note::{Mode, Note},
+        note::{Fill, Mode, Note, Snapshot, tools},
     },
 };
 
@@ -28,4 +29,50 @@ pub trait Notes {
     embed! {
         code!(Err => [NotFound]);
     }
+
+    #[flags(mutating)]
+    #[error(crate::requests::Notes::list::Err)]
+    fn put(
+        chat: ChatId,
+        name: String,
+        description: String,
+        body: String,
+        /// `None` сохраняет булавку существующей заметки.
+        pinned: Option<bool>,
+    ) -> tools::save::Ok;
+
+    #[flags(mutating)]
+    #[error(crate::requests::Notes::list::Err)]
+    fn delete(chat: ChatId, name: String) -> tools::delete::Ok;
+
+    #[error(crate::requests::Notes::list::Err)]
+    fn history(
+        chat: ChatId,
+        /// Только снимки с меньшим id; порядок от новых к старым.
+        before: Option<i64>,
+        #[serde(default)] limit: Limit,
+    ) -> ok! {
+        snapshots: Vec<Snapshot>,
+    };
+
+    #[error(crate::requests::Notes::list::Err)]
+    fn snapshot(
+        chat: ChatId,
+        id: i64,
+    ) -> ok! {
+        snapshot: Snapshot,
+        notes: Vec<Note>,
+    };
+
+    #[flags(mutating)]
+    #[error(crate::requests::Notes::list::Err)]
+    fn restore(
+        chat: ChatId,
+        id: i64,
+    ) -> ok! {
+        restored: i64,
+        /// Состояние перед восстановлением; его тоже можно вернуть.
+        backup: i64,
+        fill: Fill,
+    };
 }

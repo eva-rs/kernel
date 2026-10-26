@@ -1,0 +1,204 @@
+//! Матрица `Policy` (`11 §8`) для `surfaces.*`: операция × caller'ы
+//! `Soul`, `Client`, `Service` своего surface A, `Service` чужого B, и
+//! `Service` против builtin `local`/`system`. Остальные домены кладут свою
+//! матрицу в `tests/policy_<ns>.rs` на тех же `common::{matrix_callers, outcome}`.
+
+mod common;
+
+use common::{OTHER, Outcome, SVC, TestSession, outcome};
+use eva::handling::CallStep as _;
+use eva_protocol::{
+    requests::{
+        Patch,
+        Surfaces::{Trait as _, create, get, list, update},
+    },
+    types::SurfaceId,
+};
+
+use Outcome::{Forbidden as F, Ok as K, Spec as S};
+
+#[derive(Debug, Clone, Copy)]
+enum Case {
+    GetA,
+    GetLocal,
+    GetSystem,
+    List,
+    UpdateNameA,
+    UpdateTrustA,
+    UpdateRulesLocal,
+    UpdateNameSystem,
+    CreateFresh,
+    CreateSystem,
+    CreateLocal,
+    CreateA,
+}
+
+/// Ожидание по caller'ам: soul, client, service-own (A), service-foreign (B).
+const MATRIX: &[(Case, [Outcome; 4])] = &[
+    (Case::GetA, [K, K, K, F]),
+    (Case::GetLocal, [K, K, F, F]),
+    (Case::GetSystem, [K, K, F, F]),
+    (Case::List, [K, K, K, K]),
+    (Case::UpdateNameA, [K, K, K, F]),
+    (Case::UpdateTrustA, [K, K, F, F]),
+    (Case::UpdateRulesLocal, [K, K, F, F]),
+    (Case::UpdateNameSystem, [K, K, F, F]),
+    (Case::CreateFresh, [F, K, K, K]),
+    (Case::CreateSystem, [F, F, F, F]),
+    (Case::CreateLocal, [F, F, F, F]),
+    (Case::CreateA, [F, S, K, S]),
+];
+
+fn a() -> SurfaceId {
+    SurfaceId::from(SVC)
+}
+
+fn rename(id: SurfaceId) -> update::Args {
+    update::Args {
+        surface: id,
+        update: update::Update {
+            name: Patch::Change(String::from("Renamed")),
+            ..Default::default()
+        },
+    }
+}
+
+async fn run(session: &mut TestSession, case: Case, who: &str) -> Outcome {
+    let mut surfaces_client = session.surfaces();
+    let surfaces = surfaces_client.inner_mut();
+    match case {
+        Case::GetA => outcome(&surfaces.get().call(get::Args { surface: a() }).await),
+        Case::GetLocal => outcome(
+            &surfaces
+                .get()
+                .call(get::Args {
+                    surface: SurfaceId::from("local"),
+                })
+                .await,
+        ),
+        Case::GetSystem => outcome(
+            &surfaces
+                .get()
+                .call(get::Args {
+                    surface: SurfaceId::from("system"),
+                })
+                .await,
+        ),
+        Case::List => outcome(&surfaces.list().call(list::Args::default()).await),
+        Case::UpdateNameA => outcome(&surfaces.update().call(rename(a())).await),
+        Case::UpdateTrustA => outcome(
+            &surfaces
+                .update()
+                .call(update::Args {
+                    surface: a(),
+                    update: update::Update {
+                        trusted: Patch::Change(Some(false)),
+                        ..Default::default()
+                    },
+                })
+                .await,
+        ),
+        Case::UpdateRulesLocal => outcome(
+            &surfaces
+                .update()
+                .call(update::Args {
+                    surface: SurfaceId::from("local"),
+                    update: update::Update {
+                        rules: Patch::Change(Some(String::from("Local rules."))),
+                        ..Default::default()
+                    },
+                })
+                .await,
+        ),
+        Case::UpdateNameSystem => outcome(
+            &surfaces
+                .update()
+                .call(rename(SurfaceId::from("system")))
+                .await,
+        ),
+        Case::CreateFresh => outcome(
+            &surfaces
+                .create()
+                .call(create::Args {
+                    id: SurfaceId::from(format!("fresh_{}", who.replace('-', "_"))),
+                    name: String::from("Fresh"),
+                    rules: None,
+                })
+                .await,
+        ),
+        Case::CreateSystem => outcome(
+            &surfaces
+                .create()
+                .call(create::Args {
+                    id: SurfaceId::from("system"),
+                    name: String::from("Mine"),
+                    rules: None,
+                })
+                .await,
+        ),
+        Case::CreateLocal => outcome(
+            &surfaces
+                .create()
+                .call(create::Args {
+                    id: SurfaceId::from("local"),
+                    name: String::from("Mine"),
+                    rules: None,
+                })
+                .await,
+        ),
+        Case::CreateA => outcome(
+            &surfaces
+                .create()
+                .call(create::Args {
+                    id: a(),
+                    name: String::from("Again"),
+                    rules: None,
+                })
+                .await,
+        ),
+    }
+}
+
+#[tokio::test]
+async fn surfaces_matrix() {
+    let h = common::start().await;
+    h.register_module(common::CLIENT).await;
+    h.service_with_surface(SVC).await;
+    h.service_with_surface(OTHER).await;
+
+    let mut failures = Vec::new();
+    for &(case, expected) in MATRIX {
+        for ((who, caller), want) in common::matrix_callers().into_iter().zip(expected) {
+            let mut session = h.session(caller).await;
+            let got = run(&mut session, case, who).await;
+            if got != want {
+                failures.push(format!("{case:?} as {who}: want {want:?}, got {got:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+async fn service_lists_only_own_surfaces() {
+    let h = common::start().await;
+    let mut svc = h.service_with_surface(SVC).await;
+    let mut other = h.service_with_surface(OTHER).await;
+
+    for (session, own) in [(&mut svc, SVC), (&mut other, OTHER)] {
+        let list::Ok { found } = session
+            .surfaces()
+            .inner_mut()
+            .list()
+            .call(list::Args::default())
+            .await
+            .expect("list");
+        assert!(!found.is_empty());
+        assert!(
+            found
+                .iter()
+                .all(|s| s.module.as_ref().map(|m| m.as_str()) == Some(own)),
+            "{own} sees {found:?}"
+        );
+    }
+}

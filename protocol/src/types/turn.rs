@@ -62,7 +62,7 @@ impl TurnView {
     }
 }
 
-/// Контекст тура на проводе (`tools.call`, хуки): флаги доверия считает ядро.
+/// Контекст тура на проводе (`tools.call`, хуки): soul сам считает флаги доверия.
 #[data]
 pub struct TurnCtx {
     pub turn_id: TurnId,
@@ -73,7 +73,7 @@ pub struct TurnCtx {
     /// `¬master_turn ∨ ¬trusted_chat`.
     pub public: bool,
     pub surface: SurfaceId,
-    /// Якорь поверхности из `chats.ingest`/`turns.start`, ядру непрозрачен.
+    /// Якорь поверхности из `chats.ingest`/`turns.start`, для soul непрозрачен.
     pub anchor: Option<Value>,
     /// Запуск крона.
     pub run_id: Option<RunId>,
@@ -283,16 +283,14 @@ tolerant!(ItemBody);
 #[serde(remote = "ItemDelta")]
 pub enum ItemDelta {
     /// `AgentMessage`/`Thinking`.
-    Text {
-        text: String,
-    },
+    Text { text: String },
     Progress {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<Box<crate::types::text::LocalizedText>>,
     },
     /// План целиком.
-    Plan {
-        tasks: Vec<PlanTask>,
-    },
+    Plan { tasks: Vec<PlanTask> },
     /// Дельта новее этого пира.
     #[serde(other)]
     Unknown,

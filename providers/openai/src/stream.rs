@@ -199,7 +199,7 @@ impl Decoder {
         }
     }
 
-    /// Элемент уходит ядру целиком JSON'ом: подпись и шифротекст реплеятся байт-в-байт.
+    /// Элемент уходит в soul целиком JSON'ом: подпись и шифротекст реплеятся байт-в-байт.
     fn flush_reasoning(&mut self, out: &mut Vec<GenItem>) {
         let Some(detail) = self.reasoning.take() else {
             return;
@@ -321,7 +321,7 @@ fn stop(reason: &str) -> Stop {
     }
 }
 
-/// `prompt_tokens` включает прочитанное и записанное в кэш — ядро складывает их обратно в якоре.
+/// `prompt_tokens` включает прочитанное и записанное в кэш — soul складывает их обратно в якоре.
 fn usage_of(usage: &Value, cache: CacheMode) -> Usage {
     let number = |path: &[&str]| {
         path.iter()

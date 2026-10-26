@@ -1,4 +1,4 @@
-//! Диспетчер модуль → ядро (`11 §6`): метод `<ns>.<op>` → шаг сессии,
+//! Диспетчер модуль → soul (`11 §6`): метод `<ns>.<op>` → шаг сессии,
 //! `params` → `Args`, `Ok` → `result`, `Generic` → `RpcError`.
 
 use std::{collections::HashMap, fmt, sync::Arc};

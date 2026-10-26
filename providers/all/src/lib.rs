@@ -1,5 +1,5 @@
 //! Встроенные провайдеры: конфиг под тегом `kind` и диспетчер — vendor-строка
-//! `kind` разбирается здесь, а не в ядре (I14).
+//! `kind` разбирается здесь, а не в soul (I14).
 
 #![cfg_attr(
     not(any(feature = "openai", feature = "mock", feature = "embed-local")),

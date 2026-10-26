@@ -1,4 +1,4 @@
-//! Вызовы ядро → модуль (`06 §4`, `§7`): `ModuleHandler` поверх
+//! Вызовы soul → модуль (`06 §4`, `§7`): `ModuleHandler` поверх
 //! зарегистрированных тулов, событий, хуков и провайдера.
 
 use std::{
@@ -36,7 +36,7 @@ use eva_protocol::{
 use eva_rpc::{ModuleHandler, Progress, RpcClient};
 
 use crate::{
-    Kernel,
+    Soul,
     live::Link,
     tool::{BoxFuture, ToolCtx, ToolEntry, canonical},
 };
@@ -48,9 +48,9 @@ const DONE_CAPACITY: usize = 256;
 /// отличается закрытым соединением, которое пир отмечает чуть позже drop.
 const CANCEL_SETTLE: Duration = Duration::from_millis(50);
 
-pub(crate) type EventFn = Arc<dyn Fn(Kernel, Event) -> BoxFuture<()> + Send + Sync>;
+pub(crate) type EventFn = Arc<dyn Fn(Soul, Event) -> BoxFuture<()> + Send + Sync>;
 pub(crate) type HookFn<H> =
-    Arc<dyn Fn(Kernel, H) -> BoxFuture<Decision<<H as Hook>::Patch>> + Send + Sync>;
+    Arc<dyn Fn(Soul, H) -> BoxFuture<Decision<<H as Hook>::Patch>> + Send + Sync>;
 
 /// Обработчики хуков по точкам; наружу непрозрачен.
 #[derive(Default)]
@@ -94,7 +94,7 @@ hook_input! {
 
 type LocalFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// `Provider` с боксами вместо `impl Future`: трейт ядра не object-safe.
+/// `Provider` с боксами вместо `impl Future`: трейт soul не object-safe.
 pub(crate) trait DynProvider: Send + Sync {
     fn decl(&self) -> ProviderDecl;
     fn models(&self) -> Vec<ModelDecl>;
@@ -162,11 +162,11 @@ impl Registry {
         }
     }
 
-    fn kernel(&self) -> Result<Kernel, RpcError> {
+    fn soul(&self) -> Result<Soul, RpcError> {
         self.link
             .upgrade()
             .ok_or_else(|| RpcError::new(ErrorCode::Unavailable, "module is shutting down"))?
-            .kernel()
+            .soul()
             .ok_or_else(|| RpcError::new(ErrorCode::Unavailable, "module is not connected"))
     }
 
@@ -309,7 +309,7 @@ impl SdkHandler {
                 format_args!("unknown tool {}", call.canonical),
             )
         })?;
-        let kernel = self.registry.kernel()?;
+        let soul = self.registry.soul()?;
 
         let ToolCall {
             call_id,
@@ -321,7 +321,7 @@ impl SdkHandler {
         let (tx, rx) = watch::channel(None);
         let registry = Arc::downgrade(&self.registry);
         let key = call_id.clone();
-        let ctx = ToolCtx::new(call_id.clone(), ctx, kernel, progress);
+        let ctx = ToolCtx::new(call_id.clone(), ctx, soul, progress);
 
         let task = tokio::spawn(async move {
             // Паника иначе оставила бы полёт в `running` навсегда, а повтор `call_id` — `cancelled`.
@@ -360,15 +360,15 @@ impl SdkHandler {
         if handlers.is_empty() {
             return;
         }
-        let kernel = match self.registry.kernel() {
-            Ok(kernel) => kernel,
+        let soul = match self.registry.soul() {
+            Ok(soul) => soul,
             Err(e) => {
                 log::warn!(topic:% = topic, error:% = e; "event dropped");
                 return;
             }
         };
         for handler in handlers {
-            handler(kernel.clone(), publish.event.clone()).await;
+            handler(soul.clone(), publish.event.clone()).await;
         }
     }
 
@@ -380,8 +380,8 @@ impl SdkHandler {
         let handler = H::slot(&self.registry.hooks)
             .cloned()
             .ok_or_else(|| RpcError::unknown_method(H::POINT.method()))?;
-        let kernel = self.registry.kernel()?;
-        Ok(handler(kernel, input).await)
+        let soul = self.registry.soul()?;
+        Ok(handler(soul, input).await)
     }
 
     fn provider(&self) -> Result<Arc<dyn DynProvider>, ProviderError> {

@@ -15,18 +15,18 @@ use crate::fake::{self, Surfaces};
 #[test]
 fn client_section_takes_defaults() {
     let cfg: ClientConfig = serde_json::from_value(json!({
-        "kernel": "uds:///run/eva-kernel/modules.sock",
+        "soul": "uds:///run/eva-soul/modules.sock",
         "token": {"plaintext": "s3cret"},
     }))
     .unwrap();
-    assert_eq!(cfg.kernel.scheme(), "uds");
+    assert_eq!(cfg.soul.scheme(), "uds");
     assert_eq!(cfg.token.read().unwrap(), "s3cret");
     assert_eq!(*cfg.connect_wait, Duration::from_secs(180));
     assert!(cfg.tls.extra_ca.is_none());
     assert_eq!(*cfg.transport.ping_interval, Duration::from_secs(15));
 
     let cfg: ClientConfig = serde_json::from_value(json!({
-        "kernel": "wss://eva.example:8443/v1/modules",
+        "soul": "wss://eva.example:8443/v1/modules",
         "token": {"file": "/run/credentials/x.service/token"},
         "connect_wait": "10s",
         "ping_interval": "5s",
@@ -44,10 +44,10 @@ fn client_section_takes_defaults() {
 
 #[test]
 fn token_is_required_and_tagged() {
-    let res = serde_json::from_value::<ClientConfig>(json!({"kernel": "uds:///x"}));
+    let res = serde_json::from_value::<ClientConfig>(json!({"soul": "uds:///x"}));
     assert!(res.is_err());
     let bare = serde_json::from_value::<ClientConfig>(json!({
-        "kernel": "uds:///x",
+        "soul": "uds:///x",
         "token": "s3cret",
     }));
     assert!(bare.is_err(), "a secret names its form: plaintext or file");
@@ -56,7 +56,7 @@ fn token_is_required_and_tagged() {
 #[test]
 fn token_never_prints() {
     let cfg: ClientConfig = serde_json::from_value(json!({
-        "kernel": "uds:///x",
+        "soul": "uds:///x",
         "token": {"plaintext": "s3cret"},
     }))
     .unwrap();
@@ -71,9 +71,9 @@ async fn a_file_token_is_read_without_its_trailing_newline() {
     let path = dir.path().join("token");
     std::fs::write(&path, "s3cret\n").unwrap();
 
-    let (module_end, kernel_end) = Conn::pair(&Config::default());
-    let kernel = tokio::spawn(fake::accept(
-        kernel_end,
+    let (module_end, soul_end) = Conn::pair(&Config::default());
+    let soul = tokio::spawn(fake::accept(
+        soul_end,
         fake::welcome("s1", &[]),
         Surfaces::default(),
     ));
@@ -81,7 +81,7 @@ async fn a_file_token_is_read_without_its_trailing_newline() {
         .handshake(module_end, &SecretString::File(path))
         .await
         .expect("handshake");
-    let session = kernel.await.unwrap();
+    let session = soul.await.unwrap();
     assert_eq!(
         session.hello.token.as_ref().map(|t| t.expose()),
         Some("s3cret")
@@ -93,7 +93,7 @@ async fn a_file_token_is_read_without_its_trailing_newline() {
 async fn an_unreadable_token_names_its_key() {
     let dir = tempfile::tempdir().unwrap();
     let cfg: ClientConfig = serde_json::from_value(json!({
-        "kernel": format!("uds://{}", dir.path().join("none.sock").display()),
+        "soul": format!("uds://{}", dir.path().join("none.sock").display()),
         "token": {"file": dir.path().join("missing")},
     }))
     .unwrap();
@@ -143,13 +143,13 @@ fn service_section_takes_defaults() {
         cfg.key,
         SecretString::File("/run/credentials/x.service/key".into())
     );
-    assert_eq!(*cfg.kernel_wait, Duration::from_secs(180));
+    assert_eq!(*cfg.soul_wait, Duration::from_secs(180));
     assert_eq!(*cfg.transport.handshake_timeout, Duration::from_secs(10));
 
     let cfg: ServiceConfig = serde_json::from_value(json!({
         "listen": {"tcp": "127.0.0.1:7001"},
         "key": {"plaintext": "k"},
-        "kernel_wait": "10s",
+        "soul_wait": "10s",
         "ping_interval": "5s",
     }))
     .unwrap();
@@ -157,7 +157,7 @@ fn service_section_takes_defaults() {
         panic!("tcp expected: {:?}", cfg.listen);
     };
     assert_eq!(tcp.addr.to_string(), "127.0.0.1:7001");
-    assert_eq!(*cfg.kernel_wait, Duration::from_secs(10));
+    assert_eq!(*cfg.soul_wait, Duration::from_secs(10));
     assert_eq!(*cfg.transport.ping_interval, Duration::from_secs(5));
 }
 
@@ -200,7 +200,7 @@ async fn an_empty_or_unreadable_key_names_its_key() {
         let cfg = ServiceConfig {
             listen: ServiceListen::Uds(UdsListen { path: path.clone() }),
             key,
-            kernel_wait: HumanDuration(Duration::from_secs(1)),
+            soul_wait: HumanDuration(Duration::from_secs(1)),
             transport: Config::default(),
         };
         match Module::new().listen(&cfg).await {

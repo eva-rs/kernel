@@ -23,17 +23,17 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1790784176,
-        "narHash": "sha256-4hntsUsrO1doM4qWIjxzkkFUIg1F48GcDfoeTnmYMTQ=",
+        "lastModified": 1793003448,
+        "narHash": "sha256-tpzH6zsQ4tWsoZrW3IQRZPiJxb8Y6eIHTjTeW1VsCY0=",
         "ref": "refs/heads/master",
-        "rev": "c58e04c0b0bf9ae2eafea269d9d8a3dec051d78b",
-        "revCount": 38,
+        "rev": "fa4883ea2831db679c684eb8dcef13fd7578af64",
+        "revCount": 1,
         "type": "git",
-        "url": "https://git.desu.church/VienDesu/eva.git"
+        "url": "ssh://git@github.com/nerodono/eva.git"
       },
       "original": {
         "type": "git",
-        "url": "https://git.desu.church/VienDesu/eva.git"
+        "url": "ssh://git@github.com/nerodono/eva.git"
       }
     },
     "fenix": {

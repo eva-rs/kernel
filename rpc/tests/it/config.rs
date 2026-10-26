@@ -44,7 +44,7 @@ fn defaults() {
 #[test]
 fn listen_by_address_key() {
     let listen: Vec<Listen> = serde_json::from_value(json!([
-        {"uds": "/run/eva-kernel/modules.sock"},
+        {"uds": "/run/eva-soul/modules.sock"},
         {"ws": "127.0.0.1:9000"},
         {"wss": "0.0.0.0:9443", "tls": {"cert": "/etc/eva/cert.pem", "key": "/etc/eva/key.pem"}},
     ]))
@@ -53,14 +53,14 @@ fn listen_by_address_key() {
     let [Listen::Uds(uds), Listen::Ws(ws), Listen::Wss(wss)] = listen.as_slice() else {
         panic!("wrong variants: {listen:?}");
     };
-    assert_eq!(uds.path.to_str(), Some("/run/eva-kernel/modules.sock"));
+    assert_eq!(uds.path.to_str(), Some("/run/eva-soul/modules.sock"));
     assert_eq!(ws.addr.port(), 9000);
     assert_eq!(wss.tls.key.to_str(), Some("/etc/eva/key.pem"));
 
     assert!(serde_json::from_value::<Listen>(json!({"tcp": "127.0.0.1:1"})).is_err());
 }
 
-/// Сервис слушает uds или tcp; ws/wss — только у клиентского слушателя ядра.
+/// Сервис слушает uds или tcp; ws/wss — только у клиентского слушателя soul.
 #[test]
 fn service_listen_by_address_key() {
     let listen: Vec<ServiceListen> = serde_json::from_value(json!([

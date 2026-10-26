@@ -1,5 +1,5 @@
 [book]
-title = "Ева — ядро"
+title = "Ева — soul"
 language = "ru"
 src = "src"
 
@@ -11,4 +11,4 @@ command = "mdbook-mermaid"
 
 [output.html]
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
-git-repository-url = "https://git.desu.church/eva/kernel"
+git-repository-url = "https://github.com/eva-rs/soul"

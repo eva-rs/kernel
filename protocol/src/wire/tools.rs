@@ -1,4 +1,4 @@
-//! `tools.call` ядро → модуль (`06 §4`, `02 §4.2`): запрос `ToolCall`,
+//! `tools.call` soul → модуль (`06 §4`, `02 §4.2`): запрос `ToolCall`,
 //! поток `progress`*, затем один `result`.
 
 use eva::data;
@@ -22,7 +22,11 @@ pub struct ToolCall {
 #[serde(remote = "ToolItem")]
 pub enum ToolItem {
     /// Проходит скраб секретов до ленты items.
-    Progress { text: String },
+    Progress {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<Box<crate::types::text::LocalizedText>>,
+    },
     /// Последний элемент.
     Result(ToolResult),
     /// Элемент новее этого пира.

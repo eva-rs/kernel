@@ -153,7 +153,7 @@ impl JsonSchema for Bytes {
         Cow::Borrowed(concat!(module_path!(), "::Bytes"))
     }
 
-    fn always_inline_schema() -> bool {
+    fn inline_schema() -> bool {
         true
     }
 

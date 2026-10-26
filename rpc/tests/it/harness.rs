@@ -1,4 +1,4 @@
-//! Сервер на uds/ws с тестовым ядром, набираемый им сервис на uds/tcp и сырой
+//! Сервер на uds/ws с тестовым soul, набираемый им сервис на uds/tcp и сырой
 //! uds-клиент для проверок протокола.
 
 use std::{
@@ -31,16 +31,16 @@ use eva_rpc::{
     config::{Listen, TcpListen, UdsListen, WsListen},
 };
 
-use crate::kernel::{Auth, Kernel, SERVICE};
+use crate::soul::{Auth, SERVICE, Soul};
 
-/// Слушатель ядра, куда звонит клиент.
+/// Слушатель soul, куда звонит клиент.
 #[derive(Debug, Clone, Copy)]
 pub enum Via {
     Uds,
     Ws,
 }
 
-/// Слушатель сервиса, который набирает ядро.
+/// Слушатель сервиса, куда дозванивается soul.
 #[derive(Debug, Clone, Copy)]
 pub enum Dial {
     Uds,
@@ -64,8 +64,8 @@ pub fn config() -> Config {
 }
 
 pub struct Harness {
-    pub kernel: Kernel,
-    pub server: Server<Kernel, Auth>,
+    pub soul: Soul,
+    pub server: Server<Soul, Auth>,
     pub target: Url,
     pub socket: Option<PathBuf>,
     pub config: Config,
@@ -106,8 +106,8 @@ impl Harness {
             ),
         };
 
-        let kernel = Kernel::default();
-        let server = Server::new(kernel.clone(), Auth::default(), config.clone());
+        let soul = Soul::default();
+        let server = Server::new(soul.clone(), Auth::default(), config.clone());
         let (sessions_tx, sessions) = mpsc::unbounded_channel();
         let (stop, stopped) = oneshot::channel::<()>();
         let serving = server.clone();
@@ -124,7 +124,7 @@ impl Harness {
         });
 
         Self {
-            kernel,
+            soul,
             server,
             target,
             socket,
@@ -154,7 +154,7 @@ impl Harness {
             .unwrap()
     }
 
-    /// Ядро набирает сервис `SERVICE`, тот отвечает `hello` с `handler`.
+    /// Soul набирает сервис `SERVICE`, тот отвечает `hello` с `handler`.
     pub async fn dial_with<H: ModuleHandler>(
         &self,
         dial: Dial,

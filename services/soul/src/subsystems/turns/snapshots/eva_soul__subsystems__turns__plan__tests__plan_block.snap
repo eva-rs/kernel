@@ -1,0 +1,10 @@
+---
+source: services/soul/src/subsystems/turns/plan.rs
+expression: render(&started)
+---
+[plan]
+## Build
+- 1 [pending] a
+- 3 [pending] c
+## Ship
+- 2 [active] b

@@ -4,7 +4,7 @@ OpenAI-совместимый Chat Completions за трейтом `Provider`. �
 
 ## Место в слоях
 
-Реализация `eva_core::Provider` для одного семейства API; зависит от `eva-core`, `eva-protocol`, фреймворка [eva](https://git.desu.church/VienDesu/eva), `reqwest` и `tokio`. Не зависит от `eva-kernel` и `eva-rpc`: ядро видит провайдер только через трейт и `eva-providers`. Vendor-строки живут только в `providers/*`.
+Реализация `eva_core::Provider` для одного семейства API; зависит от `eva-core`, `eva-protocol`, фреймворка [eva](https://github.com/nerodono/eva), `reqwest` и `tokio`. Не зависит от `eva-soul` и `eva-rpc`: soul видит провайдер только через трейт и `eva-providers`. Vendor-строки живут только в `providers/*`.
 
 ## Точки входа
 
@@ -19,7 +19,7 @@ OpenAI-совместимый Chat Completions за трейтом `Provider`. �
 
 Запросы: `POST <base_url>/chat/completions` (поток SSE), `POST <base_url>/embeddings`, `GET <base_url>/models`. `count_tokens` не поддерживается; `decl().local` — только при loopback-адресе в `base_url`.
 
-До `connect` процесс обязан поставить провайдер криптографии rustls (`eva_rpc::install_crypto_provider()` в бинаре ядра), иначе сборка HTTP-клиента паникует.
+До `connect` процесс обязан поставить провайдер криптографии rustls (`eva_rpc::install_crypto_provider()` в бинаре soul), иначе сборка HTTP-клиента паникует.
 
 ## Конфиг
 

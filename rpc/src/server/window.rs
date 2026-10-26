@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(retained(&windows), 0);
     }
 
-    /// Окна живут в памяти: после рестарта ядра `resume` ведёт в никуда.
+    /// Окна живут в памяти: после рестарта soul `resume` ведёт в никуда.
     #[tokio::test]
     async fn resume_of_an_unknown_session_is_not_resumed() {
         let windows = Windows::new(Duration::from_secs(600));

@@ -192,7 +192,7 @@ pub enum GenItem {
         data: Bytes,
         model: ModelId,
     },
-    /// JSON аргументов склеен провайдером: частичного ядро не видит.
+    /// JSON аргументов склеен провайдером: soul не видит частичного.
     ToolUse {
         id: String,
         name: String,
@@ -281,7 +281,7 @@ impl std::fmt::Display for ProviderError {
     }
 }
 
-/// Код для модуля: `auth` — беда конфига ядра, модулю это «провайдер недоступен».
+/// Код для модуля: `auth` — беда конфига soul, модулю это «провайдер недоступен».
 impl HasCode for ProviderError {
     fn code(&self) -> ErrorCode {
         use ProviderErrorKind as K;

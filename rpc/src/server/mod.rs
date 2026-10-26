@@ -1,4 +1,4 @@
-//! Сторона ядра: handshake (`06 §2`) и диспетчер операций на каждую сессию.
+//! Сторона soul: handshake (`06 §2`) и диспетчер операций на каждую сессию.
 
 use std::{pin::pin, sync::Arc, time::Duration};
 
@@ -40,11 +40,11 @@ mod window;
 /// заголовок ws-кадра.
 const HELLO_FRAMING: u64 = 64;
 
-/// Проверка `hello` ядром: идентичность → `welcome` (`module` и `kind` в нём
+/// Проверка `hello` на стороне soul: идентичность → `welcome` (`module` и `kind` в нём
 /// задают caller сессии), вытеснение прежней сессии того же модуля. Отказ
 /// уходит модулю ответом на `hello`, соединение закрывается.
 pub trait Authenticator: Send + Sync + 'static {
-    /// Что набирающий знает о записи, которую набрал: у ядра — id реестра и
+    /// Что набирающий знает о записи, которую набрал: у soul — id реестра и
     /// то, по чему попытка устаревает.
     type Dialed: Send + Sync + 'static;
 
@@ -65,7 +65,7 @@ pub trait Authenticator: Send + Sync + 'static {
 pub enum Origin<'a, D> {
     /// Клиент на слушателе: идентичность — `hello.token`.
     Listener,
-    /// Ядро набрало запись `D`: Noise уже доказал её PSK, токена в `hello` нет.
+    /// Soul набрал запись `D`: Noise уже доказал её PSK, токена в `hello` нет.
     Dialed(&'a D),
 }
 
@@ -99,7 +99,7 @@ pub struct Accepted {
 }
 
 impl Accepted {
-    /// Вызовы ядро → модуль в этой сессии.
+    /// Вызовы soul → модуль в этой сессии.
     pub fn module(&self) -> ModuleClient {
         ModuleClient::new(self.peer.clone())
     }
@@ -177,7 +177,7 @@ where
             .map_err(DialError::Handshake)
     }
 
-    /// Handshake на соединении, которое ядро набрало само (`dial`, пара в
+    /// Handshake на соединении, которое soul набрал сам (`dial`, пара в
     /// памяти): `hello` без токена и ограничен лишь `max_frame`.
     pub async fn accept_dialed(
         &self,
@@ -518,7 +518,7 @@ type HelloRequest = (u64, Hello, Vec<String>);
 type Heard = Result<HelloRequest, (Option<u64>, RpcError)>;
 
 /// Ключи capabilities как пришли: serde молча пропускает незнакомые поля,
-/// а модулю нужно знать, что ядро их не поняло (`06 §8`).
+/// а модулю нужно знать, что soul их не понял (`06 §8`).
 fn unknown_capabilities(params: &[u8]) -> Vec<String> {
     #[derive(serde::Deserialize)]
     struct Raw {

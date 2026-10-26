@@ -5,6 +5,16 @@ use serde_json::Value;
 
 use crate::types::{ModelId, RunId};
 
+/// Принятый запуск, в том числе ещё не дошедший до первой фазы.
+#[data]
+pub struct Active {
+    pub run: RunId,
+    pub started: Timestamp,
+    pub phase: Option<Phase>,
+    pub dry_run: bool,
+    pub cancelling: bool,
+}
+
 #[data]
 pub struct Run {
     pub run_id: RunId,

@@ -78,6 +78,9 @@ cases! {
     errors::persons::MasterMerge => Conflict: errors::persons::MasterMerge { from: "p1".into(), into: "p2".into() };
     errors::persons::MasterWhitelist => Conflict: errors::persons::MasterWhitelist { person: "p1".into() };
     errors::sleep::RunNotFound => NotFound: errors::sleep::RunNotFound { run: "r".into() };
+    errors::sleep::AlreadyRunning => Conflict: errors::sleep::AlreadyRunning { run: "r".into() };
+    errors::sleep::NotRunning => Conflict: errors::sleep::NotRunning { run: "r".into() };
+    errors::sleep::NoProvider => Unavailable: errors::sleep::NoProvider { model: "missing".into() };
     errors::sqlite::Sql => InvalidParams: errors::sqlite::Sql { statement: 2, message: "syntax".into() };
     errors::surfaces::Taken => Conflict: errors::surfaces::Taken { surface: "x".into(), owner: Some("m".into()) };
     errors::surfaces::NotFound => NotFound: errors::surfaces::NotFound { surface: "y".into() };
@@ -239,6 +242,11 @@ fn every_operation_error() {
         }
         notes: Notes {
             list => [chats::NotFound];
+            put => [chats::NotFound];
+            delete => [chats::NotFound];
+            history => [chats::NotFound];
+            snapshot => [chats::NotFound];
+            restore => [chats::NotFound];
         }
         persons: Persons {
             resolve => [];
@@ -250,6 +258,9 @@ fn every_operation_error() {
         sleep: Sleep {
             runs => [];
             phase_runs => [sleep::RunNotFound];
+            status => [];
+            start => [sleep::AlreadyRunning, sleep::NoProvider];
+            cancel => [sleep::NotRunning];
         }
         sqlite: Sqlite {
             exec => [sqlite::Sql];

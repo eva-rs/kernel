@@ -1,0 +1,304 @@
+---
+source: services/soul/tests/schema.rs
+expression: dump
+---
+index agent_messages_unread (agent_messages)
+  CREATE INDEX agent_messages_unread ON agent_messages(agent_id, direction) WHERE read_at IS NULL
+index agents_live_name (agents)
+  CREATE UNIQUE INDEX agents_live_name ON agents(parent_chat_id, name) WHERE status IN ('running','idle')
+index agents_parent (agents)
+  CREATE INDEX agents_parent ON agents(parent_chat_id, status)
+index blobs_expiry (blobs)
+  CREATE INDEX blobs_expiry ON blobs(expires_at)
+index chat_notes_gc (chat_notes)
+  CREATE INDEX chat_notes_gc ON chat_notes(deleted_at) WHERE deleted_at IS NOT NULL
+index chat_plan_active (chat_plan)
+  CREATE INDEX chat_plan_active ON chat_plan(chat_id) WHERE status = 'in_progress'
+index chat_speech_chunk (chat_speech)
+  CREATE UNIQUE INDEX chat_speech_chunk ON chat_speech(chat_id, seq, chunk_no) WHERE kind = 'speech'
+index chat_speech_title (chat_speech)
+  CREATE UNIQUE INDEX chat_speech_title ON chat_speech(chat_id) WHERE kind = 'title'
+index chats_deleted (chats)
+  CREATE INDEX chats_deleted ON chats(deleted_at) WHERE deleted_at IS NOT NULL
+index chats_ephemeral (chats)
+  CREATE INDEX chats_ephemeral ON chats(last_activity_at) WHERE kind = 'ephemeral'
+index chats_folder (chats)
+  CREATE INDEX chats_folder ON chats(folder_id, deleted_at, last_activity_at DESC)
+index cron_jobs_due (cron_jobs)
+  CREATE INDEX cron_jobs_due ON cron_jobs(next_fire_at) WHERE next_fire_at IS NOT NULL OR fire_pending IS NOT NULL
+index cron_runs_job (cron_runs)
+  CREATE INDEX cron_runs_job ON cron_runs(job_id, started DESC)
+index events_turn (events)
+  CREATE INDEX events_turn ON events(turn_id) WHERE turn_id IS NOT NULL
+index hands_grants_match (hands_grants)
+  CREATE INDEX hands_grants_match ON hands_grants(endpoint, surface, kind)
+index identities_person (identities)
+  CREATE INDEX identities_person ON identities(person_id)
+index memory_archive_gc (memory_archive)
+  CREATE INDEX memory_archive_gc ON memory_archive(archived_at) WHERE restored_at IS NULL
+index memory_chain (memory)
+  CREATE INDEX memory_chain ON memory(supersedes)
+index memory_current (memory)
+  CREATE INDEX memory_current ON memory(kind, visibility) WHERE valid_to IS NULL
+index memory_embed (memory)
+  CREATE INDEX memory_embed ON memory(embed_model) WHERE valid_to IS NULL
+index memory_event_time (memory)
+  CREATE INDEX memory_event_time ON memory(occurred_at) WHERE valid_to IS NULL AND kind = 'event'
+index memory_procedure_name (memory)
+  CREATE UNIQUE INDEX memory_procedure_name ON memory(name) WHERE valid_to IS NULL AND kind = 'procedure'
+index messages_external (messages)
+  CREATE INDEX messages_external ON messages(chat_id, external_id) WHERE external_id IS NOT NULL
+index messages_sender (messages)
+  CREATE INDEX messages_sender ON messages(sender_person_id)
+index messages_unindexed (messages)
+  CREATE INDEX messages_unindexed ON messages(chat_id) WHERE indexed_at IS NULL
+index module_tokens_live (module_tokens)
+  CREATE INDEX module_tokens_live ON module_tokens(module) WHERE revoked_at IS NULL
+index notes_snapshots_chat (notes_snapshots)
+  CREATE INDEX notes_snapshots_chat ON notes_snapshots(chat_id, id DESC)
+index pending_open (pending)
+  CREATE INDEX pending_open ON pending(chat_id, expires_at) WHERE resolved_at IS NULL
+index segments_open (segments)
+  CREATE UNIQUE INDEX segments_open ON segments(chat_id) WHERE ended_at IS NULL
+index spend_chat (spend)
+  CREATE INDEX spend_chat ON spend(chat_id, ts)
+index spend_run (spend)
+  CREATE INDEX spend_run ON spend(run_id) WHERE run_id IS NOT NULL
+index spend_ts (spend)
+  CREATE INDEX spend_ts ON spend(ts)
+index spend_turn (spend)
+  CREATE INDEX spend_turn ON spend(turn_id) WHERE turn_id IS NOT NULL
+index sqlite_autoindex_blobs_1 (blobs)
+  -
+index sqlite_autoindex_chat_aliases_1 (chat_aliases)
+  -
+index sqlite_autoindex_chat_aliases_2 (chat_aliases)
+  -
+index sqlite_autoindex_chat_loaded_tools_1 (chat_loaded_tools)
+  -
+index sqlite_autoindex_chat_notes_1 (chat_notes)
+  -
+index sqlite_autoindex_chat_plan_1 (chat_plan)
+  -
+index sqlite_autoindex_chat_stats_1 (chat_stats)
+  -
+index sqlite_autoindex_chat_warm_sets_1 (chat_warm_sets)
+  -
+index sqlite_autoindex_cron_jobs_1 (cron_jobs)
+  -
+index sqlite_autoindex_cron_jobs_2 (cron_jobs)
+  -
+index sqlite_autoindex_cron_jobs_3 (cron_jobs)
+  -
+index sqlite_autoindex_cron_runs_1 (cron_runs)
+  -
+index sqlite_autoindex_embed_cache_1 (embed_cache)
+  -
+index sqlite_autoindex_events_1 (events)
+  -
+index sqlite_autoindex_folders_1 (folders)
+  -
+index sqlite_autoindex_gc_runs_1 (gc_runs)
+  -
+index sqlite_autoindex_health_stats_1 (health_stats)
+  -
+index sqlite_autoindex_identities_1 (identities)
+  -
+index sqlite_autoindex_soul_meta_1 (soul_meta)
+  -
+index sqlite_autoindex_memory_link_1 (memory_link)
+  -
+index sqlite_autoindex_messages_1 (messages)
+  -
+index sqlite_autoindex_messages_2 (messages)
+  -
+index sqlite_autoindex_module_kv_1 (module_kv)
+  -
+index sqlite_autoindex_module_services_1 (module_services)
+  -
+index sqlite_autoindex_module_tokens_1 (module_tokens)
+  -
+index sqlite_autoindex_modules_1 (modules)
+  -
+index sqlite_autoindex_notes_snapshot_entries_1 (notes_snapshot_entries)
+  -
+index sqlite_autoindex_pending_1 (pending)
+  -
+index sqlite_autoindex_persons_1 (persons)
+  -
+index sqlite_autoindex_segments_1 (segments)
+  -
+index sqlite_autoindex_sleep_phase_runs_1 (sleep_phase_runs)
+  -
+index sqlite_autoindex_sleep_runs_1 (sleep_runs)
+  -
+index sqlite_autoindex_surfaces_1 (surfaces)
+  -
+index sqlite_autoindex_token_ratios_1 (token_ratios)
+  -
+index sqlite_autoindex_tool_groups_1 (tool_groups)
+  -
+index sqlite_autoindex_tool_pins_1 (tool_pins)
+  -
+index sqlite_autoindex_tool_results_1 (tool_results)
+  -
+index sqlite_autoindex_tool_results_2 (tool_results)
+  -
+index sqlite_autoindex_tool_stats_1 (tool_stats)
+  -
+index sqlite_autoindex_tools_1 (tools)
+  -
+index tool_results_dedup (tool_results)
+  CREATE INDEX tool_results_dedup ON tool_results(chat_id, segment_id, dedup_key) WHERE dedup_of IS NULL AND synthetic IS NULL
+index tool_stats_chat (tool_stats)
+  CREATE INDEX tool_stats_chat ON tool_stats(chat_id, day)
+index tools_canonical (tools)
+  CREATE INDEX tools_canonical ON tools(canonical) WHERE retired_at IS NULL
+table agent_messages (agent_messages)
+  CREATE TABLE agent_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE, direction TEXT NOT NULL CHECK (direction IN ('to_agent','to_parent')), body TEXT NOT NULL, created_at INTEGER NOT NULL, read_at INTEGER) STRICT
+table agents (agents)
+  CREATE TABLE agents (id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, parent_chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, name TEXT NOT NULL CHECK (name NOT GLOB '*[^a-z0-9_-]*' AND length(name) BETWEEN 1 AND 32), task TEXT NOT NULL, tools TEXT NOT NULL, report_schema TEXT, master_turn INTEGER NOT NULL CHECK (master_turn IN (0,1)), status TEXT NOT NULL CHECK (status IN ('running','idle','done','failed','stopped')), started_at INTEGER NOT NULL, finished_at INTEGER) STRICT
+table blobs (blobs)
+  CREATE TABLE blobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('file','image')), chat_id INTEGER REFERENCES chats(id) ON DELETE SET NULL, name TEXT NOT NULL CHECK (name NOT GLOB '*[/\]*' AND name NOT IN ('.','..')), media_type TEXT NOT NULL, size INTEGER NOT NULL, hash BLOB NOT NULL, source TEXT NOT NULL CHECK (source IN ('upload','tool','generated')), model TEXT, prompt TEXT, cost REAL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL) STRICT
+table chat_aliases (chat_aliases)
+  CREATE TABLE chat_aliases (surface_id TEXT NOT NULL REFERENCES surfaces(id) ON DELETE RESTRICT, external_id TEXT NOT NULL, chat_id INTEGER NOT NULL UNIQUE REFERENCES chats(id) ON DELETE CASCADE, external_kind TEXT NOT NULL CHECK (external_kind IN ('direct','group','channel')), created_at INTEGER NOT NULL, PRIMARY KEY (surface_id, external_id)) STRICT
+table chat_loaded_tools (chat_loaded_tools)
+  CREATE TABLE chat_loaded_tools ( chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, tool_id INTEGER NOT NULL REFERENCES tools(tool_id) ON DELETE CASCADE, loaded_at INTEGER NOT NULL, PRIMARY KEY (chat_id, tool_id)) STRICT
+table chat_notes (chat_notes)
+  CREATE TABLE chat_notes ( chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, name TEXT NOT NULL CHECK (name NOT GLOB '*[^a-z0-9_-]*' AND length(name) BETWEEN 1 AND 48), description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 120), body TEXT NOT NULL CHECK (body <> ''), prev_body TEXT, pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0,1)), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER, PRIMARY KEY (chat_id, name)) STRICT
+table chat_plan (chat_plan)
+  CREATE TABLE chat_plan (chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, task_id INTEGER NOT NULL, position INTEGER NOT NULL, phase TEXT, title TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','in_progress','completed','abandoned')), outcome TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY (chat_id, task_id)) STRICT
+table chat_speech (chat_speech)
+  CREATE TABLE chat_speech ( id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, seq INTEGER, chunk_no INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL CHECK (kind IN ('speech','title')), text TEXT NOT NULL, CHECK ((kind = 'title') = (seq IS NULL)), FOREIGN KEY (chat_id, seq) REFERENCES messages(chat_id, seq) ON DELETE CASCADE) STRICT
+table chat_speech_fts (chat_speech_fts)
+  CREATE VIRTUAL TABLE chat_speech_fts USING fts5(text, content='chat_speech', content_rowid='id', tokenize='unicode61 remove_diacritics 2')
+table chat_speech_fts_config (chat_speech_fts_config)
+  CREATE TABLE 'chat_speech_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+table chat_speech_fts_data (chat_speech_fts_data)
+  CREATE TABLE 'chat_speech_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+table chat_speech_fts_docsize (chat_speech_fts_docsize)
+  CREATE TABLE 'chat_speech_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+table chat_speech_fts_idx (chat_speech_fts_idx)
+  CREATE TABLE 'chat_speech_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+table chat_speech_vec (chat_speech_vec)
+  CREATE TABLE chat_speech_vec (chunk_id INTEGER PRIMARY KEY REFERENCES chat_speech(id) ON DELETE CASCADE, embedding BLOB NOT NULL, embed_model TEXT NOT NULL) STRICT
+table chat_stats (chat_stats)
+  CREATE TABLE chat_stats (day TEXT NOT NULL, chat_id INTEGER NOT NULL, turns INTEGER NOT NULL DEFAULT 0, steps INTEGER NOT NULL DEFAULT 0, user_messages INTEGER NOT NULL DEFAULT 0, assistant_messages INTEGER NOT NULL DEFAULT 0, cancelled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, chat_id)) STRICT
+table chat_warm_sets (chat_warm_sets)
+  CREATE TABLE chat_warm_sets (chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, day TEXT NOT NULL, tool_ids TEXT NOT NULL, hidden_count INTEGER NOT NULL, over_budget INTEGER NOT NULL CHECK (over_budget IN (0,1)), computed_at INTEGER NOT NULL, PRIMARY KEY (chat_id, day)) STRICT
+table chats (chats)
+  CREATE TABLE chats ( id INTEGER PRIMARY KEY AUTOINCREMENT, folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE RESTRICT, kind TEXT NOT NULL CHECK (kind IN ('ephemeral','persistent')), title TEXT, external_title TEXT, pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0,1)), alerted INTEGER NOT NULL DEFAULT 0 CHECK (alerted IN (0,1)), undeletable INTEGER NOT NULL DEFAULT 0 CHECK (undeletable IN (0,1)), deleted_at INTEGER, model TEXT, effort INTEGER CHECK (effort BETWEEN 1 AND 4), thinking TEXT CHECK (thinking IN ('adaptive','off')), trusted INTEGER CHECK (trusted IN (0,1)), compact_at REAL CHECK (compact_at > 0 AND compact_at <= 1), project TEXT, workdir TEXT, workdir_on TEXT, tool_seq INTEGER NOT NULL DEFAULT 0, token_anchor_event_id INTEGER, token_anchor_tokens INTEGER, request_gap_ema REAL, last_request_at INTEGER, reset_pending TEXT CHECK (reset_pending IN ('reset')), created_at INTEGER NOT NULL, last_activity_at INTEGER NOT NULL, CHECK (NOT (kind = 'ephemeral' AND (pinned = 1 OR undeletable = 1)))) STRICT
+table cron_jobs (cron_jobs)
+  CREATE TABLE cron_jobs (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, task TEXT NOT NULL, interval INTEGER, next_fire_at INTEGER, expires_at INTEGER, fire_pending TEXT CHECK (fire_pending IN ('keep','shift')), model TEXT, effort INTEGER CHECK (effort BETWEEN 1 AND 4), tools TEXT, chat_id INTEGER NOT NULL UNIQUE REFERENCES chats(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, runs_total INTEGER NOT NULL DEFAULT 0, spent_total REAL NOT NULL DEFAULT 0) STRICT
+table cron_runs (cron_runs)
+  CREATE TABLE cron_runs (run_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), output TEXT, cost REAL, due INTEGER) STRICT
+table embed_cache (embed_cache)
+  CREATE TABLE embed_cache ( text_hash BLOB NOT NULL, embed_model TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (text_hash, embed_model)) STRICT
+table events (events)
+  CREATE TABLE events ( id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE, seq INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('message','thinking','tool_use','tool_result','system_text','note_updated', 'memory_updated','tools_added','tools_removed','reminder','params_changed','segment_reset','turn_ended')), payload BLOB NOT NULL, turn_id TEXT, step INTEGER, created_at INTEGER NOT NULL, UNIQUE (segment_id, seq)) STRICT
+table folders (folders)
+  CREATE TABLE folders ( id INTEGER PRIMARY KEY AUTOINCREMENT, surface_id TEXT NOT NULL REFERENCES surfaces(id) ON DELETE RESTRICT, name TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0 CHECK (builtin IN (0,1)), trusted INTEGER CHECK (trusted IN (0,1)), model TEXT, effort INTEGER CHECK (effort BETWEEN 1 AND 4), thinking TEXT CHECK (thinking IN ('adaptive','off')), compact_at REAL CHECK (compact_at > 0 AND compact_at <= 1), UNIQUE (surface_id, name)) STRICT
+table gc_runs (gc_runs)
+  CREATE TABLE gc_runs (run_id TEXT PRIMARY KEY, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), deleted_json TEXT) STRICT
+table hands_grants (hands_grants)
+  CREATE TABLE hands_grants (id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL, surface TEXT NOT NULL REFERENCES surfaces(id) ON DELETE RESTRICT, chat_id INTEGER REFERENCES chats(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK (kind IN ('read','write','shell')), prefix TEXT NOT NULL, issued_by TEXT NOT NULL REFERENCES persons(id) ON DELETE RESTRICT, created_at INTEGER NOT NULL) STRICT
+table health_stats (health_stats)
+  CREATE TABLE health_stats (day TEXT NOT NULL, metric TEXT NOT NULL, key TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, metric, key)) STRICT
+table identities (identities)
+  CREATE TABLE identities (person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE, surface_id TEXT NOT NULL REFERENCES surfaces(id) ON DELETE RESTRICT, external_id TEXT NOT NULL, handle TEXT, name TEXT, first_seen INTEGER NOT NULL, PRIMARY KEY (surface_id, external_id)) STRICT
+table soul_meta (soul_meta)
+  CREATE TABLE soul_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT
+table memory (memory)
+  CREATE TABLE memory ( id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK (kind IN ('fact','event','core','procedure')), text TEXT NOT NULL, name TEXT, description TEXT, tags TEXT, visibility TEXT NOT NULL CHECK (visibility IN ('public','trusted','private')), importance REAL NOT NULL DEFAULT 0.5 CHECK (importance BETWEEN 0 AND 1), confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence BETWEEN 0 AND 1), source_actor TEXT REFERENCES persons(id) ON DELETE RESTRICT, source_chat INTEGER, source_surface TEXT, source_trusted_chat INTEGER CHECK (source_trusted_chat IN (0,1)), source_run_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, consolidated_at INTEGER, occurred_at INTEGER, valid_from INTEGER NOT NULL, valid_to INTEGER, supersedes INTEGER REFERENCES memory(id) ON DELETE SET NULL, version INTEGER NOT NULL DEFAULT 1, last_reinforced_at INTEGER NOT NULL, access_count REAL NOT NULL DEFAULT 0, embedding BLOB, embed_model TEXT) STRICT
+table memory_archive (memory_archive)
+  CREATE TABLE memory_archive ( memory_id INTEGER PRIMARY KEY REFERENCES memory(id) ON DELETE CASCADE, reason TEXT NOT NULL CHECK (reason IN ('forget','merge','split','demote')), why TEXT NOT NULL, run_id TEXT, actor TEXT REFERENCES persons(id) ON DELETE RESTRICT, archived_at INTEGER NOT NULL, restored_at INTEGER) STRICT
+table memory_fts (memory_fts)
+  CREATE VIRTUAL TABLE memory_fts USING fts5(text, name, description, tags, content='memory', content_rowid='id', tokenize='trigram case_sensitive 0')
+table memory_fts_config (memory_fts_config)
+  CREATE TABLE 'memory_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+table memory_fts_data (memory_fts_data)
+  CREATE TABLE 'memory_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+table memory_fts_docsize (memory_fts_docsize)
+  CREATE TABLE 'memory_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+table memory_fts_idx (memory_fts_idx)
+  CREATE TABLE 'memory_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+table memory_link (memory_link)
+  CREATE TABLE memory_link (from_id INTEGER NOT NULL REFERENCES memory(id) ON DELETE CASCADE, to_id INTEGER NOT NULL REFERENCES memory(id) ON DELETE CASCADE, rel TEXT NOT NULL CHECK (rel IN ('split_from','contradicts','refines')), created_at INTEGER NOT NULL, PRIMARY KEY (from_id, to_id, rel)) STRICT
+table messages (messages)
+  CREATE TABLE messages ( chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, seq INTEGER NOT NULL, event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('user','assistant')), sender_person_id TEXT REFERENCES persons(id) ON DELETE RESTRICT, external_id TEXT, reply_to_external_id TEXT, turn_id TEXT, indexed_at INTEGER, PRIMARY KEY (chat_id, seq)) STRICT
+table module_kv (module_kv)
+  CREATE TABLE module_kv (module TEXT NOT NULL, key TEXT NOT NULL, value BLOB NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (module, key)) STRICT
+table module_kv_usage (module_kv_usage)
+  CREATE TABLE module_kv_usage (module TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK (bytes >= 0)) STRICT, WITHOUT ROWID
+table module_services (module_services)
+  CREATE TABLE module_services (module TEXT PRIMARY KEY, address TEXT NOT NULL, key TEXT NOT NULL CHECK (key <> ''), added_via TEXT NOT NULL, added_at INTEGER NOT NULL) STRICT
+table module_tokens (module_tokens)
+  CREATE TABLE module_tokens (token_hash BLOB PRIMARY KEY, module TEXT NOT NULL, issued_by TEXT REFERENCES persons(id) ON DELETE RESTRICT, issued_via TEXT, issued_at INTEGER NOT NULL, revoked_at INTEGER, CHECK (issued_by IS NOT NULL OR issued_via IS NOT NULL)) STRICT
+table modules (modules)
+  CREATE TABLE modules (name TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('connected','offline','forgotten')), version TEXT NOT NULL, proto_version TEXT NOT NULL, capabilities BLOB NOT NULL, first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL) STRICT
+table notes_snapshot_entries (notes_snapshot_entries)
+  CREATE TABLE notes_snapshot_entries ( snapshot_id INTEGER NOT NULL REFERENCES notes_snapshots(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT NOT NULL, body TEXT NOT NULL, prev_body TEXT, pinned INTEGER NOT NULL CHECK (pinned IN (0,1)), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (snapshot_id, name)) STRICT
+table notes_snapshots (notes_snapshots)
+  CREATE TABLE notes_snapshots ( id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, reason TEXT NOT NULL, count INTEGER NOT NULL CHECK (count >= 0)) STRICT
+table notes_state (notes_state)
+  CREATE TABLE notes_state (chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, mode TEXT NOT NULL CHECK (mode IN ('inline','squeeze','index')), since_at INTEGER NOT NULL, squeeze_turns INTEGER NOT NULL DEFAULT 0, wrap_up_segment INTEGER REFERENCES segments(id) ON DELETE SET NULL, nudge_segment INTEGER REFERENCES segments(id) ON DELETE SET NULL, seen_at INTEGER) STRICT
+table pending (pending)
+  CREATE TABLE pending (id TEXT PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, turn_id TEXT NOT NULL, call_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('ask','permission')), payload TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, resolved_at INTEGER, outcome TEXT CHECK (outcome IN ('answered','text_instead','late_answer','superseded','allowed','denied','expired','cancelled')), CHECK ((resolved_at IS NULL) = (outcome IS NULL))) STRICT
+table persons (persons)
+  CREATE TABLE persons (id TEXT PRIMARY KEY CHECK (id GLOB 'p[0-9]*'), name TEXT NOT NULL, master INTEGER NOT NULL DEFAULT 0 CHECK (master IN (0,1)), whitelisted INTEGER NOT NULL DEFAULT 0 CHECK (whitelisted IN (0,1)), created_at INTEGER NOT NULL) STRICT
+table schema_migrations (schema_migrations)
+  CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum BLOB NOT NULL, applied_at INTEGER NOT NULL) STRICT
+table segments (segments)
+  CREATE TABLE segments ( id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, seq INTEGER NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, reason TEXT NOT NULL CHECK (reason IN ('initial','compact','downshift','overflow','manual','reset')), summary TEXT, verbatim_tail TEXT, summary_model TEXT, summary_path TEXT CHECK (summary_path IN ('warm','cold','bisect','fallback')), summary_attempts INTEGER NOT NULL DEFAULT 0, failed_compactions INTEGER NOT NULL DEFAULT 0, system_snapshot BLOB NOT NULL, tools_snapshot BLOB NOT NULL, hot_memory_ids BLOB NOT NULL, UNIQUE (chat_id, seq)) STRICT
+table sleep_phase_runs (sleep_phase_runs)
+  CREATE TABLE sleep_phase_runs (run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE, phase TEXT NOT NULL CHECK (phase IN ('memory','groups','warm')), started INTEGER NOT NULL, finished INTEGER, model TEXT, ops_json TEXT NOT NULL DEFAULT '[]', applied INTEGER NOT NULL DEFAULT 0, discarded INTEGER NOT NULL DEFAULT 0, report TEXT, PRIMARY KEY (run_id, phase)) STRICT
+table sleep_runs (sleep_runs)
+  CREATE TABLE sleep_runs (run_id TEXT PRIMARY KEY, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), dry_run INTEGER NOT NULL CHECK (dry_run IN (0,1)), interrupted INTEGER NOT NULL DEFAULT 0 CHECK (interrupted IN (0,1)), report TEXT) STRICT
+table spend (spend)
+  CREATE TABLE spend (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, model TEXT NOT NULL, source TEXT NOT NULL CHECK (source IN ('surface','cron','sleep','agent','system','module')), op TEXT NOT NULL CHECK (op IN ('step','compaction','title','embed','keep_alive','vet','other')), module TEXT, chat_id INTEGER, turn_id TEXT, run_id TEXT, input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL, reasoning INTEGER NOT NULL DEFAULT 0, context_edits_applied INTEGER NOT NULL DEFAULT 0, cache_break_reason TEXT CHECK (cache_break_reason IN ('model_change','tools_change','segment_reset','ttl_expired','context_edit','thinking_change','effort_change','first_request','unknown')), cost REAL, currency TEXT, cost_source TEXT NOT NULL CHECK (cost_source IN ('provider','pricebook','none')), CHECK ((cost IS NULL) = (currency IS NULL)), CHECK ((source = 'module') = (module IS NOT NULL))) STRICT
+table sqlite_sequence (sqlite_sequence)
+  CREATE TABLE sqlite_sequence(name,seq)
+table surfaces (surfaces)
+  CREATE TABLE surfaces ( id TEXT PRIMARY KEY CHECK (id GLOB '[a-z]*' AND id NOT GLOB '*[^a-z0-9_]*' AND length(id) <= 32), name TEXT NOT NULL, module TEXT REFERENCES modules(name), rules TEXT, trusted INTEGER CHECK (trusted IN (0,1)), model TEXT, effort INTEGER CHECK (effort BETWEEN 1 AND 4), thinking TEXT CHECK (thinking IN ('adaptive','off')), compact_at REAL CHECK (compact_at > 0 AND compact_at <= 1), builtin TEXT CHECK (builtin IN ('local','system')), created_at INTEGER NOT NULL) STRICT
+table token_ratios (token_ratios)
+  CREATE TABLE token_ratios (model TEXT PRIMARY KEY, bytes_per_token REAL NOT NULL, samples INTEGER NOT NULL, updated_at INTEGER NOT NULL) STRICT
+table tool_groups (tool_groups)
+  CREATE TABLE tool_groups (path TEXT PRIMARY KEY, about TEXT NOT NULL DEFAULT '', source TEXT NOT NULL CHECK (source IN ('module','sleep','master')), updated_at INTEGER NOT NULL) STRICT
+table tool_overrides (tool_overrides)
+  CREATE TABLE tool_overrides (tool_id INTEGER PRIMARY KEY REFERENCES tools(tool_id) ON DELETE CASCADE, master_only INTEGER CHECK (master_only IN (0,1)), trusted_only INTEGER CHECK (trusted_only IN (0,1)), gate TEXT CHECK (gate IN ('forbid')), attention TEXT CHECK (attention IN ('always','reserved')), note TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL) STRICT
+table tool_pins (tool_pins)
+  CREATE TABLE tool_pins (chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, tool_id INTEGER NOT NULL REFERENCES tools(tool_id) ON DELETE CASCADE, until INTEGER NOT NULL, PRIMARY KEY (chat_id, tool_id)) STRICT
+table tool_placements (tool_placements)
+  CREATE TABLE tool_placements (tool_id INTEGER PRIMARY KEY REFERENCES tools(tool_id) ON DELETE CASCADE, path TEXT NOT NULL REFERENCES tool_groups(path) ON DELETE RESTRICT, source TEXT NOT NULL CHECK (source IN ('sleep','master')), updated_at INTEGER NOT NULL) STRICT
+table tool_results (tool_results)
+  CREATE TABLE tool_results ( chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE, tseq INTEGER NOT NULL, event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE, segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE, tool_id INTEGER REFERENCES tools(tool_id), dedup_key BLOB NOT NULL, dedup_of INTEGER, content BLOB, created_at INTEGER NOT NULL, synthetic TEXT CHECK (synthetic IN ('not_started','interrupted','cancelled','tool_unavailable')), PRIMARY KEY (chat_id, tseq), CHECK ((dedup_of IS NULL) = (content IS NOT NULL)), CHECK (synthetic IS NULL OR dedup_of IS NULL)) STRICT
+table tool_stats (tool_stats)
+  CREATE TABLE tool_stats (day TEXT NOT NULL, chat_id INTEGER NOT NULL, tool_id INTEGER NOT NULL, calls INTEGER NOT NULL DEFAULT 0, turns_with_call INTEGER NOT NULL DEFAULT 0, loads INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0, ends_turn INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL, PRIMARY KEY (day, chat_id, tool_id)) STRICT
+table tools (tools)
+  CREATE TABLE tools ( tool_id INTEGER PRIMARY KEY AUTOINCREMENT, module TEXT NOT NULL, path TEXT NOT NULL, canonical TEXT NOT NULL, decl TEXT NOT NULL, spec_hash BLOB NOT NULL, registered_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, retired_at INTEGER, online INTEGER NOT NULL DEFAULT 0 CHECK (online IN (0,1)), UNIQUE (module, path)) STRICT
+trigger chat_speech_ad (chat_speech)
+  CREATE TRIGGER chat_speech_ad AFTER DELETE ON chat_speech BEGIN INSERT INTO chat_speech_fts(chat_speech_fts,rowid,text) VALUES ('delete',old.id,old.text); END
+trigger chat_speech_ai (chat_speech)
+  CREATE TRIGGER chat_speech_ai AFTER INSERT ON chat_speech BEGIN INSERT INTO chat_speech_fts(rowid,text) VALUES (new.id,new.text); END
+trigger chat_speech_au (chat_speech)
+  CREATE TRIGGER chat_speech_au AFTER UPDATE OF text ON chat_speech BEGIN INSERT INTO chat_speech_fts(chat_speech_fts,rowid,text) VALUES ('delete',old.id,old.text); INSERT INTO chat_speech_fts(rowid,text) VALUES (new.id,new.text); END
+trigger chats_kind_monotonic (chats)
+  CREATE TRIGGER chats_kind_monotonic BEFORE UPDATE OF kind ON chats WHEN old.kind = 'persistent' AND new.kind = 'ephemeral' BEGIN SELECT RAISE(ABORT,'kind is monotonic'); END
+trigger chats_undeletable_mark (chats)
+  CREATE TRIGGER chats_undeletable_mark BEFORE UPDATE OF deleted_at ON chats WHEN new.deleted_at IS NOT NULL AND new.undeletable = 1 BEGIN SELECT RAISE(ABORT,'undeletable'); END
+trigger chats_undeletable_purge (chats)
+  CREATE TRIGGER chats_undeletable_purge BEFORE DELETE ON chats WHEN old.undeletable = 1 BEGIN SELECT RAISE(ABORT,'undeletable'); END
+trigger events_append_only (events)
+  CREATE TRIGGER events_append_only BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'events are append-only'); END
+trigger memory_ad (memory)
+  CREATE TRIGGER memory_ad AFTER DELETE ON memory BEGIN INSERT INTO memory_fts(memory_fts,rowid,text,name,description,tags) VALUES ('delete',old.id,old.text,old.name,old.description,old.tags); END
+trigger memory_ai (memory)
+  CREATE TRIGGER memory_ai AFTER INSERT ON memory BEGIN INSERT INTO memory_fts(rowid,text,name,description,tags) VALUES (new.id,new.text,new.name,new.description,new.tags); END
+trigger memory_au (memory)
+  CREATE TRIGGER memory_au AFTER UPDATE OF text,name,description,tags ON memory BEGIN INSERT INTO memory_fts(memory_fts,rowid,text,name,description,tags) VALUES ('delete',old.id,old.text,old.name,old.description,old.tags); INSERT INTO memory_fts(rowid,text,name,description,tags) VALUES (new.id,new.text,new.name,new.description,new.tags); END
+trigger module_kv_usage_ad (module_kv)
+  CREATE TRIGGER module_kv_usage_ad AFTER DELETE ON module_kv BEGIN UPDATE module_kv_usage SET bytes = bytes - (octet_length(old.key) + length(old.value) + 64) WHERE module = old.module; END
+trigger module_kv_usage_ai (module_kv)
+  CREATE TRIGGER module_kv_usage_ai AFTER INSERT ON module_kv BEGIN INSERT INTO module_kv_usage (module, bytes) VALUES (new.module, octet_length(new.key) + length(new.value) + 64) ON CONFLICT (module) DO UPDATE SET bytes = bytes + excluded.bytes; END
+trigger module_kv_usage_au (module_kv)
+  CREATE TRIGGER module_kv_usage_au AFTER UPDATE ON module_kv BEGIN UPDATE module_kv_usage SET bytes = bytes - (octet_length(old.key) + length(old.value) + 64) WHERE module = old.module; INSERT INTO module_kv_usage (module, bytes) VALUES (new.module, octet_length(new.key) + length(new.value) + 64) ON CONFLICT (module) DO UPDATE SET bytes = bytes + excluded.bytes; END

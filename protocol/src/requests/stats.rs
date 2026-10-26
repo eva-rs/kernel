@@ -9,7 +9,7 @@ use crate::{
         ChatId,
         stats::{
             CacheStats, Counter, Gauges, GroupBy, ModelSpend, Money, RateLimit, Scope, SeriesPoint,
-            SpendRow, Target, ToolUsageRow, TurnSpend,
+            SpendRow, SpendWindow, Target, ToolUsageRow, TurnSpend,
         },
         turn::TurnView,
     },
@@ -48,8 +48,9 @@ pub trait Stats {
     fn spend(
         #[serde(default)] scope: Scope,
         target: Option<Target>,
-        from: Date,
-        to: Date,
+        window: SpendWindow,
+        /// Зона календарных границ и группировки по суткам; `None` — `system.tz`.
+        timezone: Option<String>,
         #[serde(default)] group_by: GroupBy,
         view: Option<TurnView>,
     ) -> ok! {
@@ -63,8 +64,9 @@ pub trait Stats {
     fn spend_series(
         #[serde(default)] scope: Scope,
         target: Option<Target>,
-        from: Date,
-        to: Date,
+        window: SpendWindow,
+        /// Зона календарных границ и суточных точек; `None` — `system.tz`.
+        timezone: Option<String>,
         #[serde(default)] group_by: GroupBy,
     ) -> ok! {
         series: Vec<SeriesPoint>,
@@ -77,8 +79,8 @@ pub trait Stats {
     fn chat_spend(
         chat: ChatId,
     ) -> ok! {
-        /// `None` — ни одной оценённой строки.
-        total: Option<Money>,
+        /// Итоги по валютам; пусто — ни одной оценённой строки.
+        total: Vec<Money>,
         by_model: Vec<ModelSpend>,
         last_turn: Option<TurnSpend>,
         hit_ratio: f64,

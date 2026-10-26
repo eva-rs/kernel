@@ -1,4 +1,4 @@
-//! Проводные типы `06`: кадры, handshake, capabilities и методы ядро → модуль.
+//! Проводные типы `06`: кадры, handshake, capabilities и методы soul → модуль.
 //!
 //! Кадр несёт payload непрозрачными байтами — msgpack `Args`/`Ok`/`Item`
 //! операции: разбор в два шага держит `Frame` без динамического `Value`, а
@@ -24,18 +24,18 @@ pub use handshake::{Hello, Welcome};
 
 /// Методы вне операций библиотеки; хуки — `HookPoint::method`.
 pub mod method {
-    /// Модуль → ядро, первый кадр сессии: `Hello` → `Welcome`.
+    /// Модуль → soul, первый кадр сессии: `Hello` → `Welcome`.
     pub const HELLO: &str = "hello";
     /// `notify` в обе стороны, params — `Ping {}`.
     pub const PING: &str = "ping";
     /// `notify` в обе стороны, params — `RpcError`: причина закрытия, последний
     /// кадр перед закрытием сокета (uds закрывается без причины).
     pub const CLOSE: &str = "close";
-    /// Ядро → модуль: `ToolCall` → поток `ToolItem`.
+    /// Soul → модуль: `ToolCall` → поток `ToolItem`.
     pub const TOOLS_CALL: &str = "tools.call";
-    /// Ядро → модуль, `notify`: `Publish`.
+    /// Soul → модуль, `notify`: `Publish`.
     pub const EVENTS_PUBLISH: &str = "events.publish";
-    /// Ядро → модуль-провайдер: `GenerateRequest` → поток `GenItem`.
+    /// Soul → модуль-провайдер: `GenerateRequest` → поток `GenItem`.
     pub const PROVIDER_GENERATE: &str = "provider.generate";
     /// `EmbedRequest` → `EmbedResponse`.
     pub const PROVIDER_EMBED: &str = "provider.embed";

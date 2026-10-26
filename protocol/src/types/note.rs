@@ -16,6 +16,15 @@ pub struct Note {
     pub updated_at: Timestamp,
 }
 
+/// Полный блокнот перед успешной мутацией; строки доступны через `notes.snapshot`.
+#[data]
+pub struct Snapshot {
+    pub id: i64,
+    pub created_at: Timestamp,
+    pub reason: String,
+    pub count: u32,
+}
+
 #[data(copy, ord, display(name))]
 #[derive(Hash)]
 pub enum Mode {

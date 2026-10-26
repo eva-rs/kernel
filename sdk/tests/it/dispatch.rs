@@ -1,4 +1,4 @@
-//! Вызовы ядро → модуль через настоящий `ModuleClient`; handshake без регистрации surface.
+//! Вызовы soul → модуль через настоящий `ModuleClient`; handshake без регистрации surface.
 
 use std::{
     sync::{
@@ -33,19 +33,19 @@ pub struct EchoInput {
     pub times: u32,
 }
 
-/// Модуль и поддельное ядро на паре соединений в памяти.
+/// Модуль и поддельный soul на паре соединений в памяти.
 async fn connect(
     module: Module,
     welcome: eva_protocol::wire::Welcome,
 ) -> (Connected, fake::Session, Surfaces) {
-    let (module_end, kernel_end) = Conn::pair(&Config::default());
+    let (module_end, soul_end) = Conn::pair(&Config::default());
     let surfaces = Surfaces::default();
-    let kernel = tokio::spawn(fake::accept(kernel_end, welcome, surfaces.clone()));
+    let soul = tokio::spawn(fake::accept(soul_end, welcome, surfaces.clone()));
     let connected = module
         .handshake(module_end, &fake::token("token"))
         .await
         .expect("handshake");
-    let session = kernel.await.expect("fake kernel");
+    let session = soul.await.expect("fake soul");
     (connected, session, surfaces)
 }
 
@@ -87,7 +87,7 @@ fn text(result: &ToolResult) -> &str {
 }
 
 fn echo_module(runs: Arc<AtomicUsize>) -> Module {
-    Module::new().tool("x.echo", move |ctx: ToolCtx, input: EchoInput| {
+    Module::new().tool_path("x.echo", move |ctx: ToolCtx, input: EchoInput| {
         let runs = runs.clone();
         async move {
             runs.fetch_add(1, Ordering::SeqCst);
@@ -118,7 +118,7 @@ async fn tools_dispatch_by_id_and_canonical() {
         ),
     )
     .await;
-    assert!(matches!(&items[0], Ok(ToolItem::Progress { text }) if text == "echo for c1"));
+    assert!(matches!(&items[0], Ok(ToolItem::Progress { text, .. }) if text == "echo for c1"));
     assert_eq!(text(&result(&items)), "aa");
 
     // Модель пишет число строкой — приводится по схеме.
@@ -161,7 +161,7 @@ async fn concurrent_duplicates_share_one_execution() {
     let gate = Arc::new(Notify::new());
     let module = {
         let (runs, gate) = (runs.clone(), gate.clone());
-        Module::new().tool("x.slow", move |_: ToolCtx, _: EchoInput| {
+        Module::new().tool_path("x.slow", move |_: ToolCtx, _: EchoInput| {
             let (runs, gate) = (runs.clone(), gate.clone());
             async move {
                 runs.fetch_add(1, Ordering::SeqCst);
@@ -187,7 +187,7 @@ async fn concurrent_duplicates_share_one_execution() {
 
 #[tokio::test]
 async fn fatal_error_ends_the_stream() {
-    let module = Module::new().tool("x.fail", |_: ToolCtx, _: EchoInput| async {
+    let module = Module::new().tool_path("x.fail", |_: ToolCtx, _: EchoInput| async {
         Err::<ToolResult, _>(ToolError::fatal("disk on fire"))
     });
     let (_connected, session, _) = connect(module, fake::welcome("s1", &[])).await;
@@ -202,7 +202,7 @@ async fn fatal_error_ends_the_stream() {
     }
 
     // Обычная ошибка через `?` — данные для модели, не обрыв тура.
-    let module = Module::new().tool("x.soft", |_: ToolCtx, _: EchoInput| async {
+    let module = Module::new().tool_path("x.soft", |_: ToolCtx, _: EchoInput| async {
         Err::<ToolResult, _>("not today")
     });
     let (_connected, session, _) = connect(module, fake::welcome("s2", &[])).await;
@@ -224,7 +224,7 @@ async fn a_panicking_tool_ends_internal_and_is_not_rerun() {
     let runs = Arc::new(AtomicUsize::new(0));
     let module = {
         let runs = runs.clone();
-        Module::new().tool("x.boom", move |_: ToolCtx, _: EchoInput| {
+        Module::new().tool_path("x.boom", move |_: ToolCtx, _: EchoInput| {
             let runs = runs.clone();
             async move {
                 if runs.fetch_add(1, Ordering::SeqCst) < usize::MAX {
@@ -348,12 +348,12 @@ async fn the_handshake_registers_nothing_and_carries_ask() {
     assert_eq!(connected.caller().label(), fake::MODULE);
 }
 
-/// Создание — обычный вызов `Kernel`, повторять его на каждом старте безопасно.
+/// Создание — обычный вызов `Soul`, повторять его на каждом старте безопасно.
 #[tokio::test]
-async fn the_module_creates_its_surface_through_the_kernel() {
+async fn the_module_creates_its_surface_through_the_soul() {
     let (connected, _session, surfaces) = connect(Module::new(), fake::welcome("s1", &[])).await;
     let created = connected
-        .kernel()
+        .soul()
         .surfaces()
         .create(
             SurfaceId::from("x"),

@@ -1,0 +1,22 @@
+[package]
+name = "eva-sdk-macros"
+version.workspace = true
+edition.workspace = true
+description = "Compile-time messages and gettext catalogs for Eva modules"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+eva = { workspace = true, features = ["cli", "tokio"] }
+eyre.workspace = true
+clap = { version = "4", features = ["derive"] }
+eva-protocol.workspace = true
+syn = { version = "2", features = ["full", "visit"] }
+quote = "1"
+proc-macro2 = "1"
+serde_json.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true

@@ -8,10 +8,10 @@ use crate::types::{Effort, ModelId};
 #[data(copy)]
 #[derive(Default)]
 pub struct ProviderDecl {
-    /// Инференс на машине ядра: только такому эмбеддеру уходит private-текст.
+    /// Инференс на машине soul: только такому эмбеддеру уходит private-текст.
     #[serde(default)]
     pub local: bool,
-    /// Провайдер умеет `count_tokens`; иначе ядро считает калиброванным ratio.
+    /// Провайдер умеет `count_tokens`; иначе soul считает калиброванным ratio.
     #[serde(default)]
     pub count_tokens: bool,
 }

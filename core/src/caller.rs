@@ -12,8 +12,8 @@ use eva_protocol::types::{ModuleId, module::ModuleKind};
 /// создал сам.
 #[data]
 pub enum Caller {
-    /// Само ядро: тулы модели, крон, сон, GC, уведомления.
-    Kernel,
+    /// Сам soul: тулы модели, крон, сон, GC, уведомления.
+    Soul,
     /// Клиент хозяина: телефон, терминал, десктоп. Может всё, что может он.
     Client { module: ModuleId },
     /// Служебный модуль: мост, MCP, удалённый провайдер.
@@ -29,28 +29,28 @@ impl Caller {
         }
     }
 
-    /// Вид модуля для `welcome.kind`; ядро не модуль.
+    /// Вид модуля для `welcome.kind`; soul не модуль.
     pub const fn kind(&self) -> Option<ModuleKind> {
         match self {
-            Self::Kernel => None,
+            Self::Soul => None,
             Self::Client { .. } => Some(ModuleKind::Client),
             Self::Service { .. } => Some(ModuleKind::Service),
         }
     }
 
-    /// Действует от лица хозяина — ядро или его клиент.
+    /// Действует от лица хозяина — soul или его клиент.
     pub const fn is_owner(&self) -> bool {
-        matches!(self, Self::Kernel | Self::Client { .. })
+        matches!(self, Self::Soul | Self::Client { .. })
     }
 
-    pub const fn is_kernel(&self) -> bool {
-        matches!(self, Self::Kernel)
+    pub const fn is_soul(&self) -> bool {
+        matches!(self, Self::Soul)
     }
 
-    /// Имя модуля; у ядра его нет.
+    /// Имя модуля; у soul его нет.
     pub const fn module(&self) -> Option<&ModuleId> {
         match self {
-            Self::Kernel => None,
+            Self::Soul => None,
             Self::Client { module } | Self::Service { module } => Some(module),
         }
     }
@@ -58,7 +58,7 @@ impl Caller {
     /// Имя для логов и метрик.
     pub fn label(&self) -> &str {
         match self {
-            Self::Kernel => "kernel",
+            Self::Soul => "soul",
             Self::Client { module } | Self::Service { module } => module.as_str(),
         }
     }

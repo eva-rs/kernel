@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     harness::{config, hello},
-    kernel::{Auth, CLIENT_TOKEN, Kernel},
+    soul::{Auth, CLIENT_TOKEN, Soul},
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -38,7 +38,7 @@ async fn wss_with_extra_ca() {
     let listener = Listener::bind(&listen, &cfg).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = Server::new(Kernel::default(), Auth::default(), cfg.clone());
+    let server = Server::new(Soul::default(), Auth::default(), cfg.clone());
     let (sessions_tx, mut sessions) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         server
@@ -74,7 +74,7 @@ async fn wss_with_extra_ca() {
         .unwrap();
     assert_eq!(surface.id.as_str(), "tls");
 
-    // Самоподписанное ядро не проходит публичные корни webpki.
+    // Soul с самоподписанным сертификатом не проходит публичные корни webpki.
     let public = ClientOptions {
         config: cfg.clone(),
         ..ClientOptions::default()
@@ -87,7 +87,7 @@ async fn wss_with_extra_ca() {
         "{err:?}"
     );
 
-    // Без CA сертификат ядра не проверяется.
+    // Без CA сертификат soul не проверяется.
     let untrusted = ClientOptions {
         config: cfg,
         tls: ClientTls {

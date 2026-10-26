@@ -1,4 +1,4 @@
-//! Модули ядра.
+//! Модули soul.
 
 use std::{
     borrow::Cow,
@@ -17,8 +17,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::types::ModuleId;
 
-/// Вид модуля следует из соединения (`06 §2`): клиент звонит в ядро с
-/// токеном, сервис набирает ядро по реестру.
+/// Вид модуля следует из соединения (`06 §2`): клиент звонит в soul с
+/// токеном, а сервису soul звонит сам по реестру.
 #[data(copy, ord, display(name))]
 pub enum ModuleKind {
     Client,
@@ -54,7 +54,7 @@ pub struct Dial {
     pub address: ServiceAddress,
     /// Запись из `modules.services`: `modules.remove` её не снимет.
     pub config: bool,
-    /// Последний провал до следующего `welcome`; живёт только в памяти ядра.
+    /// Последний провал до следующего `welcome`; живёт только в памяти soul.
     pub error: Option<String>,
 }
 
@@ -87,7 +87,7 @@ impl From<&str> for ServiceKey {
     }
 }
 
-/// Куда ядро звонит сервисному модулю (`06 §1`): `uds:///<абсолютный путь>`
+/// Куда soul звонит сервисному модулю (`06 §1`): `uds:///<абсолютный путь>`
 /// либо `tcp://<host>:<port>`; на проводе и в конфиге — эта строка.
 #[data(ord, not(serde, JsonSchema))]
 #[derive(Hash)]

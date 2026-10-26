@@ -17,7 +17,7 @@ use eva_rpc::{
 
 use crate::{
     harness::{Harness, Via, config, hello, ms, resume},
-    kernel::{CLIENT_TOKEN, OTHER_TOKEN, chat, chat_id},
+    soul::{CLIENT_TOKEN, OTHER_TOKEN, chat, chat_id},
 };
 
 fn ping() -> Frame {
@@ -52,14 +52,14 @@ async fn frames_before_welcome_close() {
 
     // Со стороны клиента: кадр до `welcome` — отказ handshake.
     let cfg = config();
-    let (client_end, mut kernel_end) = Conn::pair(&cfg);
+    let (client_end, mut soul_end) = Conn::pair(&cfg);
     let fake = tokio::spawn(async move {
-        let _hello = kernel_end.recv().await;
-        kernel_end
+        let _hello = soul_end.recv().await;
+        soul_end
             .send(Outbound::Frame(codec::encode_frame(&ping()).unwrap()))
             .await
             .unwrap();
-        kernel_end.recv().await
+        soul_end.recv().await
     });
     let result = RpcClient::handshake(
         client_end,
@@ -100,7 +100,7 @@ async fn ping_timeout_closes() {
     raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
     let accepted = h.accepted().await;
 
-    // Молчащий пир: ядро шлёт ping, но ответа нет.
+    // Молчащий пир: soul шлёт ping, но ответа нет.
     let reason = tokio::time::timeout(Duration::from_secs(5), accepted.peer.closed())
         .await
         .unwrap();
@@ -147,7 +147,7 @@ async fn close_precedes_the_ends_of_served_streams() {
     }
     accepted
         .peer
-        .close(RpcError::new(ErrorCode::Unavailable, "kernel restarts"));
+        .close(RpcError::new(ErrorCode::Unavailable, "soul restarts"));
 
     let mut frames = Vec::new();
     while let Some(frame) = raw.recv().await {
@@ -273,7 +273,7 @@ async fn call_with_id_resends_into_the_window() {
 }
 
 fn h_creates(h: &Harness) -> usize {
-    h.kernel
+    h.soul
         .state
         .creates
         .load(std::sync::atomic::Ordering::SeqCst)
@@ -282,7 +282,7 @@ fn h_creates(h: &Harness) -> usize {
 #[tokio::test(flavor = "multi_thread")]
 async fn retry_waits_for_the_running_original() {
     let h = Harness::start(Via::Uds).await;
-    *h.kernel.state.create_delay.lock().unwrap() = Duration::from_millis(300);
+    *h.soul.state.create_delay.lock().unwrap() = Duration::from_millis(300);
 
     let mut first = h.raw().await;
     let welcome = first.hello(&hello(CLIENT_TOKEN)).await.unwrap();
@@ -428,7 +428,7 @@ async fn unknown_capability_keys_are_warned() {
     let h = Harness::start(Via::Uds).await;
     let mut raw = h.raw().await;
 
-    // Capability новее ядра: `hello` проходит, ключ возвращается в `warnings`.
+    // Capability новее soul: `hello` проходит, ключ возвращается в `warnings`.
     let mut params = serde_json::to_value(hello(CLIENT_TOKEN)).unwrap();
     params["capabilities"]["telepathy"] = serde_json::json!({"range": 3});
     params["capabilities"]["events"] = serde_json::json!({"subscriptions": []});
@@ -471,7 +471,7 @@ async fn requests_over_max_inflight_get_quota() {
         ..config()
     };
     let h = Harness::with(Via::Uds, cfg).await;
-    *h.kernel.state.create_delay.lock().unwrap() = Duration::from_millis(300);
+    *h.soul.state.create_delay.lock().unwrap() = Duration::from_millis(300);
     let mut raw = h.raw().await;
     raw.hello(&hello(CLIENT_TOKEN)).await.unwrap();
 

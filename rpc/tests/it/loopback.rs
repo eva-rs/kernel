@@ -21,7 +21,7 @@ use eva_rpc::{ClientOptions, ConnectError, NoHandler, RpcClient, codec, config::
 
 use crate::{
     harness::{Dial, Harness, Via, config, hello, ms, service_hello},
-    kernel::{CLIENT, CLIENT_TOKEN, FLOOD_ITEMS, SERVICE, chat, chat_id, item},
+    soul::{CLIENT, CLIENT_TOKEN, FLOOD_ITEMS, SERVICE, chat, chat_id, item},
 };
 
 macro_rules! both {
@@ -194,7 +194,7 @@ async fn cancel_on_drop(via: Via) {
 
     tokio::time::timeout(
         Duration::from_secs(5),
-        h.kernel.state.attach_dropped.notified(),
+        h.soul.state.attach_dropped.notified(),
     )
     .await
     .expect("server stream was not dropped after cancel");
@@ -234,7 +234,7 @@ async fn upload(via: Via) {
         .await
         .unwrap();
     assert_eq!(ok.size, whole.len() as u64);
-    assert_eq!(*h.kernel.state.uploads.lock().unwrap(), vec![whole.clone()]);
+    assert_eq!(*h.soul.state.uploads.lock().unwrap(), vec![whole.clone()]);
 
     let err = session
         .blobs()
@@ -310,7 +310,7 @@ async fn caller_from_welcome(via: Via) {
     let mut h = Harness::start(via).await;
 
     // Имени модуля в `hello` нет: id и caller клиента — из записи токена,
-    // сервиса — из записи, которую набрало ядро.
+    // сервиса — из записи, которую набрал soul.
     let (client, accepted) = h.connect(CLIENT_TOKEN).await;
     assert_eq!(client.caller(), &accepted.caller);
     assert!(client.caller().is_owner());
@@ -334,7 +334,7 @@ async fn caller_from_welcome(via: Via) {
         .unwrap_err();
     assert!(matches!(spoofed, Aux::Forbidden(_)));
     assert!(matches!(
-        service.make_session(Caller::Kernel).await,
+        service.make_session(Caller::Soul).await,
         Err(Aux::Forbidden(_))
     ));
     assert!(service.make_session(service.caller().clone()).await.is_ok());
@@ -393,7 +393,7 @@ async fn backpressure_per_stream(via: Via) {
 
     tokio::time::timeout(
         Duration::from_secs(5),
-        h.kernel.state.attach_dropped.notified(),
+        h.soul.state.attach_dropped.notified(),
     )
     .await
     .expect("overflow must cancel the producer");
@@ -486,7 +486,7 @@ async fn supersede_ends_streams(via: Via) {
 
 async fn request_timeout_keeps_mutation(via: Via) {
     let mut h = Harness::start(via).await;
-    *h.kernel.state.create_delay.lock().unwrap() = Duration::from_millis(600);
+    *h.soul.state.create_delay.lock().unwrap() = Duration::from_millis(600);
     let options = ClientOptions {
         config: Config {
             request_timeout: ms(150),
@@ -526,7 +526,7 @@ async fn heartbeat_keeps_long_call(via: Via) {
         },
     )
     .await;
-    *h.kernel.state.create_delay.lock().unwrap() = Duration::from_millis(600);
+    *h.soul.state.create_delay.lock().unwrap() = Duration::from_millis(600);
     let options = ClientOptions {
         config: Config {
             request_timeout: ms(150),
@@ -577,7 +577,7 @@ async fn upload_of_small_pieces(via: Via) {
         .await
         .unwrap();
     assert_eq!(ok.size, whole.len() as u64);
-    assert_eq!(*h.kernel.state.uploads.lock().unwrap(), vec![whole]);
+    assert_eq!(*h.soul.state.uploads.lock().unwrap(), vec![whole]);
 }
 
 async fn idle_stream_times_out(via: Via) {
@@ -615,7 +615,7 @@ async fn idle_stream_times_out(via: Via) {
 
     tokio::time::timeout(
         Duration::from_secs(5),
-        h.kernel.state.attach_dropped.notified(),
+        h.soul.state.attach_dropped.notified(),
     )
     .await
     .expect("idle timeout must cancel the producer");

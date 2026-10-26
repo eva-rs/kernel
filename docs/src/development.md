@@ -10,11 +10,11 @@
 | `sdk/` | `eva-sdk` | `Module` → `Listening` / `Connected`: SDK для модулей |
 | `providers/openai/`, `providers/mock/` | `eva-provider-*` | `impl Provider` одного вендора |
 | `providers/all/` | `eva-providers` | `ProviderConfig` под тегом `kind`, `AnyProvider`, `build` |
-| `services/kernel/` | `eva-kernel` | библиотека ядра и бинарь `eva-kernel` |
+| `services/soul/` | `eva-soul` | библиотека soul и бинарь `eva-soul` |
 | `docs/` | — | эта книга (mdBook) |
 | `flake.nix` | — | `eva.lib.mkServiceFlake` фреймворка: пакет, devShell, NixOS-модуль |
 
-Внутри `services/kernel/src/`:
+Внутри `services/soul/src/`:
 
 | Каталог | Что там |
 |---|---|
@@ -25,7 +25,7 @@
 | `handling/` | хендлер на операцию, файл на домен; потолки строк — `handling/text.rs` |
 | `impls/` | реализации трейтов неймспейсов поверх хендлеров |
 | `subsystems/` | компоненты супервизора (`modules`: слушатели, handshake, живые сессии) |
-| `providers.rs`, `registry.rs` | провайдеры ядра и реестр моделей |
+| `providers.rs`, `registry.rs` | провайдеры soul и реестр моделей |
 
 ## Сборка и тесты
 
@@ -34,14 +34,14 @@
 ```sh
 nix develop -c cargo check --workspace
 nix develop -c cargo test -p eva-provider-openai
-nix build .#eva-kernel        # ./result/bin/eva-kernel
+nix build .#eva-soul        # ./result/bin/eva-soul
 nix develop -c mdbook build docs   # книга в docs/book
 ```
 
 Почему devShell обязателен:
 
 - у системного `cargo` нет нужного линкера и системных библиотек, сборка вне shell падает на линковке;
-- toolchain (rustc, clippy, rustfmt, rust-analyzer) закреплён флейком фреймворка [`eva`](https://git.desu.church/VienDesu/eva) — результаты `fmt` и `clippy` совпадают у всех;
+- toolchain (rustc, clippy, rustfmt, rust-analyzer) закреплён флейком фреймворка [`eva`](https://github.com/nerodono/eva) — результаты `fmt` и `clippy` совпадают у всех;
 - в shell есть `sqlite` (смотреть базы), `cargo-insta` (снапшоты), `mdbook` и `mdbook-mermaid` (книга).
 
 `nix build` собирает через crane и прогоняет тесты в `checkPhase`; в исходники сборки попадают `*.snap` и `*.sql`, иначе снапшот- и схемные тесты сравнивали бы с пустотой. Флейк берёт исходники из git, поэтому новый файл, ещё не добавленный в индекс (`git add`), в сборку не попадёт, хотя `cargo` в devShell его видит.
@@ -69,21 +69,21 @@ nix develop -c cargo test --workspace
 | Что | Где и только там |
 |---|---|
 | Операции и их вид | `#[service]` в `protocol/src/requests/<ns>.rs` |
-| SQL | `services/kernel/src/db/` |
-| Хендлеры операций (`#[eva::endpoint]` + `#[fastrace::trace]`) | `services/kernel/src/handling/` |
-| Авторизация | `services/kernel/src/state/policy/`; транспорт лишь выводит `Caller` из токена |
-| Строки БД → типы протокола | `services/kernel/src/convert/` |
+| SQL | `services/soul/src/db/` |
+| Хендлеры операций (`#[eva::endpoint]` + `#[fastrace::trace]`) | `services/soul/src/handling/` |
+| Авторизация | `services/soul/src/state/policy/`; транспорт лишь выводит `Caller` из токена |
+| Строки БД → типы протокола | `services/soul/src/convert/` |
 | Строки вендоров и поверхностей | `providers/*` |
 
-Раскладку SQL, хендлеров и `Caller` сторожит `services/kernel/tests/k3_layer_lint.rs`.
+Раскладку SQL, хендлеров и `Caller` сторожит `services/soul/tests/k3_layer_lint.rs`.
 
 Прочие правила:
 
 - Одна реализация операции: RPC-метод и тул — обёртки над ней.
 - Авторизация стоит в начале хендлера: общие проверки (`owner()`, `module()`) идут до любой работы, проверки по объекту — сразу после его загрузки и до первой записи. На чужой объект хендлер отвечает `forbidden`, а не `not_found`, чтобы не выдавать факт существования.
 - `Aux::Unavailable` означает недоступность нужного компонента или неподходящее текущее состояние. Маркеры незавершённых этапов в ответах операций не используются.
-- Строки, которые вызывающий пишет в базу ядра, ограничиваются потолками из `handling/text.rs`.
-- Миграции только вперёд: применённые миграции должны быть префиксом встроенных с теми же blake3-чексуммами, иначе ядро отказывается стартовать. Правка схемы — новый файл `NNNN_name.sql` и строка в `MIGRATIONS`, не правка старого.
+- Строки, которые вызывающий пишет в базу soul, ограничиваются потолками из `handling/text.rs`.
+- Миграции только вперёд: применённые миграции должны быть префиксом встроенных с теми же blake3-чексуммами, иначе soul отказывается стартовать. Правка схемы — новый файл `NNNN_name.sql` и строка в `MIGRATIONS`, не правка старого.
 
 ### Стиль кода
 
@@ -97,26 +97,26 @@ nix develop -c cargo test --workspace
 flowchart LR
     A["protocol<br/>#[service]"] --> B["core<br/>#[export]"]
     B -. for_each_op! .-> C["rpc<br/>tests/it/errors.rs"]
-    B --> D["kernel<br/>db · convert · policy · handling · impls"]
+    B --> D["soul<br/>db · convert · policy · handling · impls"]
     D --> E["tests/contract.rs<br/>tests/k3_policy_all.rs"]
 ```
 
 1. **protocol.** В `protocol/src/requests/<ns>.rs` добавить метод в трейт с `#[service(result = Response)]`; аргументы задаются параметрами, ответ — `-> T` для tuple-структуры, `-> ok!(#[attr] T)` для неё же с атрибутами или `-> ok! { ... }` для record-структуры, варианты ошибок — `#[errors(...)]`. Сразу после метода разместить `embed! { ... }` с его вспомогательными типами и `code!(Err => [...])`, сопоставляющим вариант ошибки коду провода. `this![Type]` обращается к типу в модуле этого метода. Файловые модули приватные; модуль сервиса реэкспортируется в `requests`, например `requests::Chats`. Между методом и его `embed!` пустой строки нет; между методами есть. Новые доменные ошибки — в `protocol/src/errors/<ns>.rs` со своим `code!`.
 2. **service.** У метода в `#[service]` указать вид через `#[flags(...)]`: без флага — чтение, `mutating` — мутация, `stream` — поток (`Ok(Items<Item, Err>)`), `upload` — загрузка (`Args { meta, body }`). Метод автоматически попадёт в `NAMESPACES` и `for_each_op!`. Новый сервис добавить в `#[export]` в `core/src/service.rs`. Флаг не сверяет ни один тест: мутация без `mutating` пройдёт мимо окна идемпотентности, и SDK повторит её после реконнекта.
-3. **rpc.** Только строка в `rpc/tests/it/errors.rs`: варианты `Err` операции и их коды. Клиентская сессия, таблица диспетчера и тестовое ядро `rpc/tests/it/kernel.rs` — колбэки над `eva_core::for_each_op!`, форму задаёт флаг (`mutating` — окно идемпотентности, `stream` — `Items` кадрами потока, `upload` — `Meta` в `params` и тело чанками). Сверку с `NAMESPACES` держит `rpc/tests/it/methods.rs`. SDK получает метод автоматически.
-4. **kernel:**
+3. **rpc.** Только строка в `rpc/tests/it/errors.rs`: варианты `Err` операции и их коды. Клиентская сессия, таблица диспетчера и тестовый soul `rpc/tests/it/soul.rs` — колбэки над `eva_core::for_each_op!`, форму задаёт флаг (`mutating` — окно идемпотентности, `stream` — `Items` кадрами потока, `upload` — `Meta` в `params` и тело чанками). Сверку с `NAMESPACES` держит `rpc/tests/it/methods.rs`. SDK получает метод автоматически.
+4. **soul:**
    - запросы — в `db/<ns>.rs`;
    - преобразование строк — в `convert/`;
    - правило доступа — в `state/policy/<ns>.rs`;
    - хендлер `pub async fn Op<C: Components>(state: &mut State<C>, args) -> Response<Ok, Err>` — в `handling/<ns>.rs`; у потока `Ok` оборачивает `Items`, у загрузки тело — `args.body`;
    - общий `for_each_op!(project)` в `impls/mod.rs` находит `handling::<ns>::<Op>` по имени метода; отдельная строка на операцию не нужна. Для middleware — ветка `decorate!(service, method; handler)`.
-5. **Тесты.** Строка в `services/kernel/tests/contract.rs`: операция проходит и в процессе (`Kernel<Test>`), и через `eva-sdk` по настоящим сокетам (клиент звонит на UDS ядра, сервис ядро набирает по uds и tcp под Noise), а ответы сверяются побайтно в msgpack. Строка в матрице `services/kernel/tests/k3_policy_all.rs`: исход операции для каждого вызывающего (ядро, клиент, свой сервис, чужой сервис, сервис против `local`/`system`). Поведение и политика — в доменном файле `services/kernel/tests/<ns>.rs`.
+5. **Тесты.** Строка в `services/soul/tests/contract.rs`: операция проходит и в процессе (`Soul<Test>`), и через `eva-sdk` по настоящим сокетам (клиент звонит на UDS soul, а soul сам набирает сервис по uds и tcp под Noise), а ответы сверяются побайтно в msgpack. Строка в матрице `services/soul/tests/k3_policy_all.rs`: исход операции для каждого вызывающего (soul, клиент, свой сервис, чужой сервис, сервис против `local`/`system`). Поведение и политика — в доменном файле `services/soul/tests/<ns>.rs`.
 
-Тестовый харнесс (`services/kernel/tests/common/`) собирает `Kernel<Test>` на временном каталоге: часы двигает тест, провайдер — `mock`, руки — `Hands::local` в песочнице; отказы БД и рук включаются флагом. Набор подменяемых компонентов задаёт трейт `Components` (`Real` — боевой).
+Тестовый харнесс (`services/soul/tests/common/`) собирает `Soul<Test>` на временном каталоге: часы двигает тест, провайдер — `mock`, руки — `Hands::local` в песочнице; отказы БД и рук включаются флагом. Набор подменяемых компонентов задаёт трейт `Components` (`Real` — боевой).
 
 ## Vendor lint
 
-`services/kernel/tests/vendor_lint.rs` обходит крейты `protocol`, `core`, `rpc`, `sdk`, `services/kernel` — код, тесты, SQL, манифесты, снапшоты — и падает на любом вхождении (без учёта регистра) имён вендоров и поверхностей из списка-запрета: `anthropic`, `openai`, `openrouter`, `claude`, `gemini`, `mistral`, `ollama`, `telegram`, `whatsapp`, `discord`, `slack`. Такие строки допустимы только в `providers/*`. Ядро различает провайдеров и поверхности по данным (`kind`, id), а не по именам в коде.
+`services/soul/tests/vendor_lint.rs` обходит крейты `protocol`, `core`, `rpc`, `sdk`, `services/soul` — код, тесты, SQL, манифесты, снапшоты — и падает на любом вхождении (без учёта регистра) имён вендоров и поверхностей из списка-запрета: `anthropic`, `openai`, `openrouter`, `claude`, `gemini`, `mistral`, `ollama`, `telegram`, `whatsapp`, `discord`, `slack`. Такие строки допустимы только в `providers/*`. Soul различает провайдеров и поверхности по данным (`kind`, id), а не по именам в коде.
 
 ## Снапшот-тесты
 
@@ -126,7 +126,7 @@ flowchart LR
 |---|---|
 | `providers/openai/tests/request.rs` | тела `POST /chat/completions`: диалекты, тулы, breakpoint'ы, effort, структурированный вывод, картинки |
 | `providers/openai/tests/models.rs` | декларации моделей из фикстуры каталога |
-| `services/kernel/tests/schema.rs` | дамп схемы SQLite после миграций |
+| `services/soul/tests/schema.rs` | дамп схемы SQLite после миграций |
 
 ```sh
 nix develop -c cargo insta test -p eva-provider-openai

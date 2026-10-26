@@ -167,7 +167,7 @@ pub const fn op_name(name: &'static str) -> &'static str {
     }
 }
 
-/// Кто умеет выдать сессию: ядро, RPC-клиент, мок в тесте.
+/// Кто умеет выдать сессию: soul, RPC-клиент, мок в тесте.
 #[auto_impl(&, &mut, Arc)]
 pub trait SessionMaker: Send + Sync {
     type Session: IsSession;

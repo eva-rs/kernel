@@ -5,9 +5,9 @@
 //!
 //! Слои снизу вверх: `transport` даёт `Conn` (сырые кадры), `peer` — вызовы,
 //! потоки, загрузки, отмены и ping поверх него, `server`/`client` — handshake
-//! и операции `<namespace>.<op>`, `module` — обратное направление ядро → модуль.
+//! и операции `<namespace>.<op>`, `module` — обратное направление soul → модуль.
 //! Кто набрал соединение, не меняет ролей: `hello` шлёт модуль, `welcome` —
-//! ядро (`Server::accept` у клиента, `Server::dial` у сервиса).
+//! soul (`Server::accept` у клиента, `Server::dial` у сервиса).
 
 pub mod client;
 pub mod codec;

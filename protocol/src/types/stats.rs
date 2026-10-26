@@ -36,6 +36,56 @@ pub enum GroupBy {
     Day,
 }
 
+/// Границы выборки расходов; календарные даты включены, точные моменты — `[from, to)`.
+#[data]
+#[serde(deny_unknown_fields)]
+pub enum SpendWindow {
+    /// Полные календарные сутки в зоне запроса, включая обе даты.
+    Dates { from: Date, to: Date },
+    /// Точные моменты времени: `from` включён, `to` исключён.
+    Instants {
+        #[serde(deserialize_with = "deserialize_instant")]
+        from: Timestamp,
+        #[serde(deserialize_with = "deserialize_instant")]
+        to: Timestamp,
+    },
+}
+
+// Парсер дробной части Timestamp в framework разворачивает цифры; wire-формат сохраняем.
+fn deserialize_instant<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Timestamp, D::Error> {
+    use eva::time::SecsTime;
+    use serde::{Deserialize as _, de::Error as _};
+
+    if !deserializer.is_human_readable() {
+        return Timestamp::deserialize(deserializer);
+    }
+    let value = String::deserialize(deserializer)?;
+    let invalid = || D::Error::custom("expected DD.MM.YYYY HH:MM:SS.NNNNNNNNN in UTC");
+    if value.len() != 29 || !value.is_ascii() {
+        return Err(invalid());
+    }
+    let bytes = value.as_bytes();
+    if bytes[10] != b' ' || bytes[19] != b'.' || !bytes[20..].iter().all(u8::is_ascii_digit) {
+        return Err(invalid());
+    }
+    let date: Date = value[..10].parse().map_err(|_| invalid())?;
+    // Проверка канонической даты также отвергает переполнение года при разборе framework.
+    if date.to_str() != value[..10] {
+        return Err(invalid());
+    }
+    let time: SecsTime = value[11..19].parse().map_err(|_| invalid())?;
+    let fraction: u32 = value[20..].parse().map_err(|_| invalid())?;
+    date.to_secs()
+        .checked_add(time.to_secs())
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .and_then(|nanos| nanos.checked_add(u64::from(fraction)))
+        .and_then(std::num::NonZeroU64::new)
+        .map(Timestamp::from_nanos)
+        .ok_or_else(invalid)
+}
+
 #[data]
 pub struct ToolUsageRow {
     pub tool_id: ToolId,
@@ -71,9 +121,10 @@ pub struct CacheStats {
     pub breaks: Vec<BreakCount>,
     pub context_edits: u64,
     pub keep_alive: u64,
-    pub keep_alive_cost: Option<f64>,
-    /// Только по строкам с ценой из прайс-бука.
-    pub cost_saved: Option<f64>,
+    /// Оценённые расходы по валютам; пусто — оценённых строк нет.
+    pub keep_alive_cost: Vec<Money>,
+    /// Оценка по текущему прайс-листу и `llm.currency`, только для строк `pricebook`.
+    pub estimated_cost_saved: Option<Money>,
 }
 
 #[data(copy, ord, display(name))]
@@ -99,6 +150,8 @@ pub struct BreakCount {
 pub struct SeriesPoint {
     pub day: Date,
     pub key: String,
+    /// Отдельный ряд на валюту; `None` — неоценённые строки.
+    pub currency: Option<String>,
     pub cost: Option<f64>,
     pub prompt_total: u64,
     pub output: u64,
@@ -113,7 +166,8 @@ pub struct Money {
 #[data]
 pub struct ModelSpend {
     pub model: ModelId,
-    pub cost: Option<Money>,
+    /// По валютам; токены ниже включают также неоценённые строки.
+    pub cost: Vec<Money>,
     pub prompt_total: u64,
     pub output: u64,
 }
@@ -121,7 +175,8 @@ pub struct ModelSpend {
 #[data]
 pub struct TurnSpend {
     pub turn_id: TurnId,
-    pub cost: Option<Money>,
+    /// По валютам; токены ниже включают также неоценённые строки.
+    pub cost: Vec<Money>,
     pub prompt_total: u64,
     pub cache_read: u64,
 }

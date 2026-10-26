@@ -3,7 +3,7 @@
 use eva_core::{NAMESPACES, OpKind};
 use eva_rpc::Dispatcher;
 
-use crate::kernel::Kernel;
+use crate::soul::Soul;
 
 #[test]
 fn dispatcher_methods_equal_namespaces() {
@@ -15,6 +15,6 @@ fn dispatcher_methods_equal_namespaces() {
         })
         .collect();
 
-    assert_eq!(Dispatcher::<Kernel>::methods(), expected);
+    assert_eq!(Dispatcher::<Soul>::methods(), expected);
     assert!(expected.iter().any(|(m, _)| m == "chats.move"));
 }

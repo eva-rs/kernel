@@ -11,7 +11,7 @@ use eva_core::{Caller, Provider};
 use eva_protocol::{
     types::{
         ModuleId, SessionId,
-        tool::{GroupDecl, Need, ResultForm, ToolDecl},
+        tool::{GroupDecl, Need, ResultForm},
     },
     wire::{
         Capabilities, ErrorCode, Hello, RpcError, Welcome,
@@ -19,19 +19,20 @@ use eva_protocol::{
         events::{Event, Topic},
         handshake::{ProtoVersion, Resume},
         hooks::{Decision, HookPoint},
-        tools::ToolResult,
     },
 };
 use eva_rpc::{ClientOptions, ClientTls, Conn, ConnectError, IdSeq, Psk, RpcClient};
 
 use crate::{
-    Kernel,
+    Soul,
+    app::Initialization,
     backoff::{self, Backoff},
     config::{ClientConfig, DEFAULT_WAIT, ServiceConfig, read_token},
+    group::{Description, Group, IntoToolResult, Tool},
     handler::{ConnState, DynProvider, EventFn, HookInput, HookSlots, Registry, SdkHandler},
     listen::{self, Listening},
     live::{Current, Link},
-    tool::{self, ToolCtx, ToolEntry, ToolError},
+    tool::{self, ToolCtx, ToolError},
 };
 
 /// Итог обработчика события: ошибка лишь пишется в лог.
@@ -51,15 +52,18 @@ impl<T: Send, E: std::fmt::Display + Send> EventOutcome for Result<T, E> {
     }
 }
 
-/// Модуль до подключения: capability и обработчики. Имени нет: id модуля —
-/// ключ записи реестра (сервис) или токена (клиент) у ядра, приходит в
-/// `welcome` (`06 §2`).
-pub struct Module {
+/// Билдер модуля с общим состоянием обработчиков. Имя задаёт дефолты приложения;
+/// авторизованный id приходит от soul в `welcome`.
+pub struct Module<S = ()> {
+    name: String,
+    translations: Arc<crate::Catalogs>,
+    pub(crate) state: Option<Arc<S>>,
+    pub(crate) initialization: Option<Initialization<S>>,
     version: String,
     about: Option<String>,
     ask: bool,
     groups: Vec<GroupDecl>,
-    tools: Vec<ToolEntry>,
+    tools: Vec<Tool<S>>,
     events: Vec<(Topic, EventFn)>,
     hooks: HookSlots,
     hook_points: Vec<HookPoint>,
@@ -74,6 +78,10 @@ pub struct Module {
 impl Default for Module {
     fn default() -> Self {
         Self {
+            name: String::from("module"),
+            translations: Arc::new(crate::Catalogs::default()),
+            state: Some(Arc::new(())),
+            initialization: None,
             version: String::from("0.0.0"),
             about: None,
             ask: false,
@@ -97,7 +105,88 @@ impl Module {
         Self::default()
     }
 
-    /// Версия модуля для `modules.list`.
+    pub fn state<S: Send + Sync + 'static>(self, state: S) -> Module<S> {
+        let mut module = self.retype();
+        module.state = Some(Arc::new(state));
+        module
+    }
+
+    pub(crate) fn retype<S>(self) -> Module<S> {
+        assert!(
+            self.tools.is_empty(),
+            "set module state before registering tools"
+        );
+        assert!(
+            self.initialization.is_none(),
+            "module initialization is already configured"
+        );
+        Module {
+            translations: self.translations,
+            name: self.name,
+            version: self.version,
+            about: self.about,
+            ask: self.ask,
+            groups: self.groups,
+            tools: Vec::new(),
+            events: self.events,
+            hooks: self.hooks,
+            hook_points: self.hook_points,
+            hooks_timeout: self.hooks_timeout,
+            fail_mode: self.fail_mode,
+            provider: self.provider,
+            options: self.options,
+            connect_wait: self.connect_wait,
+            backoff: self.backoff,
+            state: None,
+            initialization: None,
+        }
+    }
+}
+
+impl<S: Send + Sync + 'static> Module<S> {
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn translations(mut self, catalogs: crate::Catalogs) -> Self {
+        self.translations = Arc::new(catalogs);
+        self
+    }
+
+    pub fn module_name(&self) -> &str {
+        &self.name
+    }
+    pub fn module_version(&self) -> &str {
+        &self.version
+    }
+
+    pub fn group(mut self, group: Group<S>) -> Self {
+        group.flatten("", &mut self.groups, &mut self.tools);
+        self.check_tools();
+        self
+    }
+
+    pub fn tool(mut self, tool: Tool<S>) -> Self {
+        self.tools.push(tool);
+        self.check_tools();
+        self
+    }
+
+    fn check_tools(&self) {
+        let mut paths = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        for tool in &self.tools {
+            let path = &tool.path;
+            assert!(paths.insert(path), "tool {path} is declared twice");
+            assert!(
+                names.insert(tool::canonical(path)),
+                "canonical tool name collision: {path}"
+            );
+        }
+    }
+
+    /// Версия модуля для списка подключений.
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
@@ -116,7 +205,7 @@ impl Module {
         self
     }
 
-    pub fn group(mut self, path: impl Into<String>, about: impl Into<String>) -> Self {
+    pub fn group_path(mut self, path: impl Into<String>, about: impl Into<String>) -> Self {
         self.groups.push(GroupDecl {
             path: path.into(),
             about: about.into(),
@@ -130,43 +219,15 @@ impl Module {
     /// # Panics
     ///
     /// Путь уже занят: ошибка сборки модуля, а не данных.
-    pub fn tool<I, E, F, Fut>(mut self, path: impl Into<String>, handler: F) -> Self
+    pub fn tool_path<I, O, E, F, Fut>(self, path: impl Into<String>, handler: F) -> Self
     where
         I: DeserializeOwned + JsonSchema + Send + 'static,
+        O: IntoToolResult + Send + 'static,
         E: Into<ToolError> + 'static,
-        F: Fn(ToolCtx, I) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<ToolResult, E>> + Send + 'static,
+        F: Fn(ToolCtx<S>, I) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<O, E>> + Send + 'static,
     {
-        let path = path.into();
-        assert!(
-            self.tools.iter().all(|t| t.decl.path != path),
-            "tool {path} is declared twice"
-        );
-        let mut schema = tool::input_schema::<I>();
-        let description = schema
-            .as_object_mut()
-            .and_then(|s| s.remove("description"))
-            .and_then(|d| d.as_str().map(str::to_owned))
-            .unwrap_or_default();
-        let run = tool::erase(schema.clone(), handler);
-        self.tools.push(ToolEntry {
-            decl: ToolDecl {
-                path,
-                description,
-                input: schema,
-                master_only: false,
-                trusted_only: false,
-                needs: Vec::new(),
-                ends_turn: false,
-                parallel_safe: false,
-                waits_on_cancel: false,
-                result: ResultForm::default(),
-                timeout: None,
-                idempotent: false,
-            },
-            run,
-        });
-        self
+        self.tool(Tool::at_path(path.into(), handler))
     }
 
     /// Правка последнего объявленного тула.
@@ -174,68 +235,71 @@ impl Module {
     /// # Panics
     ///
     /// До первого `.tool()`: ошибка сборки модуля.
-    fn last_tool(&mut self, f: impl FnOnce(&mut ToolDecl)) {
+    fn last_tool(mut self, f: impl FnOnce(Tool<S>) -> Tool<S>) -> Self {
         let tool = self
             .tools
-            .last_mut()
+            .pop()
             .expect("tool modifiers must follow .tool()");
-        f(&mut tool.decl);
-    }
-
-    pub fn description(mut self, text: impl Into<String>) -> Self {
-        let text = text.into();
-        self.last_tool(|t| t.description = text);
+        self.tools.push(f(tool));
         self
     }
 
-    pub fn ends_turn(mut self, on: bool) -> Self {
-        self.last_tool(|t| t.ends_turn = on);
-        self
+    pub fn describe(self, description: Description) -> Self {
+        self.last_tool(|tool| tool.describe(description))
     }
 
-    pub fn master_only(mut self, on: bool) -> Self {
-        self.last_tool(|t| t.master_only = on);
-        self
+    pub fn description(self, text: impl Into<String>) -> Self {
+        self.last_tool(|tool| tool.description(text))
     }
 
-    pub fn trusted_only(mut self, on: bool) -> Self {
-        self.last_tool(|t| t.trusted_only = on);
-        self
+    pub fn ends_turn(self, on: bool) -> Self {
+        self.last_tool(|tool| tool.ends_turn(on))
     }
 
-    pub fn needs(mut self, needs: &[Need]) -> Self {
-        self.last_tool(|t| t.needs = needs.to_vec());
-        self
+    pub fn master_only(self, on: bool) -> Self {
+        self.last_tool(|tool| tool.master_only(on))
     }
 
-    pub fn parallel_safe(mut self, on: bool) -> Self {
-        self.last_tool(|t| t.parallel_safe = on);
-        self
+    pub fn trusted_only(self, on: bool) -> Self {
+        self.last_tool(|tool| tool.trusted_only(on))
     }
 
-    /// Повтор после реконнекта без `hello.resume` безопасен (`06 §8`).
-    pub fn idempotent(mut self, on: bool) -> Self {
-        self.last_tool(|t| t.idempotent = on);
-        self
+    pub fn needs(self, needs: &[Need]) -> Self {
+        self.last_tool(|tool| tool.needs(needs))
     }
 
-    pub fn timeout(mut self, timeout: HumanDuration) -> Self {
-        self.last_tool(|t| t.timeout = Some(timeout));
-        self
+    pub fn parallel_safe(self, on: bool) -> Self {
+        self.last_tool(|tool| tool.parallel_safe(on))
     }
 
-    /// Подписка на топик; ядро рассылает события уже в M1.
+    pub fn idempotent(self, on: bool) -> Self {
+        self.last_tool(|tool| tool.idempotent(on))
+    }
+
+    pub fn waits_on_cancel(self, on: bool) -> Self {
+        self.last_tool(|tool| tool.waits_on_cancel(on))
+    }
+
+    pub fn result(self, result: ResultForm) -> Self {
+        self.last_tool(|tool| tool.result(result))
+    }
+
+    pub fn timeout(self, timeout: HumanDuration) -> Self {
+        self.last_tool(|tool| tool.timeout(timeout))
+    }
+
+    /// Подписка на топик; soul рассылает события уже в M1.
     pub fn on_event<F, Fut>(mut self, topic: Topic, handler: F) -> Self
     where
-        F: Fn(Kernel, Event) -> Fut + Send + Sync + 'static,
+        F: Fn(Soul, Event) -> Fut + Send + Sync + 'static,
         Fut: Future<Output: EventOutcome> + Send + 'static,
     {
         let handler = Arc::new(handler);
         self.events.push((
             topic,
-            Arc::new(move |kernel, event| {
+            Arc::new(move |soul, event| {
                 let handler = handler.clone();
-                Box::pin(async move { handler(kernel, event).await.log(topic) })
+                Box::pin(async move { handler(soul, event).await.log(topic) })
             }),
         ));
         self
@@ -250,7 +314,7 @@ impl Module {
     where
         H: HookInput,
         H::Patch: serde::Serialize + DeserializeOwned + Send + 'static,
-        F: Fn(Kernel, H) -> Fut + Send + Sync + 'static,
+        F: Fn(Soul, H) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Decision<H::Patch>> + Send + 'static,
     {
         assert_eq!(point, H::POINT, "hook handler input does not match {point}");
@@ -259,15 +323,15 @@ impl Module {
             "hook {point} is declared twice"
         );
         let handler = Arc::new(handler);
-        *H::slot_mut(&mut self.hooks) = Some(Arc::new(move |kernel, input| {
+        *H::slot_mut(&mut self.hooks) = Some(Arc::new(move |soul, input| {
             let handler = handler.clone();
-            Box::pin(async move { handler(kernel, input).await })
+            Box::pin(async move { handler(soul, input).await })
         }));
         self.hook_points.push(point);
         self
     }
 
-    /// Потолок ответа хука; ядро режет его до `modules.hooks.timeout`.
+    /// Потолок ответа хука; soul режет его до `modules.hooks.timeout`.
     pub fn hooks_timeout(mut self, timeout: HumanDuration) -> Self {
         self.hooks_timeout = Some(timeout);
         self
@@ -278,7 +342,7 @@ impl Module {
         self
     }
 
-    /// Запасной вход провайдера (`06 §3`): ядро примет его, только если
+    /// Запасной вход провайдера (`06 §3`): soul примет его, только если
     /// модуль назван в `llm.providers` с `kind: module`.
     pub fn provider(mut self, provider: impl Provider + 'static) -> Self {
         self.provider = Some(Arc::new(provider));
@@ -291,7 +355,7 @@ impl Module {
         self
     }
 
-    /// Клиент: сколько ждать ядро при первом подключении.
+    /// Клиент: сколько ждать soul при первом подключении.
     pub fn connect_wait(mut self, wait: Duration) -> Self {
         self.connect_wait = wait;
         self
@@ -319,7 +383,7 @@ impl Module {
             }),
             tools: (!self.tools.is_empty() || !self.groups.is_empty()).then(|| ToolsCap {
                 groups: self.groups.clone(),
-                tools: self.tools.iter().map(|t| t.decl.clone()).collect(),
+                tools: self.tools.iter().map(Tool::decl).collect(),
             }),
             events: (!subscriptions.is_empty()).then_some(EventsCap { subscriptions }),
             hooks: (!self.hook_points.is_empty()).then(|| HooksCap {
@@ -332,23 +396,23 @@ impl Module {
     }
 
     /// Сервис: слушает `module.listen` (или сокет от менеджера служб) и
-    /// возвращается сразу после bind; соединения ядра принимаются в фоне.
+    /// возвращается сразу после bind; соединения от soul принимаются в фоне.
     /// Нечитаемый или пустой `module.key` и занятый адрес — ошибка.
     pub async fn listen(self, cfg: &ServiceConfig) -> Result<Listening, ConnectError> {
         let psk =
             Psk::read(&cfg.key).map_err(|e| ConnectError::Config(format!("module.key: {e}")))?;
-        let listener = listen::bind(&cfg.listen, psk, &cfg.transport).await?;
         let options = ClientOptions {
             config: cfg.transport.clone(),
             tls: ClientTls::default(),
             ids: self.options.ids.clone(),
         };
-        let runtime = self.options(options).into_runtime(None, None);
+        let runtime = self.options(options).into_runtime(None, None)?;
+        let listener = listen::bind(&cfg.listen, psk, &cfg.transport).await?;
         Ok(Listening::start(
             runtime,
             listener,
             *cfg.transport.handshake_timeout,
-            *cfg.kernel_wait,
+            *cfg.soul_wait,
         ))
     }
 
@@ -362,13 +426,13 @@ impl Module {
         };
         self.options(options)
             .connect_wait(*cfg.connect_wait)
-            .connect_with_token(&cfg.kernel, token)
+            .connect_with_token(&cfg.soul, token)
             .await
     }
 
-    /// Ждёт ядро до `connect_wait`: обрыв транспорта — повтор с паузой,
+    /// Ждёт подключения к soul до `connect_wait`: обрыв транспорта — повтор с паузой,
     /// отказ `hello` по токену или версии — сразу ошибка. Возвращает после
-    /// `welcome`; surface модуль создаёт сам (`kernel().surfaces().create()`).
+    /// `welcome`; surface модуль создаёт сам (`soul().surfaces().create()`).
     pub async fn connect(
         self,
         target: &Url,
@@ -384,7 +448,7 @@ impl Module {
         token: String,
     ) -> Result<Connected, ConnectError> {
         let deadline = Instant::now() + self.connect_wait;
-        let runtime = self.into_runtime(Some(target.clone()), Some(token));
+        let runtime = self.into_runtime(Some(target.clone()), Some(token))?;
         let mut backoff = runtime.backoff();
 
         loop {
@@ -396,7 +460,7 @@ impl Module {
                     if Instant::now() + delay > deadline {
                         return Err(e);
                     }
-                    log::warn!(error:% = e, retry_in:? = delay; "kernel is not reachable yet");
+                    log::warn!(error:% = e, retry_in:? = delay; "soul is not reachable yet");
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -411,14 +475,25 @@ impl Module {
         token: &SecretString,
     ) -> Result<Connected, ConnectError> {
         let token = read_token(token, "token")?;
-        let runtime = self.into_runtime(None, Some(token));
+        let runtime = self.into_runtime(None, Some(token))?;
         let ids = runtime.options.ids.clone();
         runtime.establish_over(conn, None, ids).await?;
         Ok(Connected { runtime })
     }
 
-    fn into_runtime(self, target: Option<Url>, token: Option<String>) -> Arc<Runtime> {
+    fn into_runtime(
+        self,
+        target: Option<Url>,
+        token: Option<String>,
+    ) -> Result<Arc<Runtime>, ConnectError> {
+        let state = self.state.clone().ok_or_else(|| {
+            ConnectError::Config(
+                "module state is not initialized; use .run() or .state(value)".into(),
+            )
+        })?;
         let capabilities = self.capabilities();
+        let translations = self.translations.clone();
+        let domain: Arc<str> = self.name.clone().into();
         let Self {
             version,
             about,
@@ -434,7 +509,12 @@ impl Module {
         let link = Arc::new(Link::new());
         let tools: BTreeMap<_, _> = tools
             .into_iter()
-            .map(|t| (t.decl.path.clone(), t))
+            .map(|t| {
+                (
+                    t.path.clone(),
+                    t.bind(state.clone(), translations.clone(), domain.clone()),
+                )
+            })
             .collect();
         let registry = Arc::new(Registry::new(
             tools,
@@ -444,7 +524,7 @@ impl Module {
             Arc::downgrade(&link),
         ));
 
-        Arc::new(Runtime {
+        Ok(Arc::new(Runtime {
             version,
             about,
             token,
@@ -454,7 +534,7 @@ impl Module {
             backoff,
             registry,
             link,
-        })
+        }))
     }
 }
 
@@ -464,7 +544,7 @@ pub(crate) struct Runtime {
     about: Option<String>,
     /// Только у клиента; прочитан из секрета один раз: реконнект файл не перечитывает.
     token: Option<String>,
-    /// Адрес ядра клиента; без него `run` не переподключается.
+    /// Адрес soul для клиента; без него `run` не переподключается.
     target: Option<Url>,
     capabilities: Capabilities,
     options: ClientOptions,
@@ -530,7 +610,7 @@ impl Runtime {
         Ok(())
     }
 
-    /// Сервис: `hello` без токена на соединении, которое набрало ядро.
+    /// Сервис: `hello` без токена на соединении, которое soul набрал сам.
     /// `resume` и счётчик id — от текущего соединения процесса, если оно было;
     /// прежнее соединение закрывается `conflict "superseded"` (`06 §2`).
     pub(crate) async fn answer(&self, conn: Conn) -> Result<RpcClient, ConnectError> {
@@ -554,8 +634,8 @@ impl Runtime {
         Ok(client)
     }
 
-    /// Новое соединение — текущее, прежнее отдаётся вызывающему. Обслуживание
-    /// surface ядро выводит из сессии само, поэтому после `welcome` модулю
+    /// Новое соединение — текущее, прежнее отдаётся вызывающему. Soul сам
+    /// выводит обслуживание surface из сессии, поэтому после `welcome` модулю
     /// регистрировать нечего.
     fn install(
         &self,
@@ -565,7 +645,7 @@ impl Runtime {
     ) -> Option<Current> {
         conn.bind(&client, &welcome);
         for warning in &welcome.warnings {
-            log::warn!(module:% = welcome.module, subject = warning.subject.as_str(), code:% = warning.code, message = warning.message.as_str(); "kernel rejected part of hello");
+            log::warn!(module:% = welcome.module, subject = warning.subject.as_str(), code:% = warning.code, message = warning.message.as_str(); "soul rejected part of hello");
         }
         log::info!(
             module:% = welcome.module,
@@ -573,7 +653,7 @@ impl Runtime {
             kind:% = welcome.kind,
             resumed = welcome.resumed,
             about = self.about();
-            "connected to the kernel"
+            "connected to the soul"
         );
         self.link.install(Current { client, welcome })
     }
@@ -588,7 +668,7 @@ impl Runtime {
     }
 }
 
-/// Ошибка, после которой повтор бесполезен: ядро отказало по существу.
+/// Ошибка, после которой повтор бесполезен: soul отказал по существу.
 fn fatal(error: &ConnectError) -> bool {
     match error {
         ConnectError::Transport(_) | ConnectError::Handshake(_) => false,
@@ -612,20 +692,20 @@ pub struct Connected {
 }
 
 impl Connected {
-    /// Ядро через текущее соединение: ручка, взятая до реконнекта, после
+    /// Soul через текущее соединение: ручка, взятая до реконнекта, после
     /// него ведёт в новую сессию (`live`).
     ///
     /// # Panics
     ///
     /// Никогда: `Connected` существует только после первого `welcome`.
-    pub fn kernel(&self) -> Kernel {
+    pub fn soul(&self) -> Soul {
         self.runtime
             .link
-            .kernel()
+            .soul()
             .expect("a connected module always has a current connection")
     }
 
-    /// Id модуля из `welcome`: имя записи его токена у ядра (`06 §2`).
+    /// Id модуля из `welcome`: имя записи его токена у soul (`06 §2`).
     ///
     /// # Panics
     ///
@@ -691,9 +771,9 @@ impl Connected {
                 eyre::bail!("module {module} was superseded: {reason}");
             }
             if runtime.target.is_none() {
-                eyre::bail!("connection to the kernel closed: {reason}");
+                eyre::bail!("connection to the soul closed: {reason}");
             }
-            log::warn!(module:% = module, reason:% = reason; "kernel connection lost, reconnecting");
+            log::warn!(module:% = module, reason:% = reason; "soul connection lost, reconnecting");
             let ids = client.peer().ids().clone();
             drop(client);
 

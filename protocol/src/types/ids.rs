@@ -213,7 +213,7 @@ str_id! {
 }
 
 str_id! {
-    /// Тур: uuid v7, живёт в памяти ядра и в ссылках `spend`/pending.
+    /// Тур: uuid v7, живёт в памяти soul и в ссылках `spend`/pending.
     TurnId;
 }
 
@@ -238,7 +238,7 @@ impl PersonId {
         Self(format!("p{n}"))
     }
 
-    /// Актор ядра: крон, сон, уведомления, служебные вставки.
+    /// Актор soul: крон, сон, уведомления, служебные вставки.
     pub fn system() -> Self {
         Self(String::from("p0"))
     }

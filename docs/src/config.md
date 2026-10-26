@@ -1,11 +1,11 @@
 # Конфигурация
 
-Справочник всех секций и ключей, которые читает бинарь `eva-kernel`. Источник истины — структуры в `services/kernel/src/config/`, `rpc/src/config.rs` и `providers/*/src`; значения по умолчанию ниже взяты оттуда.
+Справочник всех секций и ключей, которые читает бинарь `eva-soul`. Источник истины — структуры в `services/soul/src/config/`, `rpc/src/config.rs` и `providers/*/src`; значения по умолчанию ниже взяты оттуда.
 
 ## Загрузка
 
 ```sh
-eva-kernel --config base.yaml --config secrets.toml
+eva-soul --config base.yaml --config secrets.toml
 ```
 
 | Правило | Поведение |
@@ -37,7 +37,7 @@ EVA_SYSTEM__LOGGING__DEFAULT_LEVEL=debug
 
 ## Секреты
 
-Все секреты — `eva::utils::SecretString`: `{file: "/путь"}` или `{plaintext: "…"}`. Читаются один раз при старте; у ключей ядра хвостовые пробельные символы (перевод строки в конце файла) срезаются; ошибка чтения — отказ старта с путём ключа.
+Все секреты — `eva::utils::SecretString`: `{credential: "имя"}`, `{file: "/путь"}` или `{plaintext: "…"}`. Форма `credential` читает `$CREDENTIALS_DIRECTORY/<имя>`; имя — один компонент из букв, цифр, `.`, `_`, `-`, кроме `.` и `..`, каталог должен быть абсолютным. Читаются один раз при старте; у ключей soul хвостовые пробельные символы (перевод строки в конце файла) срезаются; ошибка чтения — отказ старта с путём ключа.
 
 | Ключ | Что |
 |---|---|
@@ -50,10 +50,10 @@ EVA_SYSTEM__LOGGING__DEFAULT_LEVEL=debug
 `Debug` и `Display` секрета — `<secret>`, в логи значение не попадает. Секрет держат вне мирочитаемых мест (Nix store, репозиторий): формой `{file: …}` (например, credential systemd `/run/credentials/<unit>/<name>` — так делает NixOS-модуль, см. [NixOS](#nixos)), отдельным `--config`-файлом с правами только для сервиса или окружением:
 
 ```sh
-EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/credentials/eva-kernel.service/router
-EVA_MODULES__TOKENS__PHONE__TOKEN__FILE=/run/credentials/eva-kernel.service/phone
-EVA_MODULES__SERVICES__BRIDGE__KEY__FILE=/run/credentials/eva-kernel.service/bridge
-EVA_HANDS__ENDPOINTS__LAPTOP__KEY__FILE=/run/credentials/eva-kernel.service/laptop
+EVA_LLM__PROVIDERS__ROUTER__API_KEY__FILE=/run/credentials/eva-soul.service/router
+EVA_MODULES__TOKENS__PHONE__TOKEN__FILE=/run/credentials/eva-soul.service/phone
+EVA_MODULES__SERVICES__BRIDGE__KEY__FILE=/run/credentials/eva-soul.service/bridge
+EVA_HANDS__ENDPOINTS__LAPTOP__KEY__FILE=/run/credentials/eva-soul.service/laptop
 ```
 
 Форма `plaintext` (`…__PLAINTEXT` в окружении) допустима только вне Nix: NixOS-модуль отвергает её и в `settings`, и в `environment`.
@@ -63,11 +63,11 @@ EVA_HANDS__ENDPOINTS__LAPTOP__KEY__FILE=/run/credentials/eva-kernel.service/lapt
 ```yaml
 llm:
   providers:
-    router: {kind: openai, api_key: {file: /run/credentials/eva-kernel.service/router}}
+    router: {kind: openai, api_key: {file: /run/credentials/eva-soul.service/router}}
   default_model: vendor/model
 modules:
   tokens:
-    phone: {token: {file: /run/credentials/eva-kernel.service/phone}}
+    phone: {token: {file: /run/credentials/eva-soul.service/phone}}
 ```
 
 Без ключей и сети — провайдер `mock` (см. [Провайдеры](providers.md)):
@@ -101,9 +101,9 @@ llm:
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` отключает весь вывод |
 | `default_level` | уровень | `info` | `trace`, `debug`, `info`, `warn`, `error`, `disabled` |
-| `components` | `{имя: уровень}` | `{}` | уровень записей внутри компонента супервизора; у ядра компоненты `db` и `modules` |
-| `targets` | `{target: уровень}` | `{}` | жёсткий потолок для log target (путь модуля Rust, например `eva_kernel::db`); сильнее `components` |
-| `append` | список | `[stderr]` | приёмники: `stderr`, `stdout`, `{file: {base_dir, file_name}}` (JSON-строки, суффикс `.log`), `{otel: {name, endpoint, labels?, basic_auth?}}` (OTLP HTTP; бинарь `eva-kernel` собран без feature `otel` фреймворка: такой приёмник валит старт) |
+| `components` | `{имя: уровень}` | `{}` | уровень записей внутри компонента супервизора; у soul компоненты `db` и `modules` |
+| `targets` | `{target: уровень}` | `{}` | жёсткий потолок для log target (путь модуля Rust, например `eva_soul::db`); сильнее `components` |
+| `append` | список | `[stderr]` | приёмники: `stderr`, `stdout`, `{file: {base_dir, file_name}}` (JSON-строки, суффикс `.log`), `{otel: {name, endpoint, labels?, basic_auth?}}` (OTLP HTTP; бинарь `eva-soul` собран без feature `otel` фреймворка: такой приёмник валит старт) |
 
 Ошибка построения любого приёмника валит старт.
 
@@ -134,7 +134,7 @@ llm:
 | `retries` | u32 | `3` | повторы шага при `transient` |
 | `retry_backoff` | длительность | `1s` | база экспоненциальной паузы повторов |
 | `provider_wait` | длительность | `2m` | сколько тур и планировщик ждут провайдера модели, которого ещё нет в реестре |
-| `currency` | строка | `USD` | валюта цен `ModelDecl.price` и строк расхода; ядро не конвертирует, это метка |
+| `currency` | строка | `USD` | валюта цен `ModelDecl.price` и строк расхода; soul не конвертирует, это метка |
 
 ### `llm.providers.<name>`
 
@@ -149,13 +149,13 @@ llm:
 
 ## `modules`
 
-Реестр сервисов, которые набирает ядро, слушатели клиентов, транспорт RPC, токены клиентов и лимиты пространств модулей. Протокол — в главе [Протокол модулей](protocol.md).
+Реестр сервисов, до которых дозванивается soul, слушатели клиентов, транспорт RPC, токены клиентов и лимиты пространств модулей. Протокол — в главе [Протокол модулей](protocol.md).
 
 | Ключ | Тип | По умолчанию | Смысл |
 |---|---|---|---|
 | `listen` | список слушателей | `[{uds: modules.sock}]` | слушатели клиентов, см. ниже; заданный список заменяет умолчание целиком. NixOS-модуль ставит своё умолчание (см. [NixOS](#nixos)) |
-| `services` | `{модуль: {address, key}}` | `{}` | реестр сервисов: ключ — id модуля, `address` — куда звонит ядро (см. [Сервисы](#сервисы-modulesservices)), `key` — секрет PSK (см. [Секреты](#секреты)). Запись конфига сильнее добавленной операцией `modules.add` |
-| `tokens` | `{модуль: {token}}` | `{}` | токены клиентов хозяина; ключ — id модуля (ядро узнаёт клиента по токену), `token` — секрет. Токен из конфига сильнее выданного операцией `modules.token_issue`. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}`, ключ `kernel`/`system`/`local`, пустой токен, один токен у двух ключей. Токен короче 32 символов — предупреждение |
+| `services` | `{модуль: {address, key}}` | `{}` | реестр сервисов: ключ — id модуля, `address` — куда звонит soul (см. [Сервисы](#сервисы-modulesservices)), `key` — секрет PSK (см. [Секреты](#секреты)). Запись конфига сильнее добавленной операцией `modules.add` |
+| `tokens` | `{модуль: {token}}` | `{}` | токены клиентов хозяина; ключ — id модуля (soul узнаёт клиента по токену), `token` — секрет. Токен из конфига сильнее выданного операцией `modules.token_issue`. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}`, ключ `soul`/`system`/`local`, пустой токен, один токен у двух ключей. Токен короче 32 символов — предупреждение |
 | `call_reconnect_grace` | длительность | `30s` | сколько незавершённый `tools.call` ждёт реконнекта модуля |
 | `offline_forget` | длительность | `7d` | модуль offline дольше — `forgotten`; проверяется на старте и раз в час |
 | `hooks.timeout` | длительность | `2s` | потолок таймаута хука модуля (хуки вызываются турами) |
@@ -169,7 +169,7 @@ llm:
 
 ### Сервисы `modules.services`
 
-Сервисный модуль (мост мессенджера, MCP, удалённый провайдер) адреса ядра не знает: он слушает, а ядро само набирает каждую запись реестра — `modules.services` плюс записи, добавленные операцией `modules.add`. Адрес — строка:
+Сервисный модуль (мост мессенджера, MCP, удалённый провайдер) адреса soul не знает: он слушает, а soul сам набирает каждую запись реестра — `modules.services` плюс записи, добавленные операцией `modules.add`. Адрес — строка:
 
 | Форма | Поток |
 |---|---|
@@ -183,13 +183,13 @@ modules:
   services:
     bridge:
       address: uds:///run/eva-bridge/module.sock
-      key: {file: /run/credentials/eva-kernel.service/bridge}
+      key: {file: /run/credentials/eva-soul.service/bridge}
     mcp:
       address: tcp://10.0.0.4:7000
-      key: {file: /run/credentials/eva-kernel.service/mcp}
+      key: {file: /run/credentials/eva-soul.service/mcp}
 ```
 
-На каждую запись — петля дозвона: первая попытка сразу при старте, затем повтор с паузой 1s, 2s, 4s… до 60s (со случайным разбросом вниз до половины). Паузы двух видов считаются отдельно: провалы попыток (сокета нет, чужой ключ) копят свою, и `welcome` её сбрасывает — простой модуля до первого соединения не удлиняет паузу после его сессии; короткие сессии (короче `ping_timeout`) копят свою, чтобы модуль, падающий сразу после `welcome`, не набирался без передышки, а сессия дольше `ping_timeout` сбрасывает и её. Петля не сдаётся: сервис, поднятый после ядра, подхватывается следующей попыткой. Два адреса реестра, ведущие к одному модулю, недопустимы — петли вытесняли бы друг друга без конца: один `address` у двух записей `modules.services` — ошибка старта, у `modules.add` — `conflict`, строка базы с адресом записи конфига игнорируется с ошибкой в логе. Причина последнего провала видна в `modules.list` (`dial.error`), счётчик — `modules.dial_failed`. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}` или `kernel`/`system`/`local`, один id и в `services`, и в `tokens`, пустой или нечитаемый `key`. Id — одно пространство имён с токенами клиентов: строка базы (`modules.add`, `modules.token_issue`) с id из конфига игнорируется с предупреждением на старте.
+На каждую запись — петля дозвона: первая попытка сразу при старте, затем повтор с паузой 1s, 2s, 4s… до 60s (со случайным разбросом вниз до половины). Паузы двух видов считаются отдельно: провалы попыток (сокета нет, чужой ключ) копят свою, и `welcome` её сбрасывает — простой модуля до первого соединения не удлиняет паузу после его сессии; короткие сессии (короче `ping_timeout`) копят свою, чтобы модуль, падающий сразу после `welcome`, не набирался без передышки, а сессия дольше `ping_timeout` сбрасывает и её. Петля не сдаётся: сервис, поднятый после soul, подхватывается следующей попыткой. Два адреса реестра, ведущие к одному модулю, недопустимы — петли вытесняли бы друг друга без конца: один `address` у двух записей `modules.services` — ошибка старта, у `modules.add` — `conflict`, строка базы с адресом записи конфига игнорируется с ошибкой в логе. Причина последнего провала видна в `modules.list` (`dial.error`), счётчик — `modules.dial_failed`. Ошибка старта: ключ вне `[a-z][a-z0-9_-]{0,63}` или `soul`/`system`/`local`, один id и в `services`, и в `tokens`, пустой или нечитаемый `key`. Id — одно пространство имён с токенами клиентов: строка базы (`modules.add`, `modules.token_issue`) с id из конфига игнорируется с предупреждением на старте.
 
 ### Слушатели `modules.listen`
 
@@ -197,7 +197,7 @@ modules:
 
 | Форма | Поля |
 |---|---|
-| `{uds: <путь>}` | Unix-сокет; относительный путь — от `system.state_dir`. Права и группу файла ядро не ставит: их задают umask процесса или socket-юнит менеджера служб |
+| `{uds: <путь>}` | Unix-сокет; относительный путь — от `system.state_dir`. Soul не ставит права и группу файла: их задают umask процесса или socket-юнит менеджера служб |
 | `{ws: <addr:port>}` | WebSocket без TLS; HTTP нужен только для Upgrade на пути `/v1/modules` |
 | `{wss: <addr:port>, tls: {cert, key}}` | WebSocket поверх TLS; `cert` — PEM-цепочка, `key` — PEM-ключ |
 | `{http: <addr:port>, cors?: [origin]}` | [HTTP-мост JSON-RPC](protocol.md#http-мост-json-rpc) на `POST /v1/rpc`; `cors` — origin'ы браузеров, которым мост отвечает (без списка — любые на loopback-адресе, никакие на прочих) |
@@ -205,7 +205,7 @@ modules:
 
 Занятый адрес валит старт процесса. Путь сокета ограничен ядром ОС (на Linux — 108 байт вместе с завершающим нулём): относительный `uds` под длинным `state_dir` может не влезть, и старт падает с `failed to listen on …`.
 
-Socket activation: если `LISTEN_PID` — pid ядра, сокеты менеджера служб (`LISTEN_FDS`, с fd 3) сопоставляются слушателям по адресу — путь `uds`, `ip:port` у `ws`/`wss`/`http`/`https` — и берутся готовыми вместо bind; файл такого сокета остаётся менеджеру. Ошибка старта: унаследованный сокет, которого нет в `listen` (его некому обслужить), или не слушающий (`Accept=yes` отдаёт принятое соединение; нужен `Accept=no`). Переменные `LISTEN_*` ядро не трогает.
+Socket activation: если `LISTEN_PID` — pid soul, сокеты менеджера служб (`LISTEN_FDS`, с fd 3) сопоставляются слушателям по адресу — путь `uds`, `ip:port` у `ws`/`wss`/`http`/`https` — и берутся готовыми вместо bind; файл такого сокета остаётся менеджеру. Ошибка старта: унаследованный сокет, которого нет в `listen` (его некому обслужить), или не слушающий (`Accept=yes` отдаёт принятое соединение; нужен `Accept=no`). Soul не трогает переменные `LISTEN_*`.
 
 ### Транспорт
 
@@ -222,7 +222,7 @@ Socket activation: если `LISTEN_PID` — pid ядра, сокеты мене
 | `max_inflight` | целое 1..=4096 | `64` | одновременных не-потоковых запросов и загрузок сессии; сверх — `quota` |
 | `max_streams` | целое 1..=4096 | `256` | одновременных потоков сессии; сверх — `quota` |
 | `max_frame` | размер | `16MiB` | кадр больше — соединение закрывается с `invalid_params` |
-| `max_hello` | размер | `4MiB` | потолок кадра `hello` на слушателе клиентов, не больше `max_frame`; больше — отказ `invalid_params`, на который SDK не переподключается. Набранный ядром сервис уже доказал PSK: его `hello` ограничен лишь `max_frame` |
+| `max_hello` | размер | `4MiB` | потолок кадра `hello` на слушателе клиентов, не больше `max_frame`; больше — отказ `invalid_params`, на который SDK не переподключается. Сервис, до которого дозвонился soul, уже доказал PSK: его `hello` ограничен лишь `max_frame` |
 | `blob_chunk` | размер | `1MiB` | потолок чанка `blobs.put`; больше — `invalid_params`. Непрочитанные чанки всех загрузок сессии вместе — не больше `stream_buffer × blob_chunk`, сверх — `quota` этой загрузке |
 | `idempotency_window` | длительность | `10m` | сколько помнится ответ мутирующего запроса по `(session_id, request.id)` |
 | `max_batch` | целое 1..=1024 | `64` | запросов в одном batch'е HTTP-моста; длиннее — отказ целиком. Тело запроса моста ограничено `max_frame` |
@@ -304,7 +304,7 @@ Socket activation: если `LISTEN_PID` — pid ядра, сокеты мене
 
 ## `hands`
 
-Машины, на которых работают «руки» агента: локальная (`Hands::local`) или удалённый демон [`eva-hands`](https://git.desu.church/eva/hands).
+Машины, на которых работают «руки» агента: локальная (`Hands::local`) или удалённый демон [`eva-hands`](https://github.com/eva-rs/hands).
 
 | Ключ | Тип | По умолчанию | Смысл |
 |---|---|---|---|
@@ -315,7 +315,7 @@ Socket activation: если `LISTEN_PID` — pid ядра, сокеты мене
 
 | Форма | Смысл |
 |---|---|
-| `{local: true, limits?}` | руки в процессе ядра; `local: false` — ошибка старта |
+| `{local: true, limits?}` | руки в процессе soul; `local: false` — ошибка старта |
 | `{address: "host:port", key: {file: "…"}}` | демон `eva-hands` по Noise с pre-shared key (`key` — секрет, см. [Секреты](#секреты)); недоступный демон старт не держит |
 
 `limits` локальной машины:
@@ -357,12 +357,13 @@ Socket activation: если `LISTEN_PID` — pid ядра, сокеты мене
 
 | Ключ | Тип | По умолчанию | Смысл |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` — блокнота нет, `notes.list` отвечает `unavailable` |
+| `enabled` | bool | `true` | `false` — блокнота нет, операции `notes.*` отвечают `unavailable` |
 | `budget_percent` | целое 1..=50 | `1` | бюджет блокнота в процентах от `context_window` модели чата |
 | `budget_max_tokens` | u32 | `4000` | абсолютный потолок бюджета |
 | `index_max_tokens` | u32 | `1000` | потолок индекса заметок; запись сверх в режиме индекса — отказ |
 | `max_note_tokens` | u32 | `600` | потолок тела заметки |
 | `max_notes` | u32 | `40` | потолок числа заметок чата |
+| `history_keep` | u32 ≥ 1 | `50` | последних полных снимков блокнота каждого чата; снимок сохраняется перед каждой правкой |
 | `inline_max_notes` | u32 | `8` | сверх — блокнот переполнен |
 | `squeeze_turns` | u32 | `2` | туров хозяина в переполнении до перехода в индекс |
 | `return_percent` | целое 10..=99 | `60` | порог возврата из индекса, % бюджета |
@@ -421,7 +422,7 @@ Socket activation: если `LISTEN_PID` — pid ядра, сокеты мене
 
 | Ключ | Тип | По умолчанию | Смысл |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` — ночи пропускаются |
+| `enabled` | bool | `true` | `false` — плановые ночи пропускаются; ручной `sleep.start` доступен |
 | `at` | `HH:MM` | `00:00` | граница ночи |
 | `tick` | длительность | `5m` | период проверки |
 | `idle_for` | длительность | `10m` | тишина перед стартом: нет туров вне surface `system` и человеческих реплик |
@@ -439,6 +440,10 @@ Socket activation: если `LISTEN_PID` — pid ядра, сокеты мене
 | `forget.importance_max` | доля | `0.3` | важность, выше которой запись не забывается |
 | `groups.max_ops` | u32 | `10` | правок групп инструментов за ночь |
 | `notify.min_applied` | u32 | `5` | столько правок или хоть одно забывание — уведомление хозяину; при `dry_run` — всегда |
+
+Клиент хозяина управляет запуском через `sleep.status/start/cancel`.
+`start.dry_run` переопределяет настройку только для этого запуска; пересчёт
+warm-наборов применяется и в пробном режиме.
 
 ## `gc`
 
@@ -470,14 +475,14 @@ Blob, который упомянут в открытом сегменте ча�
 
 ## NixOS
 
-Флейк — `eva.lib.mkServiceFlake` фреймворка; `nixosModules.default` даёт `services.eva-kernel`:
+Флейк — `eva.lib.mkServiceFlake` фреймворка; `nixosModules.default` даёт `services.eva-soul`:
 
 | Опция | Смысл |
 |---|---|
 | `settings` | несекретная часть конфига; рендерится в YAML в Nix store (мирочитаемо) |
-| `secrets` | `{"<ключ.через.точку>" = "<файл>";}` для полей `llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`: systemd отдаёт файл через `LoadCredential`, в `settings` встаёт `{file = "/run/credentials/eva-kernel.service/<ключ>";}` |
+| `secrets` | `{"<ключ.через.точку>" = "<файл>";}` для полей `llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`: systemd отдаёт файл через `LoadCredential`, в `settings` встаёт `{file = "/run/credentials/eva-soul.service/<ключ>";}` |
 | `extraConfigFiles` | дополнительные `--config`, сливаются поверх `settings` в рантайме |
 | `environment`, `environmentFiles` | переменные окружения и `EnvironmentFile` systemd |
-| `user`, `group` | по умолчанию `eva-kernel`; модуль их не создаёт |
+| `user`, `group` | по умолчанию `eva-soul`; модуль их не создаёт |
 
-Модуль задаёт `StateDirectory=eva-kernel` (отсюда `state_dir` по умолчанию — `/var/lib/eva-kernel`) с `StateDirectoryMode=0700` и `UMask=0077` (база с ключами сервисов, blob'ы и песочницы — только пользователю ядра), `TimeoutStopSec=180`, `RuntimeDirectory=eva-kernel` и в нём слушатель по умолчанию `modules.listen = [{uds = "/run/eva-kernel/modules.sock";}]` (ядро связывает сокет само; при таком `UMask` он доступен только пользователю ядра, сокет для группы даёт socket-юнит хоста с тем же путём — ядро берёт его по адресу через `LISTEN_FDS`), `SupplementaryGroups = [ "eva" ]` сервиса; группу `eva` объявляет хост. Права файлов ядро не ставит — только окружение. По группе `eva` ядро дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock`, доступный группе `eva` (через `RuntimeDirectory`, `Group=eva` и `UMask=0007` своего юнита или через socket-юнит с `SocketGroup=eva`, `SocketMode=0660`, `Accept=no`), а один файл ключа отдаётся обоим юнитам — ядру как `secrets."modules.services.<id>.key"`. Assertions отвергают `plaintext`-секреты в `settings` и ключ `secrets`, не совпадающий ни с одним полем-секретом. Подробно — в [Быстром старте](quickstart.md#nixos).
+Модуль задаёт `StateDirectory=eva-soul` (отсюда `state_dir` по умолчанию — `/var/lib/eva-soul`) с `StateDirectoryMode=0700` и `UMask=0077` (база с ключами сервисов, blob'ы и песочницы — только пользователю soul), `TimeoutStopSec=180`, `RuntimeDirectory=eva-soul` и в нём слушатель по умолчанию `modules.listen = [{uds = "/run/eva-soul/modules.sock";}]` (soul сам связывает сокет; при таком `UMask` он доступен только пользователю soul, сокет для группы даёт socket-юнит хоста с тем же путём — soul берёт его по адресу через `LISTEN_FDS`), `SupplementaryGroups = [ "eva" ]` сервиса; группу `eva` объявляет хост. Soul не ставит права файлов — только окружение. По группе `eva` soul дозванивается до сервисов машины: сервис слушает `/run/eva-<id>/module.sock`, доступный группе `eva` (через `RuntimeDirectory`, `Group=eva` и `UMask=0007` своего юнита или через socket-юнит с `SocketGroup=eva`, `SocketMode=0660`, `Accept=no`), а один файл ключа отдаётся обоим юнитам — юниту soul как `secrets."modules.services.<id>.key"`. Assertions отвергают `plaintext`-секреты в `settings` и ключ `secrets`, не совпадающий ни с одним полем-секретом. Подробно — в [Быстром старте](quickstart.md#nixos).

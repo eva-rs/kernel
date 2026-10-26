@@ -107,8 +107,23 @@ fn tool_decl() -> ToolDecl {
         waits_on_cancel: true,
         result: ResultForm::Uncapped,
         timeout: Some(secs(30)),
-        idempotent: true,
+        idempotent: false,
     }
+}
+
+#[test]
+fn tool_execution_flags_default_to_true_and_allow_explicit_false() {
+    let mut value = json!({
+        "path": "weather.current", "description": "Get current weather", "input": {}
+    });
+    let defaults: ToolDecl = decode(&encode(&value));
+    assert!(defaults.idempotent && defaults.parallel_safe);
+    value["idempotent"] = json!(false);
+    value["parallel_safe"] = json!(false);
+    let overridden: ToolDecl = decode(&encode(&value));
+    assert!(!overridden.idempotent && !overridden.parallel_safe);
+    roundtrip(&defaults);
+    roundtrip(&overridden);
 }
 
 #[test]
@@ -294,7 +309,7 @@ fn handshake() {
         wire.get("module").is_none(),
         "identity comes from the token: {wire}"
     );
-    // Набранный ядром сервис токена не шлёт вовсе.
+    // Сервис, которому звонит soul, токена не шлёт вовсе.
     let dialed: Hello = decode(&encode(&json!({
         "version": "1.2.3",
         "proto_version": "0.1",
@@ -305,7 +320,7 @@ fn handshake() {
     let welcome = Welcome {
         session_id: "0198-session".into(),
         module: "messenger-x".into(),
-        kernel_version: "0.1.0".into(),
+        soul_version: "0.1.0".into(),
         proto_version: ProtoVersion { major: 0, minor: 1 },
         kind: ModuleKind::Service,
         services: vec!["chats".into(), "turns".into()],
@@ -324,14 +339,14 @@ fn handshake() {
     let minimal: Welcome = decode(&encode(&json!({
         "session_id": "s",
         "module": "phone",
-        "kernel_version": "0.1.0",
+        "soul_version": "0.1.0",
         "proto_version": "0.1",
         "kind": "client",
     })));
     assert!(minimal.tool_ids.is_empty() && minimal.warnings.is_empty());
     assert!(
         !minimal.resumed,
-        "an older kernel never claims a resumed window"
+        "an older soul never claims a resumed window"
     );
 
     assert_eq!(
@@ -465,7 +480,7 @@ fn generate_request() {
             Message::System {
                 kind: SystemKind::Reminder,
                 blocks: vec![Block::Text {
-                    text: "[kernel] 12:00".into(),
+                    text: "[soul] 12:00".into(),
                 }],
                 clear_at: Some(ClearAt::NextUserMessage),
                 output_config: Some(OutputConfig {
@@ -607,7 +622,7 @@ fn turn_item() {
             summary_ref: 3.into(),
         },
         ItemBody::Reminder {
-            text: "[kernel] 12:00".into(),
+            text: "[soul] 12:00".into(),
         },
         ItemBody::Plan {
             tasks: vec![task.clone()],
@@ -634,7 +649,10 @@ fn turn_item() {
         },
         FeedEvent::ItemDelta {
             id: "call".into(),
-            delta: ItemDelta::Progress { text: "1/3".into() },
+            delta: ItemDelta::Progress {
+                message: None,
+                text: "1/3".into(),
+            },
         },
         FeedEvent::ItemDelta {
             id: "0198-turn:1".into(),
@@ -721,6 +739,7 @@ fn tools_call() {
 
     for item in [
         ToolItem::Progress {
+            message: None,
             text: "working".into(),
         },
         ToolItem::Result(ToolResult::ok(vec![image()])),
@@ -771,7 +790,7 @@ fn hooks() {
     roundtrip(&after_tool);
 
     decisions::<AfterTool>(ToolResult::error("redacted"));
-    // Патч на точке без патчуемого поля не читается: ядро считает его отказом хука.
+    // Патч на точке без патчуемого поля не читается: soul считает его отказом хука.
     let patch = encode(&json!({"patch": {"payload": {"chat": 2}}}));
     assert!(rmp_serde::from_slice::<Decision<<BeforeTool as Hook>::Patch>>(&patch).is_err());
     assert!(rmp_serde::from_slice::<Decision<<BeforeTurn as Hook>::Patch>>(&patch).is_err());

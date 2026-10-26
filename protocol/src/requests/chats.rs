@@ -51,7 +51,7 @@ pub trait Chats {
         /// Повтор с тем же id идемпотентен.
         external_id: Option<String>,
         reply_to_external_id: Option<String>,
-        /// Якорь поверхности: ядру непрозрачен, возвращается тулам как есть.
+        /// Якорь поверхности: для soul непрозрачен, возвращается тулам как есть.
         anchor: Option<Value>,
         r#override: Option<this![Override]>,
         #[serde(default)] silent: bool,

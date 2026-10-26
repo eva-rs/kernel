@@ -1,12 +1,12 @@
-//! `Kernel` модуля: каждый вызов берёт текущее соединение, поэтому ручка,
+//! `Soul` модуля: каждый вызов берёт текущее соединение, поэтому ручка,
 //! взятая до смены соединения, после неё ведёт в новую сессию.
 //!
 //! Вызов на закрытом соединении ждёт нового до `CALL_RECONNECT_WAIT`, пока
-//! новое возможно: у клиента жив `run`, у сервиса — приём соединений ядра.
+//! новое возможно: у клиента жив `run`, у сервиса — приём соединений от soul.
 //! Оборванные в полёте чтение и открытие потока повторяются на новом
-//! соединении, мутация — с тем же id запроса, только если ядро продолжило
+//! соединении, мутация — с тем же id запроса, только если soul продолжил
 //! окно идемпотентности (`welcome.resumed`, `06 §5`) и не исполнит её второй
-//! раз; иначе (рестарт ядра) исход неизвестен, и она отвечает
+//! раз; иначе (рестарт soul) исход неизвестен, и она отвечает
 //! `Aux::Unavailable`. Загрузка отвечает `Aux::Unavailable` (`11 §6`): её
 //! тело уже прочитано.
 
@@ -29,12 +29,12 @@ use eva_protocol::{
 };
 use eva_rpc::{Peer, RpcClient, RpcSession, client::from_rpc, codec};
 
-use crate::Kernel;
+use crate::Soul;
 
 /// Сессия одного конкретного соединения.
 type Rpc = Session<RpcSession>;
 
-/// Сколько вызов ждёт нового соединения; столько же ядро ждёт реконнекта
+/// Сколько вызов ждёт нового соединения; столько же soul ждёт реконнекта
 /// ради незавершённого `tools.call` (`modules.call_reconnect_grace`).
 pub const CALL_RECONNECT_WAIT: Duration = Duration::from_secs(30);
 
@@ -49,7 +49,7 @@ struct Phase {
     /// Растёт с каждым установленным соединением.
     generation: u64,
     /// Растёт с каждым соединением, не продолжившим окно идемпотентности
-    /// прошлого: id мутаций из старого окна новому ядру неизвестны.
+    /// прошлого: id мутаций из старого окна новому soul неизвестны.
     window: u64,
     /// Новое соединение возможно: только тогда закрытое стоит ждать.
     reconnects: bool,
@@ -117,10 +117,10 @@ impl Link {
     }
 
     /// Ждёт первого соединения; `None` — модуль остановлен раньше.
-    pub async fn first(self: &Arc<Self>) -> Option<Kernel> {
+    pub async fn first(self: &Arc<Self>) -> Option<Soul> {
         let mut phase = self.phase.subscribe();
         _ = phase.wait_for(|p| p.generation > 0 || p.closed).await;
-        self.kernel()
+        self.soul()
     }
 
     pub fn current<T>(&self, f: impl FnOnce(&Current) -> T) -> Option<T> {
@@ -137,7 +137,7 @@ impl Link {
         Reconnecting(self)
     }
 
-    pub fn kernel(self: &Arc<Self>) -> Option<Kernel> {
+    pub fn soul(self: &Arc<Self>) -> Option<Soul> {
         let caller = self.current(|c| c.client.caller().clone())?;
         Some(Session::new(LiveSession { link: self.clone() }, caller))
     }
@@ -225,10 +225,10 @@ impl Link {
                 return Err(RpcError::new(ErrorCode::Unavailable, reason));
             }
             if next.window != live.window {
-                log::warn!(id = id, method = method, reason = reason.as_str(); "mutation cut by a reconnect the kernel did not resume, outcome unknown");
+                log::warn!(id = id, method = method, reason = reason.as_str(); "mutation cut by a reconnect the soul did not resume, outcome unknown");
                 return Err(RpcError::new(
                     ErrorCode::Unavailable,
-                    "connection lost mid-mutation; the kernel did not resume the session, outcome unknown",
+                    "connection lost mid-mutation; the soul did not resume the session, outcome unknown",
                 ));
             }
             log::debug!(id = id, method = method, generation = next.generation; "mutation resent after reconnect");
@@ -263,7 +263,7 @@ impl Drop for Reconnecting<'_> {
     }
 }
 
-/// Сессия `Kernel`: операции идут через текущее соединение модуля.
+/// Сессия `Soul`: операции идут через текущее соединение модуля.
 #[derive(Clone)]
 pub struct LiveSession {
     link: Arc<Link>,

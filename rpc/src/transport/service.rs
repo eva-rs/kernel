@@ -1,4 +1,4 @@
-//! Сервисное соединение (`06 §1`): модуль слушает, ядро набирает его по
+//! Сервисное соединение (`06 §1`): модуль слушает, soul набирает его по
 //! `ServiceAddress`. Оба конца — Noise поверх uds или tcp, внутри — кадры uds.
 
 use std::{net::IpAddr, path::PathBuf, time::Duration};
@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-/// Сторона ядра: connect, затем Noise initiator; всё — за `handshake_timeout`.
+/// Сторона soul: connect, затем Noise initiator; всё — за `handshake_timeout`.
 pub async fn dial(
     address: &ServiceAddress,
     psk: &Psk,
@@ -141,7 +141,7 @@ impl ServiceListener {
         })
     }
 
-    /// Адрес, который набирает ядро: порт `0` при bind выбирает система.
+    /// Адрес, по которому звонит soul: порт `0` при bind выбирает система.
     pub fn local_addr(&self) -> Option<ServiceAddress> {
         match &self.kind {
             ListenerKind::Uds { listener, .. } => {
@@ -222,7 +222,7 @@ impl Incoming {
     }
 
     /// Noise responder за `handshake_timeout`. Чужой PSK — ошибка и сокет
-    /// закрыт без ответа: ядро видит обрыв.
+    /// закрыт без ответа: soul видит обрыв.
     pub async fn secure(self) -> Result<Conn, TransportError> {
         let Self {
             stream,

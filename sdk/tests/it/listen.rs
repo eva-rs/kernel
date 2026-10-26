@@ -1,5 +1,5 @@
-//! Сервис: модуль слушает, поддельное ядро набирает его по uds и tcp под
-//! Noise; новое соединение ядра вытесняет прежнее, `run` переживает потерю ядра.
+//! Сервис: модуль слушает, поддельный soul набирает его по uds и tcp под
+//! Noise; новое соединение soul вытесняет прежнее, `run` переживает потерю soul.
 
 use std::{
     sync::{
@@ -61,12 +61,12 @@ fn config(dir: &tempfile::TempDir, via: Via) -> ServiceConfig {
             }),
         },
         key: SecretString::Plaintext(KEY.to_owned()),
-        kernel_wait: HumanDuration(Duration::from_secs(5)),
+        soul_wait: HumanDuration(Duration::from_secs(5)),
         transport: Config::default(),
     }
 }
 
-/// Модуль слушает; адрес — тот, что ядро записало бы в реестр.
+/// Модуль слушает; адрес — тот, что soul записал бы в реестр.
 async fn listen(module: Module, cfg: &ServiceConfig) -> (Listening, ServiceAddress) {
     let listening = module.listen(cfg).await.unwrap();
     let address = listening
@@ -75,7 +75,7 @@ async fn listen(module: Module, cfg: &ServiceConfig) -> (Listening, ServiceAddre
     (listening, address)
 }
 
-/// Поддельное ядро набирает модуль: Noise с ключом записи, `welcome` на `hello`.
+/// Поддельный soul набирает модуль: Noise с ключом записи, `welcome` на `hello`.
 async fn dial(address: &ServiceAddress, welcome: Welcome, service: impl Service) -> fake::Session {
     let conn = transport::dial(address, &Psk::derive(KEY), &Config::default())
         .await
@@ -97,7 +97,7 @@ async fn wait_session(listening: &Listening, session: &str) {
 }
 
 #[tokio::test]
-async fn the_kernel_dials_the_module() {
+async fn the_soul_dials_the_module() {
     for via in BOTH {
         let dir = tempfile::tempdir().unwrap();
         let cfg = config(&dir, via);
@@ -109,7 +109,7 @@ async fn the_kernel_dials_the_module() {
 
         let waiting = tokio::spawn({
             let listening = listening.clone();
-            async move { listening.kernel().await }
+            async move { listening.soul().await }
         });
         let surfaces = Surfaces::default();
         let session = dial(&address, fake::welcome("s1", &[]), surfaces.clone()).await;
@@ -120,10 +120,10 @@ async fn the_kernel_dials_the_module() {
         assert!(session.hello.resume.is_none());
         assert!(session.hello.capabilities.ask);
 
-        let mut kernel = waiting.await.unwrap().expect("the first welcome");
+        let mut soul = waiting.await.unwrap().expect("the first welcome");
         assert_eq!(listening.module().unwrap().as_str(), fake::MODULE);
-        assert!(matches!(kernel.caller(), Caller::Service { .. }));
-        let create::Ok { surface } = kernel
+        assert!(matches!(soul.caller(), Caller::Service { .. }));
+        let create::Ok { surface } = soul
             .surfaces()
             .create("x".into(), "X".into(), None)
             .await
@@ -133,10 +133,10 @@ async fn the_kernel_dials_the_module() {
     }
 }
 
-/// Второе соединение ядра после `welcome` закрывает первое `superseded`;
-/// `Kernel`, взятый до него, работает через новое; `run` не завершается.
+/// Второе соединение soul после `welcome` закрывает первое `superseded`;
+/// `Soul`, взятый до него, работает через новое; `run` не завершается.
 #[tokio::test]
-async fn a_new_kernel_connection_supersedes_the_old_one() {
+async fn a_new_soul_connection_supersedes_the_old_one() {
     let dir = tempfile::tempdir().unwrap();
     let (listening, address) = listen(Module::new(), &config(&dir, Via::Uds)).await;
     let (stop, stopped) = oneshot::channel::<()>();
@@ -145,10 +145,10 @@ async fn a_new_kernel_connection_supersedes_the_old_one() {
     }));
 
     let first = dial(&address, fake::welcome("s1", &[]), Surfaces::default()).await;
-    let kernel = listening.kernel().await.unwrap();
+    let soul = listening.soul().await.unwrap();
 
-    let second_kernel = surface_x("X2");
-    let second = dial(&address, fake::resumed("s2"), second_kernel.clone()).await;
+    let second_soul = surface_x("X2");
+    let second = dial(&address, fake::resumed("s2"), second_soul.clone()).await;
     let resume = second
         .hello
         .resume
@@ -164,27 +164,27 @@ async fn a_new_kernel_connection_supersedes_the_old_one() {
     assert_eq!(reason.message, "superseded");
     wait_session(&listening, "s2").await;
 
-    let read = get(kernel).await.expect("served by the new connection");
+    let read = get(soul).await.expect("served by the new connection");
     assert_eq!(read.surface.name, "X2");
-    assert_eq!(second_kernel.calls(), ["surfaces.get"]);
+    assert_eq!(second_soul.calls(), ["surfaces.get"]);
     assert!(!running.is_finished(), "supersede does not end run");
 
     stop.send(()).unwrap();
     running.await.unwrap().unwrap();
 }
 
-/// Рестарт ядра (`resumed = false`): мутация в полёте — `Aux::Unavailable`
+/// Рестарт soul (`resumed = false`): мутация в полёте — `Aux::Unavailable`
 /// без повтора, чтение повторяется на новом соединении.
 #[tokio::test]
-async fn a_kernel_restart_cuts_a_mutation_and_resends_a_read() {
+async fn a_soul_restart_cuts_a_mutation_and_resends_a_read() {
     let dir = tempfile::tempdir().unwrap();
     let (listening, address) = listen(Module::new(), &config(&dir, Via::Tcp)).await;
     let silent = Silent::default();
     let _first = dial(&address, fake::welcome("s1", &[]), silent.clone()).await;
-    let kernel = listening.kernel().await.unwrap();
+    let soul = listening.soul().await.unwrap();
 
-    let read = tokio::spawn(get(kernel.clone()));
-    let write = tokio::spawn(update(kernel.clone()));
+    let read = tokio::spawn(get(soul.clone()));
+    let write = tokio::spawn(update(soul.clone()));
     silent.wait_calls(2).await;
 
     let restarted = surface_x("X");
@@ -211,9 +211,9 @@ async fn a_kernel_restart_cuts_a_mutation_and_resends_a_read() {
     );
 }
 
-/// Ядро пропало: `run` живёт, вызов ждёт следующего дозвона и уходит в него.
+/// Soul пропал: `run` живёт, вызов ждёт следующего дозвона и уходит в него.
 #[tokio::test]
-async fn run_outlives_the_kernel_and_calls_wait_for_the_next_dial() {
+async fn run_outlives_the_soul_and_calls_wait_for_the_next_dial() {
     let dir = tempfile::tempdir().unwrap();
     let (listening, address) = listen(Module::new(), &config(&dir, Via::Uds)).await;
     let (stop, stopped) = oneshot::channel::<()>();
@@ -222,20 +222,20 @@ async fn run_outlives_the_kernel_and_calls_wait_for_the_next_dial() {
     }));
 
     let first = dial(&address, fake::welcome("s1", &[]), Silent::default()).await;
-    let kernel = listening.kernel().await.unwrap();
+    let soul = listening.soul().await.unwrap();
     let old = listening.client().unwrap();
     first
         .peer
-        .close(RpcError::new(ErrorCode::Unavailable, "kernel restarts"));
+        .close(RpcError::new(ErrorCode::Unavailable, "soul restarts"));
     tokio::time::timeout(Duration::from_secs(5), old.closed())
         .await
         .expect("the module sees the close");
     drop(old);
 
-    let write = tokio::spawn(update(kernel));
+    let write = tokio::spawn(update(soul));
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(!write.is_finished(), "the call waits for the kernel");
-    assert!(!running.is_finished(), "run outlives the kernel");
+    assert!(!write.is_finished(), "the call waits for the soul");
+    assert!(!running.is_finished(), "run outlives the soul");
 
     let restarted = surface_x("X");
     let second = dial(&address, fake::welcome("s2", &[]), restarted.clone()).await;
@@ -254,7 +254,7 @@ async fn run_outlives_the_kernel_and_calls_wait_for_the_next_dial() {
     assert_eq!(reason.code, ErrorCode::Unavailable);
 }
 
-/// Обрыв посреди `tools.call`: ядро перезванивает с `hello.resume`, повтор
+/// Обрыв посреди `tools.call`: soul перезванивает с `hello.resume`, повтор
 /// того же `call_id` исполняется один раз (`06 §12`).
 #[tokio::test]
 async fn a_tool_call_survives_a_redial_and_runs_once() {
@@ -301,13 +301,13 @@ async fn a_tool_call_survives_a_redial_and_runs_once() {
     assert_eq!(counters.finished.load(Ordering::SeqCst), 1);
 }
 
-/// Чужой ключ: модуль рвёт соединение без ответа, `kernel()` называет причину.
+/// Чужой ключ: модуль рвёт соединение без ответа, `soul()` называет причину.
 #[tokio::test]
 async fn a_wrong_key_is_refused_and_reported() {
     for via in BOTH {
         let dir = tempfile::tempdir().unwrap();
         let cfg = ServiceConfig {
-            kernel_wait: HumanDuration(Duration::from_millis(300)),
+            soul_wait: HumanDuration(Duration::from_millis(300)),
             ..config(&dir, via)
         };
         let (listening, address) = listen(Module::new(), &cfg).await;
@@ -320,7 +320,7 @@ async fn a_wrong_key_is_refused_and_reported() {
             res.err()
         );
 
-        match listening.kernel().await {
+        match listening.soul().await {
             Err(ConnectError::Transport(message)) => {
                 assert!(message.contains("did not connect"), "{message}");
                 assert!(message.contains("wrong key"), "{message}");
@@ -332,16 +332,16 @@ async fn a_wrong_key_is_refused_and_reported() {
 }
 
 #[tokio::test]
-async fn kernel_wait_is_bounded() {
+async fn soul_wait_is_bounded() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = ServiceConfig {
-        kernel_wait: HumanDuration(Duration::from_millis(100)),
+        soul_wait: HumanDuration(Duration::from_millis(100)),
         ..config(&dir, Via::Uds)
     };
     let (listening, _) = listen(Module::new(), &cfg).await;
-    let res = tokio::time::timeout(Duration::from_secs(5), listening.kernel())
+    let res = tokio::time::timeout(Duration::from_secs(5), listening.soul())
         .await
-        .expect("kernel() gives up by itself");
+        .expect("soul() gives up by itself");
     match res {
         Err(ConnectError::Transport(message)) => {
             assert!(message.contains("did not connect within"), "{message}");
@@ -350,10 +350,10 @@ async fn kernel_wait_is_bounded() {
     }
 }
 
-/// Поток молчащих сокетов не запирает ядро и не держит дескрипторы до
+/// Поток молчащих сокетов не запирает soul и не держит дескрипторы до
 /// `handshake_timeout`: сверх лимита на сеть новичок вытесняет старейший.
 #[tokio::test]
-async fn a_flood_of_silent_sockets_does_not_lock_the_kernel_out() {
+async fn a_flood_of_silent_sockets_does_not_lock_the_soul_out() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = ServiceConfig {
         transport: Config {
@@ -375,7 +375,7 @@ async fn a_flood_of_silent_sockets_does_not_lock_the_kernel_out() {
     }
 
     let _session = dial(&address, fake::welcome("s1", &[]), Surfaces::default()).await;
-    listening.kernel().await.expect("the kernel got through");
+    listening.soul().await.expect("the soul got through");
 
     let mut buf = [0; 1];
     let read = tokio::time::timeout(Duration::from_secs(5), flood[0].read(&mut buf))
@@ -385,9 +385,9 @@ async fn a_flood_of_silent_sockets_does_not_lock_the_kernel_out() {
 }
 
 /// Сокет, молчащий вместо Noise, закрывается по `handshake_timeout` и не
-/// мешает ядру подключиться тем временем.
+/// мешает soul подключиться тем временем.
 #[tokio::test]
-async fn a_silent_socket_neither_blocks_the_kernel_nor_lingers() {
+async fn a_silent_socket_neither_blocks_the_soul_nor_lingers() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = ServiceConfig {
         transport: Config {
@@ -405,7 +405,7 @@ async fn a_silent_socket_neither_blocks_the_kernel_nor_lingers() {
         .unwrap();
 
     let _session = dial(&address, fake::welcome("s1", &[]), Surfaces::default()).await;
-    listening.kernel().await.expect("the kernel got through");
+    listening.soul().await.expect("the soul got through");
 
     let mut buf = [0; 1];
     let read = tokio::time::timeout(Duration::from_secs(5), silent.read(&mut buf))
@@ -415,14 +415,14 @@ async fn a_silent_socket_neither_blocks_the_kernel_nor_lingers() {
 }
 
 /// `shutdown`: соединение закрыто `unavailable`, файл сокета убран, новый
-/// дозвон не проходит, `Kernel` отвечает сразу.
+/// дозвон не проходит, `Soul` отвечает сразу.
 #[tokio::test]
 async fn shutdown_stops_listening() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("module.sock");
     let (listening, address) = listen(Module::new(), &config(&dir, Via::Uds)).await;
     let session = dial(&address, fake::welcome("s1", &[]), surface_x("X")).await;
-    let kernel = listening.kernel().await.unwrap();
+    let soul = listening.soul().await.unwrap();
 
     listening.run(async {}).await.unwrap();
     let reason = tokio::time::timeout(Duration::from_secs(5), session.peer.closed())
@@ -436,7 +436,7 @@ async fn shutdown_stops_listening() {
             .is_err()
     );
 
-    let after = tokio::time::timeout(Duration::from_secs(1), get(kernel))
+    let after = tokio::time::timeout(Duration::from_secs(1), get(soul))
         .await
         .expect("nothing to wait for after shutdown");
     assert!(

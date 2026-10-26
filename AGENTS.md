@@ -2,6 +2,8 @@
 
 Источник истины — код; книга `docs/` описывает его. Меняешь поведение — правь соответствующую главу книги в том же изменении.
 
+До первого релиза обратную совместимость не сохраняем: при изменении API обновляем существующие модули и вызывающий код.
+
 ## Сборка
 
 - Только в devShell (у системного cargo нет линкера): `nix develop -c cargo <check|test|clippy|fmt> …` из корня.
@@ -16,14 +18,15 @@
 | `protocol/` | `eva-protocol` | типы, `requests/<ns>.rs` (`Args/Ok/Err`), `errors/`, wire; без I/O |
 | `core/` | `eva-core` | `Session`, трейты и `for_each_op!` из списка, `Caller`, `Provider`, `prelude` |
 | `rpc/` | `eva-rpc` | кадры msgpack, клиенты uds/ws/wss, сервисы uds/tcp под Noise (`Psk`, дозвон), пир, сервер-диспетчер, `RpcSession`, `ModuleProvider` |
-| `sdk/` | `eva-sdk` | `Module` → `Listening` (сервис слушает ядро) / `Connected` (клиент звонит сам), `Kernel = Session<LiveSession>` (переживает смену соединения) |
+| `sdk/` | `eva-sdk` | `module!()` + `Group`/`Tool` + `run` (конфиг, `init`, `Supervisor`); ручной `Module` → `Listening` / `Connected`; `Soul = Session<LiveSession>` (переживает смену соединения) |
+| `sdk/macros/` | `eva-sdk-macros` | `msg!`, `include_translations!` (PO в бинарь), бинарь `eva-sdk-i18n` (extract/merge) |
 | `providers/{openai,mock}` | `eva-provider-*` | `impl Provider` одного вендора |
 | `providers/all/` | `eva-providers` | `ProviderConfig` (тег `kind`), `AnyProvider`, `build` |
-| `services/kernel/` | `eva-kernel` | бинарь и библиотека ядра |
+| `services/soul/` | `eva-soul` | бинарь и библиотека soul |
 
 ## Слои
 
-- Рёбра: `protocol ← core ← {rpc, providers/*}`, `rpc ← sdk`, `kernel ← {core, rpc, eva-providers, eva-hands}`. Обратных нет.
+- Рёбра: `protocol ← core ← {rpc, providers/*}`, `rpc ← sdk`, `soul ← {core, rpc, eva-providers, eva-hands}`. Обратных нет.
 - Авторизация только в `state/policy/`; транспорт лишь выводит `Caller` из соединения.
 - SQL только в `db/`, хендлеры (`#[eva::endpoint]` + `#[fastrace::trace]`) только в `handling/`, строки БД → типы в `convert/` (`tests/k3_layer_lint.rs`).
 - Одна реализация операции: RPC-метод и тул — обёртки. Операции объявлены в `#[service]` в `protocol/src/requests/<ns>.rs`; `#[export]` в `core/src/service.rs` объединяет сервисы в `eva_core::for_each_op!`.

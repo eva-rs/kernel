@@ -23,7 +23,7 @@ pub struct Surface {
     pub created_at: Timestamp,
 }
 
-/// Встроенные surface, засеянные ядром при первом старте.
+/// Встроенные surface: их засевает soul при первом старте.
 #[data(copy, ord)]
 pub enum Builtin {
     /// Клиенты хозяина: телефон, терминал, десктоп.

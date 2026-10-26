@@ -1,88 +1,59 @@
 # eva-sdk
 
-SDK модулей Евы: сервис слушает и принимает ядро (Noise с общим ключом), клиент хозяина звонит ядру сам с токеном; обработчики вызовов ядро → модуль (тулы, хуки, события, запасной вход провайдера). Клиент ядра `Kernel` — та же `Session`, что и внутри ядра, и ручка переживает смену соединения.
-
-## Место в слоях
-
-Зависит от `eva-rpc`, `eva-core`, `eva-protocol` и фреймворка [eva](https://git.desu.church/VienDesu/eva) (`cli`, `tokio`). Не зависит от `eva-kernel`, `eva-hands` и провайдеров: модуль видит ядро только через протокол.
-
-## Точки входа
-
-| Путь | Что |
-|---|---|
-| `Module::new()` | билдер: `version`, `about`, `ask`, `group`, `tool` (+ `description`, `ends_turn`, `master_only`, `trusted_only`, `needs`, `parallel_safe`, `idempotent`, `timeout`), `on_event`, `hook`, `hooks_timeout`, `hooks_fail_mode`, `provider` |
-| `Module::listen(&ServiceConfig)` | сервис: bind или сокет от `LISTEN_FDS` с тем же адресом, приём ядра в фоне → `Listening` |
-| `Listening` | `kernel().await` (ждёт первого `welcome` до `kernel_wait`), `module()`, `welcome()`, `client()`, `address()`, `run(shutdown)`; новое соединение ядра вытесняет прежнее |
-| `Module::connect_config(&ClientConfig)` / `connect(url, token)` | клиент: ждёт ядро до `connect_wait`, отказ токена или версии — сразу ошибка → `Connected` |
-| `Module::handshake(conn, token)` | клиент поверх готового `Conn` (тесты), без реконнекта |
-| `Module::capabilities()` | что уйдёт в `hello` |
-| `Connected` | `kernel()`, `module()` (id из `welcome`), `welcome()`, `caller()`, `run(shutdown)` с реконнектом |
-| `Kernel` | `Session<LiveSession>`: все неймспейсы (собраны по `eva_core::for_each_op!`), вызов идёт через текущее соединение; поток и загрузка — тот же `call` |
-| `ServiceConfig`, `ClientConfig` | секция `module`; `register(app)` для `eva::cli::App` |
-| `ToolCtx`, `ToolError` | контекст вызова тула (`kernel`, `turn`, `call_id`, `progress`); `respond`/`fatal` |
-| `prelude` | `CallStep`, трейты неймспейсов, `Kernel`, `Module`, `Listening`, `Connected`, `ToolCtx`, `ToolError` |
-
-Секция `module` сервиса:
-
-| Ключ | По умолчанию | Что |
-|---|---|---|
-| `listen` | — | `{uds: /run/eva-<id>/module.sock}` или `{tcp: "127.0.0.1:7001"}`; права файла сокета — окружения (umask, socket-юнит), не SDK |
-| `key` | — | `{file: /путь}` или `{plaintext: "…"}`; тот же секрет, что `key` записи `modules.services.<id>` у ядра |
-| `kernel_wait` | `180s` | сколько `kernel()` ждёт первого соединения ядра |
-| ключи `eva_rpc::Config` | как у ядра | плоско в той же секции; `max_hello` сервис не проверяет |
-
-Секция `module` клиента:
-
-| Ключ | По умолчанию | Что |
-|---|---|---|
-| `kernel` | — | `uds:///run/eva-kernel/modules.sock`, `ws://host:port/v1/modules`, `wss://…` |
-| `token` | — | `{file: /путь}` или `{plaintext: "…"}`; хвостовой перевод строки срезается |
-| `connect_wait` | `180s` | сколько ждать ядро на старте |
-| `tls.extra_ca` | — | PEM CA ядра с самоподписанным сертификатом |
-| ключи `eva_rpc::Config` | как у ядра | плоско в той же секции: `request_timeout`, `ping_interval`, … |
-
-Модель идентичности:
-
-- Имени в `hello` нет. Id сервиса — ключ записи реестра, которую набрало ядро; id клиента — ключ записи его токена (`modules.tokens.<id>`). Приходит в `welcome` (`Listening::module`, `Connected::module`).
-- Surface модуль создаёт сам: `kernel().surfaces().create()`. Вызов идемпотентен для создателя — безопасно делать на каждом старте; `name`/`rules` меняет `surfaces.update`. Ядро помнит создателя и выводит из его живой сессии, кто surface обслуживает, поэтому после смены соединения регистрировать нечего.
-- `ask` — capability модуля: он рисует кнопки pending-запросов в чатах surface, которые обслуживает.
-
-## Что работает сейчас
-
-В M1 работают приём ядра сервисом (uds и tcp под Noise, вытеснение прежнего соединения, socket activation), подключение клиента с ожиданием ядра и реконнектом (пауза `1s..60s`), `hello.resume`, события (ядро рассылает `chat.*` и `module.*`) и запасной вход `.provider()`. Билдеры `.tool()` и `.hook()` уже объявляют capability и регистрируют обработчики, но ядро их пока только хранит: хуки оно зовёт с M2, тулы — с M4. Повтор `turns.attach` после смены соединения — M2.
-
-## Пример
+Высокоуровневый SDK модулей Eva: группы с inline-обработчиками, типизированное состояние, конфиг и локализованный прогресс. Сервис слушает, soul звонит ему под Noise; клиент хозяина подключается сам с токеном. `Soul` предоставляет библиотечное API soul и переживает смену соединения.
 
 ```rust
-use eva_sdk::{Module, ServiceConfig, prelude::*, protocol::requests::surfaces};
+use eva::data;
+use eva_sdk::{Group, Tool, ToolCtx, ToolError, module};
 
-// cfg: ServiceConfig из секции `module`
-let listening = Module::new()
-    .version(env!("CARGO_PKG_VERSION"))
-    .ask(true)
-    .listen(&cfg)
-    .await?;
+#[data]
+struct Say {
+    text: String,
+}
 
-let mut kernel = listening.kernel().await?; // первый дозвон ядра
-log::info!(module:? = listening.module(); "kernel connected");
-kernel
-    .surfaces()
-    .create()
-    .call(surfaces::create::Args { id: "bridge".into(), name: "Bridge".into(), rules: None })
-    .await?;
-listening.run(shutdown).await
+fn echo() -> Group {
+    Group::new("echo").about("Echo tools").tool(
+        Tool::new("say", async |_: ToolCtx, input: Say| {
+            Ok::<_, ToolError>(input.text)
+        })
+        .description("Repeat the given text"),
+    )
+}
+
+fn main() -> eyre::Result<()> {
+    module!().group(echo()).run()
+}
 ```
 
-`Listening::run` живёт до `shutdown`: потеря ядра его не завершает, ядро перезвонит само. `Connected::run` клиента завершается ошибкой, если ядро отвергло токен или версию при реконнекте либо сессию вытеснила другая сессия того же модуля.
+`module!()` берёт имя и версию из Cargo вызывающего пакета. Переопределение: `module!().version("1.4.3").name("owm")`. Имена тулов внутри группы локальны: `say` в группе `echo` получает путь `echo.say`. Вложенные группы — `Group::group`.
 
-## Тесты
+`init("weather", async |cfg: WeatherConfig| …)` загружает типизированный конфиг и создаёт общее состояние; `state(client)` передаёт готовое. Обработчик читает его через `ctx.state()`. Успешный результат — текст, `ToolContent` или `ToolResult`; ошибки преобразуются в `ToolError`.
+
+Настройки тула можно задать целиком через `.describe(Description { idempotent: false, parallel_safe: false, ..Default::default() })` или отдельными сеттерами. `describe` заменяет весь набор; сеттер меняет одно поле, сохраняя остальные. По умолчанию `idempotent = parallel_safe = true`. Операции с накапливающимся эффектом, например отправку сообщения, помечайте `.idempotent(false)`; если важен порядок вызовов — `.parallel_safe(false)`. Автоматические повторы по `idempotent` soul пока не выполняет. `parallel_safe: false` сохраняет порядок внутри одного ответа модели, но не блокирует вызовы из других туров.
+
+При `run()` секция `module` необязательна:
+
+| Настройка | Дефолт |
+|---|---|
+| Имя и версия | `CARGO_PKG_NAME`, `CARGO_PKG_VERSION` |
+| `listen` | `$RUNTIME_DIRECTORY/module.sock`, иначе `/run/eva-<name>/module.sock` |
+| `key` | `{credential: soul-key}` — `$CREDENTIALS_DIRECTORY/soul-key` |
+| `soul_wait` | `3m` |
+| Транспорт | Дефолты `eva_rpc::Config` |
+| Префикс окружения | Имя в верхнем регистре, `-` → `_`, затем `_` |
+
+`run` использует `eva::cli::App` и `Supervisor`, поддерживает `--config` и SIGINT/SIGTERM. Каталоги и права задаёт окружение. Авторизованный id сервиса задаёт реестр soul, id клиента — токен; оба приходят в `welcome` независимо от имени приложения.
+
+Для ручного запуска остаются `listen(&ServiceConfig)`, `connect_config(&ClientConfig)` и `handshake`. При таком запуске состояние создаётся заранее через `state`; `init` выполняется только в `run`. Старые вызовы с полными путями переименованы в `group_path` и `tool_path`.
+
+Переводы подключаются через `.translations(include_translations!("locales"))`, статус отправляется как `ctx.progress(msg!("Fetching weather for {city}", city = &input.city)).await`. Поддержаны gettext PO, контекст, plural-формы и fallback. Каждый получатель выбирает свой язык через `LocalizedText::render(locale)`; soul очищает секреты также в параметрах и переводах. Для POT и обновления PO есть `eva-sdk-i18n extract` / `merge` в пакете `eva-sdk-macros`.
+
+Полный собираемый пример: [examples/echo.rs](examples/echo.rs). API, конфиг, локализация и миграция: [глава SDK](../docs/src/sdk.md). Провод: [протокол модулей](../docs/src/protocol.md).
+
+Проверка:
 
 ```sh
-nix develop -c cargo test -p eva-sdk
+nix develop -c cargo test -p eva-sdk -p eva-sdk-macros -p eva-protocol -p eva-rpc
 ```
 
-`tests/it/` гоняет SDK против фейкового ядра на `eva-rpc` (`fake.rs`): билдер → capability (`builder.rs`), разбор секции `module` (`config.rs`), обработчики (`dispatch.rs`), приём ядра сервисом, вытеснение и Noise (`listen.rs`), реконнект клиента и `resume` (`reconnect.rs`). Контракт с настоящим ядром — `services/kernel/tests/contract.rs`.
-
-## Документация
-
-[SDK модулей](../docs/src/sdk.md), [Протокол модулей](../docs/src/protocol.md).
+SDK зависит от `eva-rpc`, `eva-core`, `eva-protocol`, `eva-sdk-macros` и `eva`; не зависит от soul, рук или провайдеров.

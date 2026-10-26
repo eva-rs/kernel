@@ -175,15 +175,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "auto_impl"
-version = "1.3.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -473,17 +464,17 @@ dependencies = [
 
 [[package]]
 name = "compact_str"
-version = "0.8.2"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fd622ebbb56a5b2ccb651b32b911cdeb2a9b4b11776b2473bf26a26a286244e"
+checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
 dependencies = [
  "castaway",
  "cfg-if",
  "itoa",
- "rustversion",
- "ryu",
+ "schemars",
  "serde",
  "static_assertions",
+ "zmij",
 ]
 
 [[package]]
@@ -790,9 +781,9 @@ dependencies = [
 [[package]]
 name = "eva"
 version = "0.1.0"
+source = "git+ssh://git@github.com/nerodono/eva.git#fa4883ea2831db679c684eb8dcef13fd7578af64"
 dependencies = [
  "ahash",
- "auto_impl",
  "blake3",
  "bytes",
  "bytesize",
@@ -833,6 +824,7 @@ dependencies = [
 [[package]]
 name = "eva-hands"
 version = "0.1.0"
+source = "git+ssh://git@github.com/eva-rs/hands.git#63393daf8cff1daed53b2bae2b1d8902b6f4ddc2"
 dependencies = [
  "eva",
  "eyre",
@@ -851,44 +843,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "eva-kernel"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "blake3",
- "bytes",
- "eva",
- "eva-core",
- "eva-hands",
- "eva-protocol",
- "eva-provider-mock",
- "eva-providers",
- "eva-rpc",
- "eva-sdk",
- "eyre",
- "fastrace",
- "futures",
- "insta",
- "jiff",
- "jsonschema",
- "log",
- "proptest",
- "regex",
- "reqwest 0.13.5",
- "rmp-serde",
- "rusqlite",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
 name = "eva-macros"
 version = "0.1.0"
+source = "git+ssh://git@github.com/nerodono/eva.git#fa4883ea2831db679c684eb8dcef13fd7578af64"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -900,6 +857,7 @@ dependencies = [
 name = "eva-protocol"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "eva",
  "futures-core",
  "proptest",
@@ -1019,6 +977,7 @@ dependencies = [
  "eva-core",
  "eva-protocol",
  "eva-rpc",
+ "eva-sdk-macros",
  "eyre",
  "futures",
  "log",
@@ -1029,8 +988,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "eva-sdk-macros"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "clap",
+ "eva",
+ "eva-protocol",
+ "eyre",
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "eva-soul"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "blake3",
+ "bytes",
+ "eva",
+ "eva-core",
+ "eva-hands",
+ "eva-protocol",
+ "eva-provider-mock",
+ "eva-providers",
+ "eva-rpc",
+ "eva-sdk",
+ "eyre",
+ "fastrace",
+ "futures",
+ "insta",
+ "jiff",
+ "jsonschema",
+ "log",
+ "proptest",
+ "regex",
+ "reqwest 0.13.5",
+ "rmp-serde",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "eva-utils"
 version = "0.1.0"
+source = "git+ssh://git@github.com/nerodono/eva.git#fa4883ea2831db679c684eb8dcef13fd7578af64"
 
 [[package]]
 name = "eventsource-stream"
@@ -1135,6 +1146,7 @@ dependencies = [
  "pear",
  "serde",
  "serde_json",
+ "serde_yaml",
  "toml",
  "uncased",
  "version_check",
@@ -2903,10 +2915,11 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "1.0.0-alpha.17"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
  "bytes",
- "compact_str",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",
@@ -2917,12 +2930,14 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "1.0.0-alpha.17"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -3027,13 +3042,13 @@ dependencies = [
 
 [[package]]
 name = "serde_derive_internals"
-version = "0.29.1"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -3106,6 +3121,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -3714,6 +3742,12 @@ dependencies = [
  "crypto-common 0.1.7",
  "subtle",
 ]
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

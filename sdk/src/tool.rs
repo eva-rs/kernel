@@ -1,43 +1,75 @@
-//! Тулы модуля (`02 §1.1`, `06 §4`): декларация из `#[data]`-типа входа и
-//! обработчик. Ядро зовёт тулы модулей с M4; до того они только объявлены.
+//! Типизированный контекст тула, преобразование результата и схема входа.
 
 use std::{fmt, pin::Pin, sync::Arc};
 
 use eva::_priv::schemars::{JsonSchema, generate::SchemaSettings};
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use eva_protocol::{
-    types::{tool::ToolDecl, turn::TurnCtx},
+    types::turn::TurnCtx,
     wire::{ErrorCode, RpcError, tools::ToolResult},
 };
 use eva_rpc::Progress;
 
-use crate::Kernel;
+use crate::Soul;
 
 pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-/// Вызов тула: сессия ядра, тур и прогресс.
-pub struct ToolCtx {
+/// Вызов тула: сессия soul, тур и прогресс.
+pub struct ToolCtx<S = ()> {
     call_id: String,
     turn: TurnCtx,
-    kernel: Kernel,
+    soul: Soul,
     progress: Progress,
+    state: Arc<S>,
+    translations: Arc<crate::Catalogs>,
+    domain: Arc<str>,
 }
 
 impl ToolCtx {
-    pub(crate) fn new(call_id: String, turn: TurnCtx, kernel: Kernel, progress: Progress) -> Self {
+    pub(crate) fn new(call_id: String, turn: TurnCtx, soul: Soul, progress: Progress) -> Self {
         Self {
             call_id,
             turn,
-            kernel,
+            soul,
             progress,
+            state: Arc::new(()),
+            translations: Arc::new(crate::Catalogs::default()),
+            domain: Arc::from(""),
+        }
+    }
+}
+
+impl<S> ToolCtx<S> {
+    pub fn state(&self) -> &S {
+        &self.state
+    }
+
+    pub(crate) fn with_state<T>(self, state: Arc<T>) -> ToolCtx<T> {
+        ToolCtx {
+            call_id: self.call_id,
+            turn: self.turn,
+            soul: self.soul,
+            progress: self.progress,
+            state,
+            translations: self.translations,
+            domain: self.domain,
         }
     }
 
-    /// Ядро через текущее соединение: тул переживает реконнект, ручка тоже.
-    pub fn kernel(&self) -> Kernel {
-        self.kernel.clone()
+    pub(crate) fn with_translations(
+        mut self,
+        translations: Arc<crate::Catalogs>,
+        domain: Arc<str>,
+    ) -> Self {
+        self.translations = translations;
+        self.domain = domain;
+        self
+    }
+
+    /// Soul через текущее соединение: тул переживает реконнект, ручка тоже.
+    pub fn soul(&self) -> Soul {
+        self.soul.clone()
     }
 
     pub fn turn(&self) -> &TurnCtx {
@@ -49,18 +81,51 @@ impl ToolCtx {
         &self.call_id
     }
 
-    /// `progress{text}` в ленту items; ушедший потребитель теряет текст молча.
-    pub async fn progress(&self, text: impl Into<String>) {
-        self.progress.send(text).await;
+    /// Статус в ленту тура; Message сохраняет переводы для выбора языка получателем.
+    pub async fn progress(&self, text: impl Into<ProgressText>) {
+        match text.into() {
+            ProgressText::Plain(text) => self.progress.send(text).await,
+            ProgressText::Message(message) => {
+                self.progress
+                    .send_localized(self.translations.bind(&self.domain, message))
+                    .await
+            }
+        }
     }
 }
 
-impl fmt::Debug for ToolCtx {
+impl<S> fmt::Debug for ToolCtx<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ToolCtx")
             .field("call_id", &self.call_id)
             .field("turn", &self.turn.turn_id)
             .finish_non_exhaustive()
+    }
+}
+
+/// Простой текст либо сообщение с отложенным выбором языка.
+pub enum ProgressText {
+    Plain(String),
+    Message(crate::Message),
+}
+impl From<String> for ProgressText {
+    fn from(value: String) -> Self {
+        Self::Plain(value)
+    }
+}
+impl From<&str> for ProgressText {
+    fn from(value: &str) -> Self {
+        Self::Plain(value.into())
+    }
+}
+impl From<&String> for ProgressText {
+    fn from(value: &String) -> Self {
+        Self::Plain(value.clone())
+    }
+}
+impl From<crate::Message> for ProgressText {
+    fn from(value: crate::Message) -> Self {
+        Self::Message(value)
     }
 }
 
@@ -108,14 +173,11 @@ pub(crate) type ToolFn =
     Arc<dyn Fn(ToolCtx, Value) -> BoxFuture<Result<ToolResult, RpcError>> + Send + Sync>;
 
 pub(crate) struct ToolEntry {
-    pub decl: ToolDecl,
     pub run: ToolFn,
 }
 
 /// Путь `group.sub.tool` → каноничное имя `group_sub_tool` (`02 §1`).
-pub fn canonical(path: &str) -> String {
-    path.replace('.', "_")
-}
+pub use eva_protocol::types::tool::canonical;
 
 /// Схема входа: draft 2020-12, вложенные схемы inline, без `title`.
 pub fn input_schema<I: JsonSchema>() -> Value {
@@ -229,31 +291,4 @@ fn coerce_scalar(text: &str, schema: &serde_json::Map<String, Value>) -> Option<
         }
     }
     None
-}
-
-/// Обработчик пользователя → стёртый: приведение и разбор входа, отказ
-/// разбора — `is_error` модели, чтобы она исправила аргументы.
-pub(crate) fn erase<I, E, F, Fut>(schema: Value, handler: F) -> ToolFn
-where
-    I: DeserializeOwned + Send + 'static,
-    E: Into<ToolError> + 'static,
-    F: Fn(ToolCtx, I) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<ToolResult, E>> + Send + 'static,
-{
-    let handler = Arc::new(handler);
-    Arc::new(move |ctx: ToolCtx, mut input: Value| {
-        coerce(&mut input, &schema);
-        let parsed = serde_json::from_value::<I>(input);
-        let handler = handler.clone();
-        Box::pin(async move {
-            let input = match parsed {
-                Ok(input) => input,
-                Err(e) => return Ok(ToolResult::error(format!("invalid input: {e}"))),
-            };
-            match handler(ctx, input).await {
-                Ok(result) => Ok(result),
-                Err(error) => error.into().into_outcome(),
-            }
-        })
-    })
 }

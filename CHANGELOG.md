@@ -1,5 +1,31 @@
 # Changelog
 
+## SDK модулей и локализация — 2026-10-26
+
+- `module!()` с группами `Group`/`Tool`: имя и версия из Cargo, локальные имена
+  тулов, `init`/`state` с типизированным конфигом, `run` с дефолтами сокета и
+  ключа поверх `Supervisor`. Ручные `listen`/`connect_config` остаются; прежние
+  полные пути — `group_path`/`tool_path`.
+- Локализованный прогресс: `msg!`, `include_translations!` (gettext PO с
+  контекстом и plural-формами), `LocalizedText::render(locale)` у получателя;
+  секреты очищаются и в параметрах, и в переводах. `eva-sdk-i18n extract/merge`.
+- Фреймворк `eva` берётся из `github.com/nerodono/eva` (schemars 1).
+- `kernel` переименован в `soul`: крейт и бинарь `eva-soul`, `services.eva-soul`,
+  `/run/eva-soul/`, `Caller::Soul`, `sdk::Soul`, ключи SDK `soul`/`soul_wait`,
+  credential `soul-key`, таблица `soul_meta`, маркеры `[soul]`. Репозиторий —
+  `github.com/eva-rs/soul`.
+
+## Управление сном, блокнот и расходы — 2026-10-07
+
+- `sleep.status/start/cancel`: ручной запуск независимо от автоматического
+  расписания, запрет наложения запусков, отмена по id и закрытие журнала.
+- `notes.put/delete/history/snapshot/restore`: прямая правка и восстановление
+  целого блокнота. Перед правками клиента и модели сохраняется полный снимок;
+  восстановление тоже обратимо. `notes.history_keep` ограничивает историю чата.
+- `stats.spend/spend_series` принимают `window` с календарными датами или точными
+  моментами времени и `timezone`; инструмент `stats_spend` поддерживает последний
+  час. Суточные границы учитывают DST, точки временного ряда разделены по валютам.
+
 ## Диалоговый движок и рабочие операции — 2026-10-05
 
 - Добавлены инструменты модели для чатов, личностей, крона и статистики,
@@ -24,24 +50,24 @@
   подписки `turns.attach` после смены соединения; SDK не скрывает этот шаг.
 
 
-## Ядро звонит сервисам — не датировано
+## Soul звонит сервисам — не датировано
 
-Сервисный модуль (мост, MCP, удалённый провайдер) адреса ядра не знает: он слушает, а ядро набирает его по реестру. Клиенты хозяина (телефон, TUI) звонят ядру сами, с токеном. Флейк ядра — `eva.lib.mkServiceFlake` фреймворка, как у остальных сервисов Евы; схема базы — один файл.
+Сервисный модуль (мост, MCP, удалённый провайдер) адреса soul не знает: он слушает, а soul набирает его по реестру. Клиенты хозяина (телефон, TUI) сами звонят в soul, с токеном. Флейк soul — `eva.lib.mkServiceFlake` фреймворка, как у остальных сервисов Евы; схема базы — один файл.
 
 ### Провод и конфиг
 
-- Реестр сервисов: `modules.services.<id> = {address, key}` в конфиге ядра; `address` — `uds:///<абсолютный путь>` или `tcp://<host>:<port>`, `key` — `SecretString`. Оба транспорта под Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = HKDF-SHA256(key, `eva-module psk v1`); кадры `u32 BE + msgpack` — внутри зашифрованного потока.
+- Реестр сервисов: `modules.services.<id> = {address, key}` в конфиге soul; `address` — `uds:///<абсолютный путь>` или `tcp://<host>:<port>`, `key` — `SecretString`. Оба транспорта под Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = HKDF-SHA256(key, `eva-module psk v1`); кадры `u32 BE + msgpack` — внутри зашифрованного потока.
 - Токены только у клиентов: `modules.tokens.<id> = {token}`. Один id в `services` и `tokens`, зарезервированный id, пустой ключ, кривой `address` — ошибка старта; ключ короче 32 символов — предупреждение. Строка базы под id из конфига игнорируется с предупреждением.
-- `hello.token` необязателен: набранный ядром сервис его не шлёт (с токеном — `invalid_params`); клиенту без токена — `unauthorized`. `welcome.kind` — вид соединения. `max_hello`, лимит handshake'ей на сеть и пауза отказа — только у слушателя клиентов; `modules.listen` принимает только клиентов.
-- `hello.proto_version`: ядро принимает только свой MAJOR, иначе `proto_version` и close.
+- `hello.token` необязателен: сервис, до которого дозвонился soul, его не шлёт (с токеном — `invalid_params`); клиенту без токена — `unauthorized`. `welcome.kind` — вид соединения. `max_hello`, лимит handshake'ей на сеть и пауза отказа — только у слушателя клиентов; `modules.listen` принимает только клиентов.
+- `hello.proto_version`: soul принимает только свой MAJOR, иначе `proto_version` и close.
 - `Bytes` в JSON — только base64-строка, в msgpack — `bin`.
 - Петля дозвона на запись: сразу при старте и на `modules.add`, повтор с паузой в `[d/2, d]`, `d` от 1 s до 60 s; `d` провалов сбрасывает `welcome`, `d` коротких сессий — сессия дольше `ping_timeout`, простой модуля до первого соединения не удлиняет паузу после его сессии; не сдаётся. Петля запущена с номером отзыва имени: после `modules.remove` ни одна её попытка сессией не становится. Один `address` у двух записей — ошибка старта, у `modules.add` — `conflict`. Новый счётчик `modules.dial_failed{module}`.
-- Права файлов ядро и SDK не ставят: их задаёт окружение — umask процесса или socket-юнит.
-- Socket activation у ядра и SDK: унаследованные сокеты (`LISTEN_PID`/`LISTEN_FDS`) сопоставляются слушателям по адресу (uds — путь, tcp/ws/wss — `ip:port`) и берутся вместо bind; сокет без слушателя или не слушающий (`Accept=yes`) — ошибка старта; `LISTEN_*` не снимаются.
+- Soul и SDK не ставят права файлов: их задаёт окружение — umask процесса или socket-юнит.
+- Socket activation у soul и SDK: унаследованные сокеты (`LISTEN_PID`/`LISTEN_FDS`) сопоставляются слушателям по адресу (uds — путь, tcp/ws/wss — `ip:port`) и берутся вместо bind; сокет без слушателя или не слушающий (`Accept=yes`) — ошибка старта; `LISTEN_*` не снимаются.
 
 ### Библиотечное API
 
-- `modules.add {module, address, key?}` → `{key?}` (без `key` ядро генерирует его и возвращает один раз; ключ хранится в базе как есть) и `modules.remove {module}` → `{}`: только клиенту хозяина. Ошибки `Taken` (`conflict`) и `ServiceNotFound` (`not_found`); запись конфига `remove` не снимает (`conflict`).
+- `modules.add {module, address, key?}` → `{key?}` (без `key` soul генерирует его и возвращает один раз; ключ хранится в базе как есть) и `modules.remove {module}` → `{}`: только клиенту хозяина. Ошибки `Taken` (`conflict`) и `ServiceNotFound` (`not_found`); запись конфига `remove` не снимает (`conflict`).
 - `modules.token_issue {module, issued_by?}` — только токены клиентов; id сервиса (конфиг или `modules.add`) — `conflict`.
 - `Module.kind: Option<ModuleKind>` (`service` — запись реестра, `client` — живой токен), поле `Module.dial {address, config, error}`; запись реестра без строки `modules` показывается `offline`. То же поле у `ModuleGauge`.
 - `Caller::from_kind`/`Caller::kind` — вид модуля `ModuleKind`.
@@ -52,24 +78,24 @@
 
 ### SDK
 
-- Сервис слушает: `Module::listen(&ServiceConfig{listen, key, kernel_wait})` → `Listening` (uds/tcp под Noise, socket activation по адресу); новое соединение ядра вытесняет прежнее `superseded`, `kernel().await` ждёт первого до `kernel_wait`, `run` переживает потерю ядра.
-- Слушатель сервиса: Noise, `hello` и `welcome` — за один `handshake_timeout` от accept; до конца Noise — не больше 64 соединений и 8 из одной сети, сверх новичок вытесняет старейшее недоказанное (`eva_rpc::gate::Gate`, общий со слушателем клиентов ядра); провал до Noise — `debug` в логе.
+- Сервис слушает: `Module::listen(&ServiceConfig{listen, key, soul_wait})` → `Listening` (uds/tcp под Noise, socket activation по адресу); новое соединение soul вытесняет прежнее `superseded`, `soul().await` ждёт первого до `soul_wait`, `run` переживает потерю soul.
+- Слушатель сервиса: Noise, `hello` и `welcome` — за один `handshake_timeout` от accept; до конца Noise — не больше 64 соединений и 8 из одной сети, сверх новичок вытесняет старейшее недоказанное (`eva_rpc::gate::Gate`, общий со слушателем клиентов soul); провал до Noise — `debug` в логе.
 - `ClientConfig` — клиенты хозяина: токен, реконнект.
 - `hello.token` у сервиса не шлётся, `max_hello` сервис не проверяет.
 
 ### Сборка и NixOS
 
-- `flake.nix` — вызов `eva.lib.mkServiceFlake`: `packages.eva-kernel`/`default`, `devShells.default`, `nixosModules.default`. Секреты — `secretFields` фреймворка (`llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`): `services.eva-kernel.secrets."<ключ>" = <файл>` → `LoadCredential` и `{file = "/run/credentials/eva-kernel.service/<ключ>";}` в `settings`; assertions фреймворка — `plaintext` в `settings` и ключ `secrets` мимо полей.
-- Сервис: `RuntimeDirectory = eva-kernel`, слушатель по умолчанию `/run/eva-kernel/modules.sock` ядро связывает само (при `UMask = 0077` — только своему пользователю; сокет для группы — socket-юнит хоста с тем же путём, ядро берёт его по адресу); `SupplementaryGroups = [ "eva" ]`, группу объявляет хост.
-- `StateDirectoryMode = 0700` и `UMask = 0077` — база (хранит ключи сервисов как есть), blob'ы и песочницы только пользователю ядра; сервис машины слушает `/run/eva-<id>/module.sock`, права — его юнит или socket-юнит.
+- `flake.nix` — вызов `eva.lib.mkServiceFlake`: `packages.eva-soul`/`default`, `devShells.default`, `nixosModules.default`. Секреты — `secretFields` фреймворка (`llm.providers.*.api_key`, `modules.tokens.*.token`, `modules.services.*.key`, `hands.endpoints.*.key`): `services.eva-soul.secrets."<ключ>" = <файл>` → `LoadCredential` и `{file = "/run/credentials/eva-soul.service/<ключ>";}` в `settings`; assertions фреймворка — `plaintext` в `settings` и ключ `secrets` мимо полей.
+- Сервис: `RuntimeDirectory = eva-soul`; soul сам связывает слушатель по умолчанию `/run/eva-soul/modules.sock` (при `UMask = 0077` — только своему пользователю; сокет для группы — socket-юнит хоста с тем же путём, soul берёт его по адресу); `SupplementaryGroups = [ "eva" ]`, группу объявляет хост.
+- `StateDirectoryMode = 0700` и `UMask = 0077` — база (хранит ключи сервисов как есть), blob'ы и песочницы только пользователю soul; сервис машины слушает `/run/eva-<id>/module.sock`, права — его юнит или socket-юнит.
 - Книга — `mdbook build docs` из devShell (`docs/book` в `.gitignore`).
 - Фреймворк `eva` c58e04c: `eva::schemars` (форк), `hashbrown` 0.17, nixpkgs `nixos-26.05`; записи `for_each_op!` несут `docs: [...]`.
 
 ### Тесты
 
-- Контракт `tests/contract.rs`: SDK-сервис ядро набирает по uds и по tcp под Noise — ответы побайтно равны прогону в процессе; клиенты с токеном по uds, ws и wss; чужой ключ — сессии нет, причина у обеих сторон; рестарт модуля — ядро перезванивает само; рестарт ядра — модуль принимает новое соединение с `hello.resume`; `modules.add` без ключа выдаёт рабочий ключ, запись конфига `modules.remove` не снимает.
+- Контракт `tests/contract.rs`: soul набирает SDK-сервис по uds и по tcp под Noise — ответы побайтно равны прогону в процессе; клиенты с токеном по uds, ws и wss; чужой ключ — сессии нет, причина у обеих сторон; рестарт модуля — soul перезванивает сам; рестарт soul — модуль принимает новое соединение с `hello.resume`; `modules.add` без ключа выдаёт рабочий ключ, запись конфига `modules.remove` не снимает.
 - `tests/dial.rs`: `modules.add` звонит сразу, `modules.remove` закрывает сессию и гасит петлю (попытка после отзыва имени сессией не становится), паузы `Pacing`, второй адрес на модуль — `conflict`. `tests/secrets.rs`: ключ рук не открывает модуль (Noise между `eva-hands` и `eva-rpc` не сходится), два сервиса на один адрес — ошибка старта. Матрица `Policy` и `rpc/tests/it/errors.rs` — со строками `modules.add/remove`.
-- `rpc/tests/it/activation.rs` — унаследованные сокеты по адресу у ядра и сервиса, `Accept=yes` и лишний сокет — ошибка; `reverse.rs` — `tools.call` и события к клиенту по ws; `service.rs` — поздний Noise не даёт `hello` отдельного бюджета; `sdk/tests/it/listen.rs` — поток молчащих сокетов не запирает ядро.
+- `rpc/tests/it/activation.rs` — унаследованные сокеты по адресу у soul и сервиса, `Accept=yes` и лишний сокет — ошибка; `reverse.rs` — `tools.call` и события к клиенту по ws; `service.rs` — поздний Noise не даёт `hello` отдельного бюджета; `sdk/tests/it/listen.rs` — поток молчащих сокетов не запирает soul.
 
 ## API на eva-api-builder — 2026-09-27
 
@@ -77,7 +103,7 @@
 
 ### Библиотечное API
 
-- Новый крейт `eva-kernel-macros` (`macros/`): `endpoints!` на `eva-api-builder` фреймворка — единственный список операций с флагами `mutating`, `stream`, `upload`. Из него трейты неймспейсов и X-макро `eva_core::for_each_op!`.
+- Новый крейт `eva-soul-macros` (`macros/`): `endpoints!` на `eva-api-builder` фреймворка — единственный список операций с флагами `mutating`, `stream`, `upload`. Из него трейты неймспейсов и X-макро `eva_core::for_each_op!`.
 - `CallStep` — `eva::handling::CallStep` (реэкспорт `eva_core::CallStep`): один шаг для вызова, потока и загрузки — `.call(args)`.
 - Поток (`turns.attach`, `blobs.get`): `.call(args)`, `Ok = Items<Item, Err>`.
 - Загрузка (`blobs.put`): `.call(put::Args { meta, body })`; в `params` идёт `put::Meta`.
@@ -87,7 +113,7 @@
 
 - `eva-rpc`: таблица диспетчера и `RpcSession` — колбэки над `for_each_op!`.
 - `eva-sdk`: `LiveSession` собрана по тому же списку.
-- `eva-kernel`: `impls/` — строка `project!` на операцию над `CallStep` фреймворка.
+- `eva-soul`: `impls/` — строка `project!` на операцию над `CallStep` фреймворка.
 - Сигналы ловит `Supervisor` фреймворка: первый SIGINT/SIGTERM сворачивает компоненты штатно (модули, затем сброс WAL), второй обрывает компоненты. Код выхода в обоих случаях 0; процесс ждёт уже начатые блокирующие операции.
 - Фреймворк `eva` 5e911fc, toolchain rust 1.95.
 
@@ -100,7 +126,7 @@
 
 Библиотечный слой, транспорт модулей и SDK.
 
-### Ядро (`eva-kernel`)
+### Soul (`eva-soul`)
 
 Операции и хранилище:
 
@@ -109,7 +135,7 @@
 - Читатели БД — жёсткий потолок `db.readers`: соединение берётся на один запрос, ожидание свободного не дольше `db.busy_timeout` (иначе `Aux::Db`), отменённый запрос держит слот до конца.
 - `folders.delete`, `folders.update{trusted}` и `surfaces.update{trusted}`, меняющие действующее доверие чата, ставят ему `reset_pending`.
 - `memory.restore` публикует `memory.changed`.
-- `inference.complete` доступен ядру и пишет `spend` с `source = system`; `max_tokens` урезается до остатка окна контекста модели (оценка входа по калиброванным `token_ratios`), не влезает ничего — `Aux::Invalid`.
+- `inference.complete` доступен soul и пишет `spend` с `source = system`; `max_tokens` урезается до остатка окна контекста модели (оценка входа по калиброванным `token_ratios`), не влезает ничего — `Aux::Invalid`.
 - Строки ограничены (`Aux::Invalid`): имена, заголовки и handle — ≤ 256 символов, `external_id` — ≤ 256 байт, `project`/`workdir` — ≤ 4096 байт, `rules` surface — ≤ 16 KiB, `media_type` блоба — ≤ 255 байт.
 
 Политика и изоляция:
@@ -120,17 +146,17 @@
 
 Модули:
 
-- Подсистема `modules`: слушатели uds/ws/wss; id модуля — из токена: имя найденной записи `modules.tokens` или `module_tokens` (blake3, сравнение за постоянное время), его возвращает `welcome.module`; ключ `kernel`/`system`/`local`, пустой токен и один токен у двух ключей — отказ старта, токен короче 32 символов — предупреждение. Вытеснение сессии того же модуля, строка `modules` (connected/offline/forgotten, перевод в forgotten — ежечасно), провайдер запасной двери, рассылка событий `chat.*`/`module.*` по `Policy::events()` — включая события, случившиеся во время handshake. Capability `tools`/`hooks` проверяются и хранятся; вызовы — с M4/M2.
+- Подсистема `modules`: слушатели uds/ws/wss; id модуля — из токена: имя найденной записи `modules.tokens` или `module_tokens` (blake3, сравнение за постоянное время), его возвращает `welcome.module`; ключ `soul`/`system`/`local`, пустой токен и один токен у двух ключей — отказ старта, токен короче 32 символов — предупреждение. Вытеснение сессии того же модуля, строка `modules` (connected/offline/forgotten, перевод в forgotten — ежечасно), провайдер запасной двери, рассылка событий `chat.*`/`module.*` по `Policy::events()` — включая события, случившиеся во время handshake. Capability `tools`/`hooks` проверяются и хранятся; вызовы — с M4/M2.
 - Неверный токен отвечает `unauthorized` после паузы 250 мс; ошибка БД до принятия токена уходит пиру как `internal error`, подробности — только в лог.
 - Отзыв токена во время handshake не даёт сессии; запросы уже закрытой сессии не исполняются; handshake, завершившийся после начала остановки, получает отказ `unavailable`.
 - `modules.token_issue`: зарезервированный id — `Aux::Invalid`; модуль из `modules.tokens` («конфиг сильнее») и собственный модуль вызывающего (ротация закрыла бы сессию, получающую единственную копию) — `Aux::Conflict`, ничего не пишется.
 - Модуль-провайдер не перехватывает имена моделей, уже обслуживаемые другим провайдером: принимаются только `welcome.models_accepted`.
-- Surface — сущность ядра: `surfaces.create {id, name, rules?}` запоминает создателя в `surface.module`, для него идемпотентен (строка не меняется), чужой `id` — `Taken`, `local`/`system` — `forbidden` любому. Обслуживание и `ask_ui` выводятся из живых сессий: создатель обслуживает свои surface, каждый `client` — ещё `local`; реестра нет. `surfaces.update` создателя после реконнекта снова включает обслуживание.
+- Surface — сущность soul: `surfaces.create {id, name, rules?}` запоминает создателя в `surface.module`, для него идемпотентен (строка не меняется), чужой `id` — `Taken`, `local`/`system` — `forbidden` любому. Обслуживание и `ask_ui` выводятся из живых сессий: создатель обслуживает свои surface, каждый `client` — ещё `local`; реестра нет. `surfaces.update` создателя после реконнекта снова включает обслуживание.
 - `chats.persons.master[].module` привязывает surface адреса хозяина к модулю: чужой `surfaces.create` — `forbidden`, пара на surface другого модуля не сидится, пара без привязки — предупреждение на старте.
 
 Квоты модулей:
 
-- `sqlite`: `modules.sqlite_quota` (1 GiB) ограничивает файл базы и временные файлы каждого вызова (сортировки, промежуточные b-tree, журналы) через VFS ядра `eva-module`, сверх — `quota`; PRAGMA вне allow-list, `ATTACH`/`DETACH`/`VACUUM` — `forbidden`, управление транзакцией — `invalid_params`.
+- `sqlite`: `modules.sqlite_quota` (1 GiB) ограничивает файл базы и временные файлы каждого вызова (сортировки, промежуточные b-tree, журналы) через VFS soul `eva-module`, сверх — `quota`; PRAGMA вне allow-list, `ATTACH`/`DETACH`/`VACUUM` — `forbidden`, управление транзакцией — `invalid_params`.
 - `sqlite.query` принимает только читающие инструкции, ответ ограничен кадром (иначе `quota`), BLOB возвращается как msgpack `bin`; отмена и дедлайн прерывают инструкцию.
 - `kv`: `modules.kv_value_max` (1 MiB) на значение и `modules.kv_quota` (64 MiB) на модуль; расход ведёт таблица `module_kv_usage` на триггерах.
 - `blobs`: `work.blob_quota` (4 GiB) на владельца surface, каждый живой блоб стоит не меньше 4 KiB; загрузка принимается в `blob_dir/.staging` и не оставляет файлов при отмене, остатки подметаются на старте.
@@ -143,7 +169,7 @@
 - `system.tz`: `UTC`/`Etc/UTC`, `±HH:MM` или имя IANA из встроенной базы зон; сутки счётчиков и `spend` учитывают DST (`eva_day`), неизвестная зона — отказ старта.
 - Бинарь: `eva::cli::App` (env `EVA_`), `Supervisor` с компонентами `db` и `modules`, штатная остановка по SIGINT/SIGTERM с `PRAGMA optimize` и чекпойнтом WAL — после того, как `modules` закрыл сессии и дождался их уборки (строки `offline` записаны).
 - Счётчики здоровья модулей (включая `modules.rpc_errors` и `modules.forbidden`), личностей, переносов trust и инференса.
-- NixOS-модуль: `services.eva-kernel.secrets` отдаёт файлы через `LoadCredential`; assertion отвергает `plaintext` в `settings`, переменные `EVA_*__PLAINTEXT` и файлы из nix store в `extraConfigFiles`/`environmentFiles`. Слушатель по умолчанию — `/run/eva-kernel/modules.sock` с группой `eva`: локальным модулям нужен `SupplementaryGroups = [ "eva" ]`.
+- NixOS-модуль: `services.eva-soul.secrets` отдаёт файлы через `LoadCredential`; assertion отвергает `plaintext` в `settings`, переменные `EVA_*__PLAINTEXT` и файлы из nix store в `extraConfigFiles`/`environmentFiles`. Слушатель по умолчанию — `/run/eva-soul/modules.sock` с группой `eva`: локальным модулям нужен `SupplementaryGroups = [ "eva" ]`.
 
 ### Протокол и транспорт
 
@@ -158,8 +184,8 @@
 
 ### SDK (`eva-sdk`)
 
-- `Module` → `Connected`: ожидание ядра до `connect_wait`, реконнект `1s..60s` с `hello.resume`, остановка при вытеснении и при `hello` больше своего `max_hello`; билдеры тулов, хуков, событий, провайдера и `.ask(bool)`. `Connected::module()` — id из `welcome`. Surface модуль создаёт сам — `kernel().surfaces().create()` (идемпотентно), после реконнекта регистрировать нечего. `module.token` — `SecretString`.
-- `Kernel = Session<LiveSession>`: он и `ToolCtx::kernel()` следуют за реконнектом: вызов ждёт новую сессию до 30s; оборванные чтения и открытия потоков повторяются, оборванные мутации — с тем же id запроса, если ядро продолжило окно идемпотентности (`welcome.resumed`), иначе (рестарт ядра) — `Aux::Unavailable` с неизвестным исходом; вызов, оборванный закрытием соединения (включая вытеснение), падает как `Aux::Unavailable`. Паника тула — `internal`, повтор того же `call_id` получает тот же итог.
+- `Module` → `Connected`: ожидание soul до `connect_wait`, реконнект `1s..60s` с `hello.resume`, остановка при вытеснении и при `hello` больше своего `max_hello`; билдеры тулов, хуков, событий, провайдера и `.ask(bool)`. `Connected::module()` — id из `welcome`. Surface модуль создаёт сам — `soul().surfaces().create()` (идемпотентно), после реконнекта регистрировать нечего. `module.token` — `SecretString`.
+- `Soul = Session<LiveSession>`: он и `ToolCtx::soul()` следуют за реконнектом: вызов ждёт новую сессию до 30s; оборванные чтения и открытия потоков повторяются, оборванные мутации — с тем же id запроса, если soul продолжил окно идемпотентности (`welcome.resumed`), иначе (рестарт soul) — `Aux::Unavailable` с неизвестным исходом; вызов, оборванный закрытием соединения (включая вытеснение), падает как `Aux::Unavailable`. Паника тула — `internal`, повтор того же `call_id` получает тот же итог.
 
 ### Провайдеры
 
@@ -169,8 +195,8 @@
 
 ### Тесты
 
-- Контракт `tests/contract.rs`: набор операций M1 в процессе, по UDS через SDK и через SDK `Kernel` даёт побайтно равные ответы; изоляция сервиса по UDS (алиасы, папки, курсоры, персоны); два клиента на `local`; вытеснение; реконнект; чужой токен.
-- Матрица `Policy` полна: каждая операция × {kernel, client, свой сервис, чужой сервис, сервис против `local`/`system`}; тип шага каждой операции закреплён таблицей в `core`.
+- Контракт `tests/contract.rs`: набор операций M1 в процессе, по UDS через SDK и через SDK `Soul` даёт побайтно равные ответы; изоляция сервиса по UDS (алиасы, папки, курсоры, персоны); два клиента на `local`; вытеснение; реконнект; чужой токен.
+- Матрица `Policy` полна: каждая операция × {soul, client, свой сервис, чужой сервис, сервис против `local`/`system`}; тип шага каждой операции закреплён таблицей в `core`.
 - Lint слоёв: SQL только в `db/`, эндпоинты только в `handling/`, `Caller` только в политике и handshake; lint вендор-строк.
 - `eva-protocol`: образцы покрывают все варианты кадров, событий и элементов по JSON-схеме; proptest-круги msgpack; каждый вариант `Aux` проходит через `RpcError`.
 - Схема = снапшот, STRICT, CHECK ⇔ enum; счётчик `module_kv_usage` равен полному пересчёту (proptest).

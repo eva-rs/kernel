@@ -53,7 +53,7 @@ impl BuildError {
     }
 }
 
-/// Сборка идёт на старте ядра: висящая сеть не должна держать его минутами.
+/// Сборка идёт на старте soul: висящая сеть не должна держать его минутами.
 const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
 const LISTING_RETRY_MIN: Duration = Duration::from_secs(5);
 const LISTING_RETRY_MAX: Duration = Duration::from_secs(300);
@@ -92,7 +92,7 @@ impl OpenAiProvider {
     }
 
     /// Дочитывает каталог, не прочитанный на [`Self::connect`]: повторы с растущей
-    /// паузой до первого ответа. `true` — реестр сменился и реестр моделей ядра
+    /// паузой до первого ответа. `true` — реестр сменился и реестр моделей soul
     /// пора пересобрать; `false` — дочитывать нечего или сервер отказал насовсем.
     pub async fn settle(&self) -> bool {
         let mut pause = LISTING_RETRY_MIN;
@@ -338,7 +338,7 @@ fn embeddings(body: &Value, expected: usize) -> Result<EmbedResponse, ProviderEr
     })
 }
 
-/// Инференс на машине ядра: только такому эмбеддеру ядро отдаёт private-текст.
+/// Инференс на машине soul: только такому эмбеддеру soul отдаёт private-текст.
 fn is_loopback(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;

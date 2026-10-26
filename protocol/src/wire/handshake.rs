@@ -14,13 +14,13 @@ use crate::{
 };
 
 /// Имени модуля нет: идентичность клиента даёт токен, сервиса — запись
-/// реестра, которую набрало ядро (`06 §2`).
+/// реестра, которую набрал soul (`06 §2`).
 #[data]
 pub struct Hello {
     /// Версия модуля, для `modules.list`.
     pub version: String,
     pub proto_version: ProtoVersion,
-    /// Только у клиента; набранный ядром сервис его не шлёт.
+    /// Только у клиента; сервис, которому звонит soul, его не шлёт.
     #[serde(default)]
     pub token: Option<Token>,
     #[serde(default)]
@@ -68,11 +68,11 @@ pub struct Welcome {
     pub session_id: SessionId,
     /// Id записи реестра или токена: скоуп `fs`/`sqlite`/`kv` и значение `surface.module`.
     pub module: ModuleId,
-    pub kernel_version: String,
+    pub soul_version: String,
     pub proto_version: ProtoVersion,
     /// Вид соединения: по нему модуль строит свой `Caller`, подменить его нельзя.
     pub kind: ModuleKind,
-    /// Неймспейсы операций, которые ядро обслуживает по RPC.
+    /// Неймспейсы операций, которые soul обслуживает по RPC.
     #[serde(default)]
     pub services: Vec<String>,
     /// `declared_path → tool_id`: модели не виден, модулю — для статистики и логов.
@@ -84,7 +84,7 @@ pub struct Welcome {
     #[serde(default)]
     pub warnings: Vec<Warning>,
     /// `hello.resume` продолжил окно идемпотентности прошлой сессии; `false`
-    /// (например, после рестарта ядра) — повтор оборванной мутации тем же id исполнит её снова.
+    /// (например, после рестарта soul) — повтор оборванной мутации тем же id исполнит её снова.
     #[serde(default)]
     pub resumed: bool,
 }

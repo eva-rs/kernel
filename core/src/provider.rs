@@ -1,4 +1,4 @@
-//! Направление ядро → провайдер: трейт вендорского крейта и приёмник потока.
+//! Направление soul → провайдер: трейт вендорского крейта и приёмник потока.
 
 use std::{fmt, future::poll_fn, pin::Pin, task};
 
@@ -12,7 +12,7 @@ use eva_protocol::types::{
 
 /// Провайдер инференса: крейт `providers/<vendor>` или прокси модуля.
 ///
-/// Реестр моделей и факты эмбеддера ядро берёт только из `decl()`/`models()`.
+/// Soul берёт реестр моделей и факты эмбеддера только из `decl()`/`models()`.
 #[auto_impl(&, Arc)]
 pub trait Provider: Send + Sync {
     fn decl(&self) -> ProviderDecl;
@@ -50,7 +50,7 @@ impl fmt::Display for Closed {
 
 impl std::error::Error for Closed {}
 
-/// Приёмник `GenItem`: канал тура в ядре либо стрим к модулю в `eva-rpc`.
+/// Приёмник `GenItem`: канал тура в soul либо стрим к модулю в `eva-rpc`.
 pub struct GenSink(Pin<Box<dyn Sink<GenItem, Error = Closed> + Send>>);
 
 impl GenSink {

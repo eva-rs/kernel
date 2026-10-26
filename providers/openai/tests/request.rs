@@ -146,7 +146,7 @@ fn tool_round_trip_with_error() {
                     }],
                     is_error: true,
                 },
-                text("[kernel] note updated"),
+                text("[soul] note updated"),
             ]),
         ],
     );
@@ -219,7 +219,7 @@ fn conversation(model: &str, cache: CacheMode) -> GenerateRequest {
         vec![
             user(vec![text("first")]),
             assistant(vec![text("answer")]),
-            user(vec![text("second"), text("[kernel] reminder")]),
+            user(vec![text("second"), text("[soul] reminder")]),
         ],
     );
     req.cache = cache;

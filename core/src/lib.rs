@@ -1,10 +1,10 @@
 //! API Евы как библиотека.
 //!
-//! Основной интерфейс ядра — `Session`: неймспейс по домену, операция по
+//! Основной интерфейс soul — `Session`: неймспейс по домену, операция по
 //! методу.
 //!
 //! ```ignore
-//! let mut session = kernel.make_session(Caller::Kernel).await?;
+//! let mut session = soul.make_session(Caller::Soul).await?;
 //! let surfaces::get::Ok { surface } = session
 //!     .surfaces()
 //!     .get()
@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Транспорты (msgpack-RPC, тулы модели) — обвязка над этими же трейтами,
-//! поэтому у кода в модуле и у кода внутри ядра форма вызова одна.
+//! поэтому у кода в модуле и у кода внутри soul форма вызова одна.
 
 pub mod caller;
 pub mod prelude;

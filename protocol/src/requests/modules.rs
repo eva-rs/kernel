@@ -26,10 +26,10 @@ pub trait Modules {
     fn add(
         module: ModuleId,
         address: ServiceAddress,
-        /// `None` — ключ генерирует ядро.
+        /// `None` — soul генерирует ключ сам.
         key: Option<ServiceKey>,
     ) -> ok! {
-        /// Сгенерированный ядром ключ; показывается один раз.
+        /// Ключ, сгенерированный soul; показывается один раз.
         key: Option<ServiceKey>,
     };
     embed! {
@@ -49,7 +49,7 @@ pub trait Modules {
         /// Заполняет только обёртка тула: актор тура.
         issued_by: Option<PersonId>,
     ) -> ok! {
-        /// Токен клиента; показывается один раз, ядро хранит только хэш.
+        /// Токен клиента; показывается один раз, soul хранит только хэш.
         token: String,
     };
     embed! {

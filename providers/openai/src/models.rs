@@ -1,5 +1,5 @@
 //! Реестр моделей: `GET /models` + поправки конфига → `ModelDecl`; нативные
-//! флаги `01 §3` выключены по умолчанию — fallback'и применяет ядро.
+//! флаги `01 §3` выключены по умолчанию — soul применяет fallback'и сам.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -156,7 +156,7 @@ fn caps(listed: &Value, family: Family, dialect: Dialect, over: &CapsOverride) -
                 .any(|p| matches!(*p, "structured_outputs" | "response_format"))
         }),
         system_in_messages: over.system_in_messages.unwrap_or(false),
-        // Подпись thinking у Anthropic привязана к набору tools: ядро не реплеит блоки до `tools_added`.
+        // Подпись thinking у Anthropic привязана к набору tools: soul не реплеит блоки до `tools_added`.
         thinking_binding: over
             .thinking_binding
             .unwrap_or(router && family == Family::Anthropic),

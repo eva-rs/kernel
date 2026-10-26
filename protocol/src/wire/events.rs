@@ -367,7 +367,7 @@ pub struct ChatEvent {
     pub external_id: Option<String>,
 }
 
-/// `service` получает только чаты своих поверхностей: ядро шлёт по событию на surface.
+/// `service` получает только чаты своих поверхностей: soul шлёт по событию на surface.
 #[data]
 pub struct ChatPurged {
     pub ids: Vec<ChatId>,

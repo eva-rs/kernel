@@ -1,5 +1,5 @@
-//! Сервисное соединение: ядро набирает модуль по uds и tcp под Noise, `hello`
-//! шлёт модуль, `welcome` — ядро.
+//! Сервисное соединение: soul набирает модуль по uds и tcp под Noise, `hello`
+//! шлёт модуль, `welcome` — soul.
 
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ use eva_rpc::{
 
 use crate::{
     harness::{Dial, Harness, KEY, Via, config, hello, ms, service_hello},
-    kernel::{CLIENT_TOKEN, REMOVED, SERVICE, chat_id},
+    soul::{CLIENT_TOKEN, REMOVED, SERVICE, chat_id},
 };
 
 const BOTH: [Dial; 2] = [Dial::Uds, Dial::Tcp];
@@ -75,11 +75,11 @@ async fn frames_over_noise() {
             .await
             .unwrap();
         assert_eq!(ok.size, big.len() as u64);
-        assert_eq!(*h.kernel.state.uploads.lock().unwrap(), vec![big]);
+        assert_eq!(*h.soul.state.uploads.lock().unwrap(), vec![big]);
     }
 }
 
-/// Чужой PSK: модуль рвёт соединение на первом сообщении, ядро видит обрыв
+/// Чужой PSK: модуль рвёт соединение на первом сообщении, soul видит обрыв
 /// сразу, а не по таймауту; до `hello` дело не доходит.
 #[tokio::test(flavor = "multi_thread")]
 async fn wrong_key_is_refused_on_both_sides() {
@@ -90,7 +90,7 @@ async fn wrong_key_is_refused_on_both_sides() {
         let module = tokio::spawn(async move { listener.accept().await.unwrap().secure().await });
 
         let started = tokio::time::Instant::now();
-        let kernel = h
+        let soul = h
             .server
             .dial(&address, &Psk::derive(KEY), &service())
             .await
@@ -99,7 +99,7 @@ async fn wrong_key_is_refused_on_both_sides() {
             started.elapsed() < *h.config.handshake_timeout,
             "{dial:?}: waited for the timeout"
         );
-        match &kernel {
+        match &soul {
             DialError::Transport(TransportError::Noise(message)) => {
                 assert!(message.contains("wrong key"), "{dial:?}: {message}");
             }
@@ -115,11 +115,11 @@ async fn wrong_key_is_refused_on_both_sides() {
     }
 }
 
-/// Набранный модуль токена не шлёт: SDK не отправит его вовсе, а ядро
+/// Набранный модуль токена не шлёт: SDK не отправит его вовсе, а soul
 /// отвергнет `invalid_params`.
 #[tokio::test(flavor = "multi_thread")]
 async fn dialed_hello_carries_no_token() {
-    let (_kernel, module) = Conn::pair(&config());
+    let (_soul, module) = Conn::pair(&config());
     let local = RpcClient::answer(
         module,
         hello(CLIENT_TOKEN),
@@ -138,13 +138,13 @@ async fn dialed_hello_carries_no_token() {
         // Клиентский handshake поверх набранного соединения: токен уйдёт.
         RpcClient::handshake(conn, hello(CLIENT_TOKEN), options, NoHandler).await
     });
-    let kernel = h
+    let soul = h
         .server
         .dial(&address, &Psk::derive(KEY), &service())
         .await
         .unwrap_err();
-    let DialError::Handshake(error) = kernel else {
-        panic!("expected a handshake refusal, got {kernel:?}");
+    let DialError::Handshake(error) = soul else {
+        panic!("expected a handshake refusal, got {soul:?}");
     };
     assert_eq!(error.code, ErrorCode::InvalidParams);
     match module.await.unwrap() {
@@ -182,14 +182,14 @@ async fn refusal_reaches_the_dialed_module() {
         RpcClient::answer(conn, service_hello(), options, NoHandler).await
     });
 
-    let kernel = h
+    let soul = h
         .server
         .dial(&address, &Psk::derive(KEY), &ModuleId::from(REMOVED))
         .await
         .unwrap_err();
     assert!(
-        matches!(&kernel, DialError::Handshake(e) if e.code == ErrorCode::Unauthorized),
-        "{kernel:?}"
+        matches!(&soul, DialError::Handshake(e) if e.code == ErrorCode::Unauthorized),
+        "{soul:?}"
     );
     match module.await.unwrap() {
         Err(ConnectError::Rejected(e)) => {

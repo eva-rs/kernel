@@ -27,7 +27,7 @@ use eva_rpc::{
     Call, Config, Kind, Listener, Outgoing, Service, codec,
     config::{Listen, UdsListen},
 };
-use eva_sdk::{Kernel, Module};
+use eva_sdk::{Module, Soul};
 
 use crate::fake::{self, Surfaces};
 
@@ -50,12 +50,12 @@ async fn reconnects_with_resume_and_registers_nothing() {
     let surfaces = Surfaces::default();
     let (sessions_tx, mut sessions) = mpsc::unbounded_channel();
 
-    let kernel_surfaces = surfaces.clone();
+    let soul_surfaces = surfaces.clone();
     tokio::spawn(async move {
         for session in ["s1", "s2"] {
             let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
             let accepted =
-                fake::accept(conn, fake::welcome(session, &[]), kernel_surfaces.clone()).await;
+                fake::accept(conn, fake::welcome(session, &[]), soul_surfaces.clone()).await;
             if sessions_tx.send(accepted).is_err() {
                 return;
             }
@@ -86,7 +86,7 @@ async fn reconnects_with_resume_and_registers_nothing() {
 
     first
         .peer
-        .close(RpcError::new(ErrorCode::Unavailable, "kernel restarts"));
+        .close(RpcError::new(ErrorCode::Unavailable, "soul restarts"));
     let second = tokio::time::timeout(Duration::from_secs(5), sessions.recv())
         .await
         .expect("the module reconnects")
@@ -119,7 +119,7 @@ async fn reconnects_with_resume_and_registers_nothing() {
         .expect("shutdown closes the connection");
 }
 
-/// Ядро, которое записывает вызов и не отвечает: обрыв застаёт его в полёте.
+/// Soul, который сам записывает вызов и не отвечает: обрыв застаёт вызов в полёте.
 #[derive(Clone, Default)]
 pub struct Silent {
     pub calls: Arc<Mutex<Vec<(u64, String)>>>,
@@ -133,7 +133,7 @@ impl Silent {
             }
         })
         .await
-        .expect("calls reach the silent kernel");
+        .expect("calls reach the silent soul");
     }
 }
 
@@ -213,10 +213,10 @@ impl Service for Blobs {
     }
 }
 
-/// Модуль с `run` и ручкой `Kernel` над ядром из двух сессий: `s1` над
+/// Модуль с `run` и ручкой `Soul` над soul из двух сессий: `s1` над
 /// `first`, после обрыва — `second` со своим `welcome`.
 struct Outage {
-    kernel: Kernel,
+    soul: Soul,
     first: fake::Session,
     sessions: mpsc::UnboundedReceiver<fake::Session>,
     stop: oneshot::Sender<()>,
@@ -242,14 +242,14 @@ impl Outage {
             .connect(&url, &fake::token("token"))
             .await
             .unwrap();
-        let kernel = connected.kernel();
+        let soul = connected.soul();
         let (stop, stopped) = oneshot::channel::<()>();
         let running = tokio::spawn(connected.run(async {
             _ = stopped.await;
         }));
         let first = sessions.recv().await.unwrap();
         Self {
-            kernel,
+            soul,
             first,
             sessions,
             stop,
@@ -258,7 +258,7 @@ impl Outage {
         }
     }
 
-    /// Ядро рвёт `s1` с `reason`; модуль переподключается.
+    /// Soul рвёт `s1` с `reason`; модуль переподключается.
     async fn cut(&mut self, reason: RpcError) -> fake::Session {
         self.first.peer.close(reason);
         tokio::time::timeout(Duration::from_secs(5), self.sessions.recv())
@@ -273,13 +273,12 @@ impl Outage {
     }
 }
 
-pub async fn get(mut kernel: Kernel) -> Response<get::Ok, get::Err> {
-    kernel.surfaces().get(SurfaceId::from("x")).await
+pub async fn get(mut soul: Soul) -> Response<get::Ok, get::Err> {
+    soul.surfaces().get(SurfaceId::from("x")).await
 }
 
-pub async fn update(mut kernel: Kernel) -> Response<update::Ok, update::Err> {
-    kernel
-        .surfaces()
+pub async fn update(mut soul: Soul) -> Response<update::Ok, update::Err> {
+    soul.surfaces()
         .update(SurfaceId::from("x"), update::Update::default())
         .await
 }
@@ -293,7 +292,7 @@ pub fn id_of(requests: &[(u64, String)], method: &str) -> Vec<u64> {
         .collect()
 }
 
-/// `surfaces.*` поддельного ядра с одной строкой `x`.
+/// `surfaces.*` поддельного soul с одной строкой `x`.
 pub fn surface_x(name: &str) -> Surfaces {
     let surfaces = Surfaces::default();
     surfaces.rows.lock().unwrap().insert(
@@ -303,23 +302,23 @@ pub fn surface_x(name: &str) -> Surfaces {
     surfaces
 }
 
-/// Ручка `Kernel`, взятая до обрыва, ведёт в новую сессию; оборванные чтение
+/// Ручка `Soul`, взятая до обрыва, ведёт в новую сессию; оборванные чтение
 /// и мутация повторяются там, мутация — с тем же id для окна `hello.resume`.
 #[tokio::test]
-async fn a_kept_kernel_follows_the_reconnect_and_resends_in_flight_calls() {
+async fn a_kept_soul_follows_the_reconnect_and_resends_in_flight_calls() {
     let dir = tempfile::tempdir().unwrap();
     let (listener, url) = listen(&dir).await;
     let silent = Silent::default();
     let surfaces = surface_x("X");
     let (sessions_tx, mut sessions) = mpsc::unbounded_channel();
 
-    let (first_kernel, second_kernel) = (silent.clone(), surfaces.clone());
+    let (first_soul, second_soul) = (silent.clone(), surfaces.clone());
     tokio::spawn(async move {
         let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
-        let first = fake::accept(conn, fake::welcome("s1", &[]), first_kernel).await;
+        let first = fake::accept(conn, fake::welcome("s1", &[]), first_soul).await;
         _ = sessions_tx.send(first);
         let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
-        let second = fake::accept(conn, fake::resumed("s2"), second_kernel).await;
+        let second = fake::accept(conn, fake::resumed("s2"), second_soul).await;
         _ = sessions_tx.send(second);
         std::future::pending::<()>().await;
     });
@@ -329,20 +328,20 @@ async fn a_kept_kernel_follows_the_reconnect_and_resends_in_flight_calls() {
         .connect(&url, &fake::token("token"))
         .await
         .unwrap();
-    let kernel = connected.kernel();
+    let soul = connected.soul();
     let (stop, stopped) = oneshot::channel::<()>();
     let running = tokio::spawn(connected.run(async {
         _ = stopped.await;
     }));
     let first = sessions.recv().await.unwrap();
 
-    let read = tokio::spawn(get(kernel.clone()));
-    let write = tokio::spawn(update(kernel.clone()));
+    let read = tokio::spawn(get(soul.clone()));
+    let write = tokio::spawn(update(soul.clone()));
     silent.wait_calls(2).await;
 
     first
         .peer
-        .close(RpcError::new(ErrorCode::Unavailable, "kernel restarts"));
+        .close(RpcError::new(ErrorCode::Unavailable, "soul restarts"));
     let _second = tokio::time::timeout(Duration::from_secs(5), sessions.recv())
         .await
         .expect("the module reconnects")
@@ -368,7 +367,7 @@ async fn a_kept_kernel_follows_the_reconnect_and_resends_in_flight_calls() {
     );
     assert_eq!(id_of(&resent, "surfaces.get").len(), 1);
 
-    update(kernel)
+    update(soul)
         .await
         .expect("the kept handle mutates on the new session");
     let requests = surfaces.requests.lock().unwrap().clone();
@@ -383,20 +382,20 @@ async fn a_kept_kernel_follows_the_reconnect_and_resends_in_flight_calls() {
     running.await.unwrap().unwrap();
 }
 
-/// Ядро не продолжило окно (рестарт): оборванная мутация не повторяется —
+/// Soul не продолжил окно (рестарт): оборванная мутация не повторяется —
 /// тот же id в новом окне исполнил бы её второй раз, а исход первой неизвестен.
 #[tokio::test]
-async fn a_mutation_cut_by_a_kernel_restart_is_not_resent() {
+async fn a_mutation_cut_by_a_soul_restart_is_not_resent() {
     let silent = Silent::default();
     let surfaces = surface_x("X");
     let mut outage =
         Outage::start(silent.clone(), surfaces.clone(), fake::welcome("s2", &[])).await;
 
-    let read = tokio::spawn(get(outage.kernel.clone()));
-    let write = tokio::spawn(update(outage.kernel.clone()));
+    let read = tokio::spawn(get(outage.soul.clone()));
+    let write = tokio::spawn(update(outage.soul.clone()));
     silent.wait_calls(2).await;
     let second = outage
-        .cut(RpcError::new(ErrorCode::Unavailable, "kernel restarts"))
+        .cut(RpcError::new(ErrorCode::Unavailable, "soul restarts"))
         .await;
     assert!(second.hello.resume.is_some(), "the module asks to resume");
 
@@ -419,7 +418,7 @@ async fn a_mutation_cut_by_a_kernel_restart_is_not_resent() {
     assert_eq!(id_of(&cut, "surfaces.update").len(), 1);
     assert!(id_of(&resent, "surfaces.update").is_empty(), "{resent:?}");
 
-    update(outage.kernel.clone())
+    update(outage.soul.clone())
         .await
         .expect("a new mutation goes to the new session");
     outage.stop().await;
@@ -440,16 +439,15 @@ fn blob_args() -> blob_get::Args {
 }
 
 async fn read_blob(
-    mut kernel: Kernel,
+    mut soul: Soul,
 ) -> Response<Vec<Response<blob_get::Item, blob_get::Err>>, blob_get::Err> {
-    let items = kernel.blobs().inner_mut().get().call(blob_args()).await?.0;
+    let items = soul.blobs().inner_mut().get().call(blob_args()).await?.0;
     Ok(items.collect().await)
 }
 
-async fn put_blob(mut kernel: Kernel) -> Response<blob_put::Ok, blob_put::Err> {
+async fn put_blob(mut soul: Soul) -> Response<blob_put::Ok, blob_put::Err> {
     let body: ByteStream = Box::pin(stream::iter([Ok(eva::bytes::Bytes::from_static(b"hi"))]));
-    kernel
-        .blobs()
+    soul.blobs()
         .put(
             blob_put::Meta {
                 chat: ChatId(1),
@@ -473,10 +471,10 @@ async fn a_cut_stream_open_is_reopened_on_the_new_session() {
     let blobs = Blobs::default();
     let mut outage = Outage::start(silent.clone(), blobs.clone(), fake::welcome("s2", &[])).await;
 
-    let read = tokio::spawn(read_blob(outage.kernel.clone()));
+    let read = tokio::spawn(read_blob(outage.soul.clone()));
     silent.wait_calls(1).await;
     outage
-        .cut(RpcError::new(ErrorCode::Unavailable, "kernel restarts"))
+        .cut(RpcError::new(ErrorCode::Unavailable, "soul restarts"))
         .await;
 
     let items = tokio::time::timeout(Duration::from_secs(5), read)
@@ -507,8 +505,8 @@ async fn a_stream_cut_after_its_first_item_ends_unavailable() {
     let second = Blobs::default();
     let mut outage = Outage::start(first.clone(), second.clone(), fake::resumed("s2")).await;
 
-    let mut kernel = outage.kernel.clone();
-    let mut items = kernel
+    let mut soul = outage.soul.clone();
+    let mut items = soul
         .blobs()
         .inner_mut()
         .get()
@@ -543,7 +541,7 @@ async fn a_cut_upload_is_unavailable_and_not_resent() {
     let blobs = Blobs::default();
     let mut outage = Outage::start(silent.clone(), blobs.clone(), fake::resumed("s2")).await;
 
-    let upload = tokio::spawn(put_blob(outage.kernel.clone()));
+    let upload = tokio::spawn(put_blob(outage.soul.clone()));
     silent.wait_calls(1).await;
     outage.cut(backlog()).await;
 
@@ -568,10 +566,10 @@ async fn a_call_cut_by_supersede_is_unavailable() {
     let (listener, url) = listen(&dir).await;
     let silent = Silent::default();
     let (session_tx, session_rx) = oneshot::channel();
-    let kernel_side = silent.clone();
+    let soul_side = silent.clone();
     tokio::spawn(async move {
         let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
-        _ = session_tx.send(fake::accept(conn, fake::welcome("s1", &[]), kernel_side).await);
+        _ = session_tx.send(fake::accept(conn, fake::welcome("s1", &[]), soul_side).await);
         std::future::pending::<()>().await;
     });
 
@@ -580,11 +578,11 @@ async fn a_call_cut_by_supersede_is_unavailable() {
         .connect(&url, &fake::token("token"))
         .await
         .unwrap();
-    let kernel = connected.kernel();
+    let soul = connected.soul();
     let running = tokio::spawn(connected.run(std::future::pending()));
     let session = session_rx.await.unwrap();
 
-    let read = tokio::spawn(get(kernel.clone()));
+    let read = tokio::spawn(get(soul.clone()));
     silent.wait_calls(1).await;
     session
         .peer
@@ -604,7 +602,7 @@ async fn a_call_cut_by_supersede_is_unavailable() {
         "{read:?}"
     );
 
-    let after = tokio::time::timeout(Duration::from_secs(1), get(kernel))
+    let after = tokio::time::timeout(Duration::from_secs(1), get(soul))
         .await
         .expect("no reconnect to wait for");
     assert!(
@@ -613,7 +611,7 @@ async fn a_call_cut_by_supersede_is_unavailable() {
     );
 }
 
-/// Мутация, начатая, пока ядра нет, ждёт реконнекта и уходит в новую сессию
+/// Мутация, начатая, пока soul нет, ждёт реконнекта и уходит в новую сессию
 /// один раз — она не была в полёте, повторять нечего.
 #[tokio::test]
 async fn a_call_during_the_outage_waits_for_the_new_session() {
@@ -623,13 +621,13 @@ async fn a_call_during_the_outage_waits_for_the_new_session() {
     let (sessions_tx, mut sessions) = mpsc::unbounded_channel();
     let (reopen, reopened) = oneshot::channel::<()>();
 
-    let kernel_side = surfaces.clone();
+    let soul_side = surfaces.clone();
     tokio::spawn(async move {
         let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
         _ = sessions_tx.send(fake::accept(conn, fake::welcome("s1", &[]), Silent::default()).await);
         _ = reopened.await;
         let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
-        _ = sessions_tx.send(fake::accept(conn, fake::welcome("s2", &[]), kernel_side).await);
+        _ = sessions_tx.send(fake::accept(conn, fake::welcome("s2", &[]), soul_side).await);
         std::future::pending::<()>().await;
     });
 
@@ -638,7 +636,7 @@ async fn a_call_during_the_outage_waits_for_the_new_session() {
         .connect(&url, &fake::token("token"))
         .await
         .unwrap();
-    let kernel = connected.kernel();
+    let soul = connected.soul();
     let old = connected.client();
     let (stop, stopped) = oneshot::channel::<()>();
     let running = tokio::spawn(connected.run(async {
@@ -647,15 +645,15 @@ async fn a_call_during_the_outage_waits_for_the_new_session() {
     let first = sessions.recv().await.unwrap();
     first
         .peer
-        .close(RpcError::new(ErrorCode::Unavailable, "kernel restarts"));
+        .close(RpcError::new(ErrorCode::Unavailable, "soul restarts"));
     tokio::time::timeout(Duration::from_secs(5), old.closed())
         .await
         .expect("the module sees the close");
     drop(old);
 
-    let write = tokio::spawn(update(kernel));
+    let write = tokio::spawn(update(soul));
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(!write.is_finished(), "the call waits for the kernel");
+    assert!(!write.is_finished(), "the call waits for the soul");
 
     reopen.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), write)
@@ -670,7 +668,7 @@ async fn a_call_during_the_outage_waits_for_the_new_session() {
 }
 
 #[tokio::test]
-async fn connect_waits_for_the_kernel() {
+async fn connect_waits_for_the_soul() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("modules.sock");
     let url = Url::parse(&format!("uds://{}", path.display())).unwrap();
@@ -683,13 +681,13 @@ async fn connect_waits_for_the_kernel() {
 
     let (listener, _) = listen(&dir).await;
     let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
-    let kernel = fake::accept(conn, fake::welcome("s1", &[]), Surfaces::default()).await;
+    let soul = fake::accept(conn, fake::welcome("s1", &[]), Surfaces::default()).await;
     let connected = started
         .await
         .unwrap()
-        .expect("connects once the kernel is up");
+        .expect("connects once the soul is up");
     assert_eq!(connected.welcome().session_id.as_str(), "s1");
-    drop(kernel);
+    drop(soul);
 }
 
 #[tokio::test]
@@ -766,7 +764,7 @@ pub mod tools {
     pub fn slow(counters: Arc<Counters>) -> Module {
         Module::new()
             .reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
-            .tool("x.slow", move |_: ToolCtx, _: EchoInput| {
+            .tool_path("x.slow", move |_: ToolCtx, _: EchoInput| {
                 let counters = counters.clone();
                 async move {
                     counters.started.fetch_add(1, Ordering::SeqCst);
@@ -873,17 +871,17 @@ pub mod tools {
         running.await.unwrap().unwrap();
     }
 
-    /// Тул, переживший обрыв, ходит в ядро через новую сессию: `ToolCtx::kernel`
+    /// Тул, переживший обрыв, ходит в soul через новую сессию: `ToolCtx::soul`
     /// не привязан к соединению, по которому пришёл вызов.
     #[tokio::test]
-    async fn a_tool_reaches_the_kernel_through_the_new_session() {
+    async fn a_tool_reaches_the_soul_through_the_new_session() {
         let dir = tempfile::tempdir().unwrap();
         let (listener, url) = listen(&dir).await;
         let (sessions_tx, mut sessions) = mpsc::unbounded_channel();
         let second = surface_x("X2");
-        let kernels = [Surfaces::default(), second.clone()];
+        let souls = [Surfaces::default(), second.clone()];
         tokio::spawn(async move {
-            for (session, surfaces) in ["s1", "s2"].into_iter().zip(kernels) {
+            for (session, surfaces) in ["s1", "s2"].into_iter().zip(souls) {
                 let conn = listener.accept().await.unwrap().upgrade().await.unwrap();
                 let accepted = fake::accept(conn, fake::welcome(session, &[]), surfaces).await;
                 if sessions_tx.send(accepted).is_err() {
@@ -897,14 +895,14 @@ pub mod tools {
         let gate = Arc::new(Notify::new());
         let module = Module::new()
             .reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
-            .tool("x.slow", {
+            .tool_path("x.slow", {
                 let (started, gate) = (started.clone(), gate.clone());
                 move |ctx: ToolCtx, _: EchoInput| {
                     let (started, gate) = (started.clone(), gate.clone());
                     async move {
                         started.fetch_add(1, Ordering::SeqCst);
                         gate.notified().await;
-                        let name = get(ctx.kernel()).await?.surface.name;
+                        let name = get(ctx.soul()).await?.surface.name;
                         Ok::<_, ToolError>(ToolResult::ok(vec![ToolContent::text(name)]))
                     }
                 }
@@ -949,7 +947,7 @@ pub mod tools {
         running.await.unwrap().unwrap();
     }
 
-    /// Отмена ядром на живом соединении прерывает тул.
+    /// Отмена со стороны soul на живом соединении прерывает тул.
     #[tokio::test]
     async fn cancel_on_a_live_connection_aborts_the_tool() {
         let dir = tempfile::tempdir().unwrap();

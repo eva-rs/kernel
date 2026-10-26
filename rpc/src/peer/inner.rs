@@ -414,7 +414,7 @@ impl Inner {
     }
 
     /// Ответ, не влезший в `max_frame`, заменяется ошибкой; ответ сверх
-    /// бюджета неотправленных — `quota`, чтобы нечитающий пир не копил память ядра.
+    /// бюджета неотправленных — `quota`, чтобы нечитающий пир не копил память soul.
     fn respond(&self, id: u64, result: Result<Payload, RpcError>) {
         let response = match result {
             Ok(result) => Response::ok(id, result),

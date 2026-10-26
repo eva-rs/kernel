@@ -1,4 +1,4 @@
-//! Ядро → модуль: `tools.call` с прогрессом, хуки, события, провайдер запасного входа.
+//! Soul → модуль: `tools.call` с прогрессом, хуки, события, провайдер запасного входа.
 
 use std::{sync::Arc, time::Duration};
 
@@ -30,7 +30,7 @@ use eva_rpc::{ModuleHandler, NoHandler, Progress};
 
 use crate::{
     harness::{Dial, Harness, Via, hello, service_hello},
-    kernel::CLIENT_TOKEN,
+    soul::CLIENT_TOKEN,
 };
 
 struct Module {
@@ -112,7 +112,7 @@ impl ModuleHandler for Module {
     }
 }
 
-/// Как модуль связан с ядром: набран им или звонит сам.
+/// Как модуль связан с soul: набран им или звонит сам.
 #[derive(Debug, Clone, Copy)]
 enum Link {
     Dialed(Dial),
@@ -214,9 +214,11 @@ async fn tools_call_with_progress() {
             .await;
         let expected = vec![
             Ok(ToolItem::Progress {
+                message: None,
                 text: "working".to_owned(),
             }),
             Ok(ToolItem::Progress {
+                message: None,
                 text: "almost".to_owned(),
             }),
             Ok(ToolItem::Result(ToolResult::ok(vec![ToolContent::text(
@@ -225,7 +227,7 @@ async fn tools_call_with_progress() {
         ];
         assert_eq!(items, expected, "{link:?}");
 
-        // Ошибка потока — `Fatal` тура: код доезжает до ядра.
+        // Ошибка потока — `Fatal` тура: код доезжает до soul.
         let items: Vec<_> = module
             .call_tool(&tool_call("x_fail"))
             .await
@@ -249,6 +251,7 @@ async fn tools_call_cancel_reaches_the_module() {
     assert_eq!(
         items.next().await,
         Some(Ok(ToolItem::Progress {
+            message: None,
             text: "started".to_owned(),
         }))
     );
@@ -399,7 +402,7 @@ async fn module_provider() {
 
     assert_eq!(provider.count_tokens(request("m")).await.unwrap(), 42);
 
-    // Обрыв сессии посреди работы — `transient`: fallback-цепочка ядра повторит.
+    // Обрыв сессии посреди работы — `transient`: fallback-цепочка soul повторит.
     c.accepted
         .peer
         .close(RpcError::new(ErrorCode::Unavailable, "gone"));

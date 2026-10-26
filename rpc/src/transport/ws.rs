@@ -193,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn wss_always_gets_its_own_rustls_config() {
-        let public = connector(&url("wss://kernel.example"), &ClientTls::default())
+        let public = connector(&url("wss://soul.example"), &ClientTls::default())
             .await
             .unwrap();
         assert!(matches!(public, Some(Connector::Rustls(_))));

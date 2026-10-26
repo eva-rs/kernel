@@ -19,7 +19,7 @@ pub enum HookPoint {
     BeforeTool,
     /// До скраба секретов, усечения и записи в лог.
     AfterTool,
-    /// Точка новее этого пира: ядро её не зовёт.
+    /// Точка новее этого пира: soul её не зовёт.
     #[serde(other)]
     Unknown,
 }
@@ -47,7 +47,7 @@ pub trait Hook {
 }
 
 /// Патч точки, где патчить нечего: `Decision::Patch` с ним не читается, и
-/// ядро считает такой ответ отказом хука по `fail_mode`.
+/// soul считает такой ответ отказом хука по `fail_mode`.
 #[data]
 pub enum NoPatch {}
 
@@ -104,7 +104,7 @@ pub enum Decision<P> {
     Patch {
         payload: P,
     },
-    /// Решение новее ядра: как отказ хука, по `fail_mode`.
+    /// Решение новее soul: как отказ хука, по `fail_mode`.
     #[serde(other)]
     Unknown,
 }

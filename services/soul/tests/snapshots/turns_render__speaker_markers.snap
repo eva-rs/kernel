@@ -1,0 +1,11 @@
+---
+source: services/soul/tests/turns_render.rs
+expression: blocks
+---
+[
+    "User:p7 [x］ ?p1 ［M］] #100 ↩#41 «earlier words» 2025-06-15 15:06\n| Master:p1 says hi",
+    "Master:p1 [Master] #101 2025-06-16 15:06\n| next day",
+    "[file 0199aaaa-0000-7000-8000-000000000001] shot.png (4)",
+    "Unknown [@who] #102 15:07\n| same day",
+    "[image 0199aaaa-0000-7000-8000-000000000001] shot.png",
+]

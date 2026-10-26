@@ -22,6 +22,7 @@ pub mod person;
 pub mod sleep;
 pub mod stats;
 pub mod surface;
+pub mod text;
 pub mod tool;
 pub mod turn;
 

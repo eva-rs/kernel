@@ -1,50 +1,30 @@
-//! Eva SDK (`06 §10`): модуль ядра поверх `eva-rpc` — handshake, смена
-//! соединения, обработчики вызовов ядро → модуль.
+//! Высокоуровневый SDK модулей Eva: группы тулов, типизированное состояние,
+//! конфиг приложения и локализованный прогресс поверх симметричного RPC.
 //!
-//! Сервис (мост мессенджера, MCP) адреса ядра не знает: он слушает, ядро
-//! набирает его само по записи `modules.services.<id>` (Noise с общим ключом).
+//! Каноничный вход — `module!()`: имя и версия берутся из Cargo вызывающего
+//! пакета, `.name()` и `.version()` переопределяют их. Обработчики объявляются
+//! внутри `Group` через `Tool::new`; их имена локальны относительно группы.
+//! `describe(Description { … })` задаёт настройки тула целиком; отдельные
+//! сеттеры меняют одно поле. По умолчанию `idempotent = parallel_safe = true`.
 //!
-//! ```ignore
-//! let listening = Module::new()
-//!     .about("Messenger X surface")
-//!     .ask(true)
-//!     .listen(&cfg) // ServiceConfig: module.listen, module.key
-//!     .await?;
-//! // Идемпотентно для создателя: безопасно на каждом старте, `name`/`rules` меняет `surfaces.update`.
-//! listening
-//!     .kernel()
-//!     .await?
-//!     .surfaces()
-//!     .create()
-//!     .call(surfaces::create::Args {
-//!         id: "x".into(),
-//!         name: "Messenger X".into(),
-//!         rules: Some(RULES.into()),
-//!     })
-//!     .await?;
-//! listening.run(shutdown).await
-//! ```
+//! `Module::run` загружает конфиг, выполняет `init`, ждёт звонков от soul и управляет
+//! остановкой через `eva::supervisor::Supervisor`. По умолчанию сокет —
+//! `$RUNTIME_DIRECTORY/module.sock` (иначе `/run/eva-<name>/module.sock`),
+//! ключ — `SecretString::credential("soul-key")`.
 //!
-//! Клиент хозяина (телефон, TUI) звонит ядру сам с токеном:
-//! `Module::connect_config(&ClientConfig)` → `Connected` с реконнектом.
+//! Для встраивания доступны `listen(&ServiceConfig)` → `Listening` и
+//! `connect_config(&ClientConfig)` → `Connected`. Авторизованный id модуля
+//! приходит от soul в `welcome`. `Soul = Session<LiveSession>` переживает
+//! смену соединения и предоставляет общее библиотечное API soul.
 //!
-//! Имени у модуля нет: id — ключ записи реестра (сервис) или токена (клиент)
-//! у ядра, приходит в `welcome`. Surface — сущность ядра: модуль её только
-//! создаёт, обслуживание ядро выводит из живой сессии, поэтому после смены
-//! соединения регистрировать нечего.
-//!
-//! `Kernel` — та же `Session`, что внутри ядра: форма вызова одна (`11 §6`);
-//! ручка следует за сменой соединения, её можно держать всё время жизни модуля.
-//!
-//! Что работает в M1: приём ядра и подключение к нему, `hello.resume`,
-//! события (ядро уже рассылает `chat.*`/`module.*` по
-//! `Policy::events().deliver`), запасной вход `.provider()`. Билдеры
-//! `.tool()`/`.hook()` регистрируют обработчики и capability сейчас, но ядро
-//! лишь хранит их: тулы оно зовёт с M4, хуки — с M2. Реплей `turns.attach`
-//! после смены соединения — M2 (`module::replay_attach`).
+//! `msg!` создаёт сообщение с именованными параметрами; `include_translations!`
+//! встраивает PO-каталоги. `ToolCtx::progress` отправляет fallback и переводы
+//! текущей строки, а язык выбирает каждый получатель ленты.
 
+pub mod app;
 pub mod backoff;
 pub mod config;
+pub mod group;
 pub mod handler;
 pub mod listen;
 pub mod live;
@@ -56,20 +36,30 @@ pub mod prelude {
     pub use eva_core::prelude::*;
 
     pub use crate::{
-        Kernel,
+        Description, Group, ResultForm, Soul, Tool,
         listen::Listening,
-        module::{Connected, Module},
+        module::{self, Connected, Module},
+        msg,
         tool::{ToolCtx, ToolError},
     };
 }
 
 pub use eva::utils::SecretString;
+pub use eva_protocol::types::text::{Catalog, Catalogs, LocalizedText, Message};
+pub use eva_sdk_macros::{include_translations, msg};
+
+#[doc(hidden)]
+pub mod __private {
+    pub fn catalogs(serialized: &str) -> crate::Catalogs {
+        serde_json::from_str(serialized).expect("catalogs were validated by include_translations")
+    }
+}
 pub use eva_core::{Caller, Provider};
 pub use eva_protocol::{
     self as protocol,
     types::{
         module::ServiceAddress,
-        tool::{Need, ToolContent},
+        tool::{Need, ResultForm, ToolContent},
     },
     wire::{
         capabilities::FailMode,
@@ -81,14 +71,26 @@ pub use eva_protocol::{
 pub use eva_rpc::{ClientOptions, ClientTls, ConnectError, RpcClient, ServiceListen};
 
 pub use self::{
+    app::ServiceDefaults,
     backoff::Backoff,
     config::{ClientConfig, ServiceConfig},
+    group::{Description, Group, IntoToolResult, Tool},
     handler::HookInput,
     listen::Listening,
     module::{Connected, Module},
     tool::{ToolCtx, ToolError},
 };
 
-/// Клиент ядра: все неймспейсы операций; каждый вызов идёт через текущее
+/// Клиент soul: все неймспейсы операций; каждый вызов идёт через текущее
 /// соединение модуля и переживает его смену (`live`).
-pub type Kernel = eva_core::Session<live::LiveSession>;
+pub type Soul = eva_core::Session<live::LiveSession>;
+
+/// Метаданные берутся из пакета, который вызывает макрос.
+#[macro_export]
+macro_rules! module {
+    () => {
+        $crate::Module::new()
+            .name(env!("CARGO_PKG_NAME"))
+            .version(env!("CARGO_PKG_VERSION"))
+    };
+}

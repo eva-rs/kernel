@@ -1,4 +1,4 @@
-//! Транспортная часть секции `modules` (`06 §1`, `§11`): ядро встраивает эти
+//! Транспортная часть секции `modules` (`06 §1`, `§11`): soul встраивает эти
 //! типы в свой конфиг, SDK — в свой.
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -7,12 +7,12 @@ use eva::{bytesize::ByteSize, data, time::HumanDuration};
 
 use eva_protocol::wire::handshake::ProtoVersion;
 
-/// Тайминги и лимиты соединения; одинаковы у ядра и модуля.
+/// Тайминги и лимиты соединения; одинаковы у soul и модуля.
 #[data]
 #[serde(default)]
 pub struct Config {
     /// Всё до `welcome` укладывается в это время: у клиента — от accept, у
-    /// сервиса — от connect ядра, вместе с Noise.
+    /// сервиса — от connect со стороны soul, вместе с Noise.
     pub handshake_timeout: HumanDuration,
     /// Период `notify ping` и `stream_heartbeat` в долгие потоки.
     pub ping_interval: HumanDuration,
@@ -136,7 +136,7 @@ pub enum SessionLimit {}
 #[eva::int(u16, 1..=1024)]
 pub enum BatchLimit {}
 
-/// Слушатель клиентов у ядра: `{uds: path}`, `{ws: addr}`,
+/// Слушатель клиентов у soul: `{uds: path}`, `{ws: addr}`,
 /// `{wss: addr, tls: {cert, key}}`, `{http: addr}` или
 /// `{https: addr, tls}` — вид задаёт ключ адреса.
 #[data]
@@ -197,7 +197,7 @@ pub struct HttpsListen {
 #[serde(transparent)]
 pub struct Cors(pub Vec<String>);
 
-/// Слушатель сервисного модуля, куда звонит ядро: `{uds: path}` или
+/// Слушатель сервисного модуля, куда звонит soul: `{uds: path}` или
 /// `{tcp: "ip:port"}`; оба под Noise.
 #[data]
 #[serde(untagged)]
@@ -224,7 +224,7 @@ pub struct TlsFiles {
 #[derive(Default)]
 #[serde(default)]
 pub struct ClientTls {
-    /// PEM CA ядра с самоподписанным сертификатом: задан — доверие только
+    /// PEM CA soul с самоподписанным сертификатом: задан — доверие только
     /// ему, иначе публичные корни webpki.
     pub extra_ca: Option<PathBuf>,
 }

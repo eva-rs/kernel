@@ -5,11 +5,12 @@ members = [
   "core",
   "rpc",
   "sdk",
+  "sdk/macros",
   "providers/mock",
   "providers/openai",
   "providers/embed-local",
   "providers/all",
-  "services/kernel",
+  "services/soul",
 ]
 
 [workspace.package]
@@ -17,8 +18,8 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-eva = { path = "../../viendesu/eva" }
-eva-hands = { path = "../hands", default-features = false }
+eva = { git = "ssh://git@github.com/nerodono/eva.git" }
+eva-hands = { git = "ssh://git@github.com/eva-rs/hands.git", default-features = false }
 
 eva-protocol = { path = "protocol" }
 eva-core = { path = "core" }

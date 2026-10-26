@@ -49,7 +49,7 @@ impl IdSeq {
         Self::starting_at(0)
     }
 
-    /// Принявший соединение (ядро): верхняя половина пространства id.
+    /// Принявший соединение (soul): верхняя половина пространства id.
     pub fn server() -> Self {
         Self::starting_at(1 << 63)
     }
@@ -91,8 +91,8 @@ pub struct Call {
 /// Элементы потока, который отдаёт обработчик; `Err` — последний элемент.
 pub type Outgoing = Pin<Box<dyn Stream<Item = Result<Payload, RpcError>> + Send>>;
 
-/// Обработчик входящих запросов пира: диспетчер операций у ядра, методы
-/// ядро → модуль у SDK.
+/// Обработчик входящих запросов пира: диспетчер операций у soul, методы
+/// soul → модуль у SDK.
 pub trait Service: Send + Sync + 'static {
     /// `None` — `unknown_method`.
     fn kind(&self, method: &str) -> Option<Kind>;
@@ -165,8 +165,8 @@ impl Peer {
         self.call_with_id(self.0.ids.next(), method, params).await
     }
 
-    /// `call` под id из `ids()`, не занятым на этом соединении: повтор мутации
-    /// после `hello.resume` тем же id ядро отдаёт из окна идемпотентности.
+    /// `call` под id из `ids()`, не занятым на этом соединении: на повтор мутации
+    /// после `hello.resume` под тем же id soul отвечает из окна идемпотентности.
     pub async fn call_with_id(
         &self,
         id: u64,

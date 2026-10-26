@@ -1,5 +1,5 @@
-//! Направление ядро → модуль (`06 §4`, `§7`): не операции, а прокси трейтов
-//! ядра. `ModuleClient` — сторона ядра (`tools.call`, `hooks.<point>`,
+//! Направление soul → модуль (`06 §4`, `§7`): не операции, а прокси трейтов
+//! soul. `ModuleClient` — сторона soul (`tools.call`, `hooks.<point>`,
 //! `events.publish`, `ModuleProvider` для `provider.*`), `ModuleHandler` —
 //! сторона SDK.
 
@@ -40,7 +40,7 @@ use crate::{
     peer::{Call, Kind, Outgoing, Peer, RemoteStream, Service},
 };
 
-/// Вызовы ядра в сессию модуля.
+/// Вызовы soul в сессию модуля.
 #[derive(Debug, Clone)]
 pub struct ModuleClient {
     peer: Peer,
@@ -62,7 +62,7 @@ impl ModuleClient {
         Ok(Typed::new(remote))
     }
 
-    /// `hooks.<point>` с таймаутом хука модуля; решение по `fail_mode` — дело ядра.
+    /// `hooks.<point>` с таймаутом хука модуля; решение по `fail_mode` — дело soul.
     pub async fn hook<H>(&self, input: &H, limit: Duration) -> Result<Decision<H::Patch>, RpcError>
     where
         H: Hook + Serialize,
@@ -201,7 +201,7 @@ impl Provider for ModuleProvider {
 }
 
 /// `data` модуля, если это `ProviderError`, иначе вид по коду транспорта:
-/// обрыв и таймаут — `transient`, их ретраит fallback-цепочка ядра.
+/// обрыв и таймаут — `transient`, их ретраит fallback-цепочка soul.
 pub fn provider_error(error: RpcError) -> ProviderError {
     if let Some(typed) = error
         .data
@@ -233,16 +233,27 @@ pub fn provider_error(error: RpcError) -> ProviderError {
 
 /// Прогресс тула: `progress{text}` в поток `tools.call`. Отмену тул видит
 /// по drop своего future, поэтому ушедший потребитель тут молча теряет текст.
+type ProgressUpdate = (
+    String,
+    Option<Box<eva_protocol::types::text::LocalizedText>>,
+);
 #[derive(Debug, Clone)]
-pub struct Progress(mpsc::Sender<String>);
+pub struct Progress(mpsc::Sender<ProgressUpdate>);
 
 impl Progress {
+    pub async fn send_localized(&self, message: eva_protocol::types::text::LocalizedText) {
+        _ = self
+            .0
+            .send((message.message.fallback(), Some(Box::new(message))))
+            .await;
+    }
+
     pub async fn send(&self, text: impl Into<String>) {
-        _ = self.0.send(text.into()).await;
+        _ = self.0.send((text.into(), None)).await;
     }
 }
 
-/// Обработчики модуля для вызовов ядра. Необъявленное отвечает
+/// Обработчики модуля для вызовов soul. Необъявленное отвечает
 /// `unknown_method` (провайдер — `ProviderError{invalid}`); дедуп по
 /// `call_id` и прочая защита от повторов — забота реализации.
 pub trait ModuleHandler: Send + Sync + 'static {
@@ -321,7 +332,7 @@ fn not_a_provider() -> ProviderError {
     }
 }
 
-/// Модуль без обработчиков: только вызовы модуль → ядро.
+/// Модуль без обработчиков: только вызовы модуль → soul.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoHandler;
 
@@ -432,7 +443,7 @@ enum Step<T, O> {
 }
 
 fn tool_stream<H: ModuleHandler>(handler: Arc<H>, call: ToolCall, buffer: usize) -> Outgoing {
-    let (tx, mut rx) = mpsc::channel::<String>(buffer);
+    let (tx, mut rx) = mpsc::channel::<ProgressUpdate>(buffer);
     Box::pin(async_stream::stream! {
         let mut run = pin!(handler.call_tool(call, Progress(tx)));
         let result = loop {
@@ -442,13 +453,13 @@ fn tool_stream<H: ModuleHandler>(handler: Arc<H>, call: ToolCall, buffer: usize)
                 result = &mut run => Step::Done(result),
             };
             match step {
-                Step::Item(Some(text)) => yield encode_item(&ToolItem::Progress { text }),
+                Step::Item(Some((text, message))) => yield encode_item(&ToolItem::Progress { text, message }),
                 Step::Item(None) => break run.await,
                 Step::Done(result) => break result,
             }
         };
-        while let Ok(text) = rx.try_recv() {
-            yield encode_item(&ToolItem::Progress { text });
+        while let Ok((text, message)) = rx.try_recv() {
+            yield encode_item(&ToolItem::Progress { text, message });
         }
         match result {
             Ok(result) => yield encode_item(&ToolItem::Result(result)),

@@ -1,5 +1,5 @@
-//! Сервис (`06 §1`, `§10`): модуль слушает, ядро набирает его по записи
-//! реестра. Каждое соединение ядра — Noise responder и `hello` без токена;
+//! Сервис (`06 §1`, `§10`): модуль слушает, soul набирает его по записи
+//! реестра. Каждое соединение от soul — Noise responder и `hello` без токена;
 //! соединение после `welcome` становится текущим, прежнее закрывается
 //! `conflict "superseded"`.
 
@@ -24,27 +24,27 @@ use eva_rpc::{
     gate::{Gate, Pass},
 };
 
-use crate::{Kernel, module::Runtime};
+use crate::{Soul, module::Runtime};
 
 /// Пауза после отказа `accept` (например, `EMFILE`): иначе цикл крутился бы вхолостую.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 
-/// Почему не удалось последнее соединение ядра.
+/// Почему не удалось последнее соединение от soul.
 type Failure = Arc<Mutex<Option<String>>>;
 
-/// Сервис, который слушает ядро; клоны делят слушателя — `run` съедает один из них.
+/// Сервис, который ждёт звонков от soul; клоны делят слушателя — `run` съедает один из них.
 #[derive(Clone)]
 pub struct Listening {
     runtime: Arc<Runtime>,
     accept: Arc<Accept>,
 }
 
-/// Фоновый приём соединений ядра; останавливается с последним клоном `Listening`.
+/// Фоновый приём соединений от soul; останавливается с последним клоном `Listening`.
 struct Accept {
     abort: AbortHandle,
     task: Mutex<Option<JoinHandle<()>>>,
     address: Option<ServiceAddress>,
-    kernel_wait: Duration,
+    soul_wait: Duration,
     failure: Failure,
 }
 
@@ -59,13 +59,13 @@ impl Listening {
         runtime: Arc<Runtime>,
         listener: ServiceListener,
         handshake: Duration,
-        kernel_wait: Duration,
+        soul_wait: Duration,
     ) -> Self {
         let address = listener.local_addr();
         let shown = address
             .as_ref()
             .map_or_else(|| "unknown".to_owned(), ToString::to_string);
-        log::info!(address = shown.as_str(), about = runtime.about(); "listening for the kernel");
+        log::info!(address = shown.as_str(), about = runtime.about(); "listening for the soul");
 
         let failure = Failure::default();
         let task = tokio::spawn(accept(
@@ -80,42 +80,42 @@ impl Listening {
                 abort: task.abort_handle(),
                 task: Mutex::new(Some(task)),
                 address,
-                kernel_wait,
+                soul_wait,
                 failure,
             }),
         }
     }
 
-    /// Адрес, который набирает ядро (`modules.services.<id>.address`); порт
+    /// Адрес, по которому звонит soul (`modules.services.<id>.address`); порт
     /// `0` из конфига здесь уже выбран системой.
     pub fn address(&self) -> Option<ServiceAddress> {
         self.accept.address.clone()
     }
 
-    /// Ядро через текущее соединение: ручка следует за новыми соединениями
-    /// ядра (`live`). До первого ждёт его до `module.kernel_wait`; не
-    /// дождался — ошибка с причиной последней неудачной попытки ядра.
-    pub async fn kernel(&self) -> Result<Kernel, ConnectError> {
-        let wait = self.accept.kernel_wait;
+    /// Soul через текущее соединение: ручка следует за новыми соединениями
+    /// soul (`live`). До первого ждёт его до `module.soul_wait`; не
+    /// дождался — ошибка с причиной последней неудачной попытки soul.
+    pub async fn soul(&self) -> Result<Soul, ConnectError> {
+        let wait = self.accept.soul_wait;
         match tokio::time::timeout(wait, self.runtime.link.first()).await {
-            Ok(Some(kernel)) => Ok(kernel),
+            Ok(Some(soul)) => Ok(soul),
             Ok(None) => Err(ConnectError::Transport(
-                "the module stopped listening before the kernel connected".to_owned(),
+                "the module stopped listening before the soul connected".to_owned(),
             )),
             Err(_) => {
                 let last = lock(&self.accept.failure).clone();
                 let message = match last {
                     Some(e) => {
-                        format!("the kernel did not connect within {wait:?}; last attempt: {e}")
+                        format!("the soul did not connect within {wait:?}; last attempt: {e}")
                     }
-                    None => format!("the kernel did not connect within {wait:?}"),
+                    None => format!("the soul did not connect within {wait:?}"),
                 };
                 Err(ConnectError::Transport(message))
             }
         }
     }
 
-    /// Id модуля из `welcome`: ключ записи реестра у ядра (`06 §2`); до
+    /// Id модуля из `welcome`: ключ записи реестра у soul (`06 §2`); до
     /// первого соединения — `None`.
     pub fn module(&self) -> Option<ModuleId> {
         self.runtime.module()
@@ -131,8 +131,8 @@ impl Listening {
         self.runtime.current(|c| c.client.clone())
     }
 
-    /// Живёт до `shutdown`: потеря ядра и вытеснение его не завершают — ядро
-    /// перезвонит само. На `shutdown` приём останавливается, текущее
+    /// Живёт до `shutdown`: ни потеря soul, ни вытеснение не завершают его — soul
+    /// перезвонит сам. На `shutdown` приём останавливается, текущее
     /// соединение закрывается `unavailable`.
     pub async fn run(self, shutdown: impl Future<Output = ()>) -> eyre::Result<()> {
         let task = lock(&self.accept.task).take();
@@ -144,8 +144,8 @@ impl Listening {
                     Ok(())
                 }
                 stopped = &mut task => Err(match stopped {
-                    Ok(()) => eyre::eyre!("the kernel listener stopped"),
-                    Err(e) => eyre::eyre!("the kernel listener failed: {e}"),
+                    Ok(()) => eyre::eyre!("the soul listener stopped"),
+                    Err(e) => eyre::eyre!("the soul listener failed: {e}"),
                 }),
             },
             None => {
@@ -177,7 +177,7 @@ async fn accept(
     handshake: Duration,
     failure: Failure,
 ) {
-    // Пока идёт приём, ядро перезвонит: вызов на закрытом соединении стоит ждать.
+    // Пока идёт приём, soul перезвонит: вызов на закрытом соединении стоит ждать.
     let _reconnecting = runtime.link.reconnecting();
     let gate = Gate::new();
     let mut conns = JoinSet::new();
@@ -194,20 +194,20 @@ async fn accept(
                     }
                 },
                 Err(e) => {
-                    log::warn!(error:% = e; "accepting a kernel connection failed");
+                    log::warn!(error:% = e; "accepting a soul connection failed");
                     tokio::time::sleep(ACCEPT_PAUSE).await;
                 }
             },
             Some(joined) = conns.join_next() => {
                 if let Err(e) = joined {
-                    log::error!(error:% = e; "kernel connection task failed");
+                    log::error!(error:% = e; "soul connection task failed");
                 }
             }
         }
     }
 }
 
-/// Одно соединение ядра: Noise, `hello`, `welcome` — за один `handshake`;
+/// Одно соединение от soul: Noise, `hello`, `welcome` — за один `handshake`;
 /// затем ждёт закрытия ради лога.
 async fn serve(
     runtime: Arc<Runtime>,
@@ -220,7 +220,7 @@ async fn serve(
     let proven = AtomicBool::new(false);
     let attempt = async {
         let conn = incoming.secure().await.map_err(|e| e.to_string())?;
-        // PSK доказан — это ядро: до `welcome` его место не отдают.
+        // PSK доказан — это soul: до `welcome` его место не отдают.
         proven.store(true, Ordering::Release);
         pass.spoke();
         runtime.answer(conn).await.map_err(|e| e.to_string())
@@ -237,7 +237,7 @@ async fn serve(
         Err(e) => {
             // До Noise пир не опознан: сканер не должен топить лог.
             if proven.load(Ordering::Acquire) {
-                log::warn!(remote = remote.as_str(), error = e.as_str(); "kernel connection failed");
+                log::warn!(remote = remote.as_str(), error = e.as_str(); "soul connection failed");
             } else {
                 log::debug!(remote = remote.as_str(), error = e.as_str(); "connection failed before noise");
             }
@@ -247,9 +247,9 @@ async fn serve(
     };
 
     let reason = client.closed().await;
-    // `conflict` — смена соединения (своя или ядра), остановка модуля — не потеря.
+    // `conflict` — смена соединения (своя или со стороны soul), остановка модуля — не потеря.
     if reason.code != ErrorCode::Conflict && !runtime.link.is_closed() {
-        log::warn!(module:? = runtime.module(), reason:% = reason; "kernel connection lost, waiting for the kernel to dial again");
+        log::warn!(module:? = runtime.module(), reason:% = reason; "soul connection lost, waiting for the soul to dial again");
     }
 }
 

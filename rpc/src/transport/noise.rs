@@ -1,4 +1,4 @@
-//! Noise `NNpsk0` сервисного соединения (`06 §1`): ядро — initiator, модуль —
+//! Noise `NNpsk0` сервисного соединения (`06 §1`): soul — initiator, модуль —
 //! responder, обе стороны шлют эфемерный ключ, PSK подмешан в первое
 //! сообщение. Сообщение Noise на проводе — `u16 BE` длина и шифротекст; поверх
 //! расшифрованного потока идёт обычное кадрирование `uds`.
@@ -31,7 +31,7 @@ pub const MAX_PLAINTEXT: usize = MAX_MESSAGE - TAG;
 /// У `NNpsk0` оба сообщения handshake — эфемерный ключ и тег, 48 байт.
 const MAX_HANDSHAKE: usize = 256;
 
-/// PSK соединения ядра с модулем; `Debug` его не печатает.
+/// PSK соединения soul с модулем; `Debug` его не печатает.
 #[derive(Clone)]
 pub struct Psk([u8; 32]);
 
@@ -124,7 +124,7 @@ async fn recv_handshake<S: AsyncRead + Unpin>(
     Ok(())
 }
 
-/// Сторона ядра: `-> psk, e`, `<- e, ee`. Чужой PSK модуль рвёт молча, поэтому
+/// Сторона soul: `-> psk, e`, `<- e, ee`. Чужой PSK модуль рвёт молча, поэтому
 /// здесь он выглядит обрывом.
 pub(crate) async fn initiate<S>(mut io: S, psk: &Psk) -> io::Result<NoiseStream<S>>
 where
@@ -157,7 +157,7 @@ where
     let mut hs = state(psk, false)?;
     recv_handshake(&mut io, &mut hs).await.map_err(|e| {
         if e.kind() == io::ErrorKind::InvalidData {
-            io::Error::new(e.kind(), format!("{e}: wrong key or not an eva kernel"))
+            io::Error::new(e.kind(), format!("{e}: wrong key or not an eva soul"))
         } else {
             e
         }
@@ -376,15 +376,15 @@ mod tests {
     }
 
     async fn pair(
-        kernel: &str,
+        soul: &str,
         module: &str,
     ) -> (
         io::Result<NoiseStream<DuplexStream>>,
         io::Result<NoiseStream<DuplexStream>>,
     ) {
         let (a, b) = duplex(1 << 16);
-        let (kernel, module) = (Psk::derive(kernel), Psk::derive(module));
-        tokio::join!(initiate(a, &kernel), respond(b, &module))
+        let (soul, module) = (Psk::derive(soul), Psk::derive(module));
+        tokio::join!(initiate(a, &soul), respond(b, &module))
     }
 
     fn payload(len: usize, seed: u8) -> Vec<u8> {
@@ -395,16 +395,16 @@ mod tests {
 
     #[tokio::test]
     async fn roundtrip_splits_into_messages() {
-        let (kernel, module) = pair("k", "k").await;
-        let (mut kernel, mut module) = (kernel.unwrap(), module.unwrap());
+        let (soul, module) = pair("k", "k").await;
+        let (mut soul, mut module) = (soul.unwrap(), module.unwrap());
 
         // Больше трёх сообщений в каждую сторону разом.
         let there = payload(3 * MAX_PLAINTEXT + 17, 1);
         let back = payload(2 * MAX_PLAINTEXT + 1, 2);
         let ((), got_there) = tokio::join!(
             async {
-                kernel.write_all(&there).await.unwrap();
-                kernel.flush().await.unwrap();
+                soul.write_all(&there).await.unwrap();
+                soul.flush().await.unwrap();
             },
             async {
                 let mut got = vec![0; there.len()];
@@ -421,7 +421,7 @@ mod tests {
             },
             async {
                 let mut got = Vec::new();
-                kernel.read_to_end(&mut got).await.unwrap();
+                soul.read_to_end(&mut got).await.unwrap();
                 got
             }
         );
@@ -430,13 +430,13 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_key_fails_both_sides() {
-        let (kernel, module) = pair("kernel key", "module key").await;
+        let (soul, module) = pair("soul key", "module key").await;
         let module = module.err().expect("the module must refuse a foreign psk");
         assert_eq!(module.kind(), io::ErrorKind::InvalidData);
         assert!(module.to_string().contains("wrong key"), "{module}");
-        let kernel = kernel.err().expect("the kernel must not get a session");
-        assert_eq!(kernel.kind(), io::ErrorKind::UnexpectedEof);
-        assert!(kernel.to_string().contains("wrong key"), "{kernel}");
+        let soul = soul.err().expect("the soul must not get a session");
+        assert_eq!(soul.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(soul.to_string().contains("wrong key"), "{soul}");
     }
 
     #[tokio::test]
@@ -468,9 +468,9 @@ mod tests {
 
     #[tokio::test]
     async fn eof_inside_a_message_is_an_error() {
-        let (kernel, module) = pair("k", "k").await;
-        let (kernel, mut module) = (kernel.unwrap(), module.unwrap());
-        let NoiseStream { mut io, .. } = kernel;
+        let (soul, module) = pair("k", "k").await;
+        let (soul, mut module) = (soul.unwrap(), module.unwrap());
+        let NoiseStream { mut io, .. } = soul;
         io.write_all(&100_u16.to_be_bytes()).await.unwrap();
         io.write_all(&[0; 10]).await.unwrap();
         drop(io);
