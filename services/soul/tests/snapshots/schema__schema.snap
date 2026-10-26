@@ -104,8 +104,6 @@ index sqlite_autoindex_health_stats_1 (health_stats)
   -
 index sqlite_autoindex_identities_1 (identities)
   -
-index sqlite_autoindex_soul_meta_1 (soul_meta)
-  -
 index sqlite_autoindex_memory_link_1 (memory_link)
   -
 index sqlite_autoindex_messages_1 (messages)
@@ -131,6 +129,8 @@ index sqlite_autoindex_segments_1 (segments)
 index sqlite_autoindex_sleep_phase_runs_1 (sleep_phase_runs)
   -
 index sqlite_autoindex_sleep_runs_1 (sleep_runs)
+  -
+index sqlite_autoindex_soul_meta_1 (soul_meta)
   -
 index sqlite_autoindex_surfaces_1 (surfaces)
   -
@@ -206,8 +206,6 @@ table health_stats (health_stats)
   CREATE TABLE health_stats (day TEXT NOT NULL, metric TEXT NOT NULL, key TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, metric, key)) STRICT
 table identities (identities)
   CREATE TABLE identities (person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE, surface_id TEXT NOT NULL REFERENCES surfaces(id) ON DELETE RESTRICT, external_id TEXT NOT NULL, handle TEXT, name TEXT, first_seen INTEGER NOT NULL, PRIMARY KEY (surface_id, external_id)) STRICT
-table soul_meta (soul_meta)
-  CREATE TABLE soul_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT
 table memory (memory)
   CREATE TABLE memory ( id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK (kind IN ('fact','event','core','procedure')), text TEXT NOT NULL, name TEXT, description TEXT, tags TEXT, visibility TEXT NOT NULL CHECK (visibility IN ('public','trusted','private')), importance REAL NOT NULL DEFAULT 0.5 CHECK (importance BETWEEN 0 AND 1), confidence REAL NOT NULL DEFAULT 1.0 CHECK (confidence BETWEEN 0 AND 1), source_actor TEXT REFERENCES persons(id) ON DELETE RESTRICT, source_chat INTEGER, source_surface TEXT, source_trusted_chat INTEGER CHECK (source_trusted_chat IN (0,1)), source_run_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, consolidated_at INTEGER, occurred_at INTEGER, valid_from INTEGER NOT NULL, valid_to INTEGER, supersedes INTEGER REFERENCES memory(id) ON DELETE SET NULL, version INTEGER NOT NULL DEFAULT 1, last_reinforced_at INTEGER NOT NULL, access_count REAL NOT NULL DEFAULT 0, embedding BLOB, embed_model TEXT) STRICT
 table memory_archive (memory_archive)
@@ -254,6 +252,8 @@ table sleep_phase_runs (sleep_phase_runs)
   CREATE TABLE sleep_phase_runs (run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE, phase TEXT NOT NULL CHECK (phase IN ('memory','groups','warm')), started INTEGER NOT NULL, finished INTEGER, model TEXT, ops_json TEXT NOT NULL DEFAULT '[]', applied INTEGER NOT NULL DEFAULT 0, discarded INTEGER NOT NULL DEFAULT 0, report TEXT, PRIMARY KEY (run_id, phase)) STRICT
 table sleep_runs (sleep_runs)
   CREATE TABLE sleep_runs (run_id TEXT PRIMARY KEY, started INTEGER NOT NULL, finished INTEGER, ok INTEGER CHECK (ok IN (0,1)), dry_run INTEGER NOT NULL CHECK (dry_run IN (0,1)), interrupted INTEGER NOT NULL DEFAULT 0 CHECK (interrupted IN (0,1)), report TEXT) STRICT
+table soul_meta (soul_meta)
+  CREATE TABLE soul_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT
 table spend (spend)
   CREATE TABLE spend (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, model TEXT NOT NULL, source TEXT NOT NULL CHECK (source IN ('surface','cron','sleep','agent','system','module')), op TEXT NOT NULL CHECK (op IN ('step','compaction','title','embed','keep_alive','vet','other')), module TEXT, chat_id INTEGER, turn_id TEXT, run_id TEXT, input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, cache_write_long INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL, reasoning INTEGER NOT NULL DEFAULT 0, context_edits_applied INTEGER NOT NULL DEFAULT 0, cache_break_reason TEXT CHECK (cache_break_reason IN ('model_change','tools_change','segment_reset','ttl_expired','context_edit','thinking_change','effort_change','first_request','unknown')), cost REAL, currency TEXT, cost_source TEXT NOT NULL CHECK (cost_source IN ('provider','pricebook','none')), CHECK ((cost IS NULL) = (currency IS NULL)), CHECK ((source = 'module') = (module IS NOT NULL))) STRICT
 table sqlite_sequence (sqlite_sequence)
